@@ -79,15 +79,16 @@ function generateClaudeMd(projectPath: string, isWorkspace: boolean): void {
 }
 
 /**
- * Check if Claude auth is available by running `claude --version`.
- * If claude CLI is installed and authenticated, it exits 0.
+ * Check if Claude auth is available.
+ * Checks: ANTHROPIC_API_KEY, or `claude` binary in PATH (means claude login was done).
  */
 function hasAuth(): boolean {
   if (process.env.ANTHROPIC_API_KEY) return true;
 
   try {
     const { execSync } = require("node:child_process");
-    execSync("claude --version", { stdio: "pipe", timeout: 5000 });
+    // Just check if claude binary exists in PATH
+    execSync("which claude", { stdio: "pipe", timeout: 3000 });
     return true;
   } catch {
     return false;
