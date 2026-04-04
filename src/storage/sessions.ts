@@ -73,9 +73,28 @@ export function getLastSession(projectPath: string): SessionMeta | null {
   return sessions[0] ?? null;
 }
 
+/**
+ * Ensure a session exists - create it if not found.
+ * Used by hooks that receive session_id from Claude Code harness.
+ */
+export function ensureSession(projectPath: string, id: string): SessionMeta {
+  const existing = loadSession(projectPath, id);
+  if (existing) return existing;
+
+  initSessionStore(projectPath);
+  const session: SessionMeta = {
+    id,
+    createdAt: new Date().toISOString(),
+    closedAt: null,
+    turns: 0,
+    filesChanged: [],
+  };
+  writeSession(projectPath, session);
+  return session;
+}
+
 export function trackFileChanged(projectPath: string, sessionId: string, filePath: string): void {
-  const session = loadSession(projectPath, sessionId);
-  if (!session) return;
+  const session = ensureSession(projectPath, sessionId);
   if (!session.filesChanged.includes(filePath)) {
     session.filesChanged.push(filePath);
     writeSession(projectPath, session);

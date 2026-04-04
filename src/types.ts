@@ -102,7 +102,7 @@ export interface Memory {
   title: string;
   description: string;
   keywords: string[];
-  source: "session" | "preset" | "manual";
+  source: "init-scan" | "session" | "preset" | "manual";
   sessionId: string | null;
   date: string;
   body: string;

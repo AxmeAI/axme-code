@@ -12,10 +12,10 @@ import { resolve, join } from "node:path";
 import { writeFileSync, existsSync, readFileSync, appendFileSync, mkdirSync } from "node:fs";
 import yaml from "js-yaml";
 import { initProjectWithLLM, initWorkspaceWithLLM } from "./tools/init.js";
-import { homedir } from "node:os";
 import { statusTool } from "./tools/status.js";
 import { detectWorkspace } from "./utils/workspace-detector.js";
 import { atomicWrite, ensureDir } from "./storage/engine.js";
+import { saveMemory, toMemorySlug } from "./storage/memory.js";
 import type { WorkspaceInfo } from "./types.js";
 import { AXME_CODE_DIR } from "./types.js";
 
@@ -48,6 +48,7 @@ const WORKSPACE_CLAUDE_MD = `## AXME Code - Workspace
 Call axme_context with this workspace root path to load workspace overview.
 
 ### Per-Repo Gate (MANDATORY)
+Every repo has its own .axme-code/ storage (oracle, decisions, memory, safety) created during setup.
 BEFORE reading code, making changes, or running tests in any repo:
   call axme_context with that repo's path to load repo-specific context.
 Each repo has unique decisions and safety rules. Workspace context alone is NOT enough.
@@ -151,6 +152,34 @@ function configureHooks(projectPath: string): void {
   console.log("  .claude/settings.json: hooks configured (PostToolUse + SessionEnd)");
 }
 
+/**
+ * Write bootstrap memory to AXME Code storage (.axme-code/memory/).
+ */
+function writeBootstrapToAxmeMemory(projectPath: string, isWorkspace: boolean, repoCount: number): void {
+  const title = isWorkspace
+    ? "AXME Code storage initialized for workspace"
+    : "AXME Code storage initialized";
+  const slug = toMemorySlug(title);
+  const description = isWorkspace
+    ? `axme-code setup created .axme-code/ in workspace root and all ${repoCount} git repos. Each has oracle, decisions, memory, safety.`
+    : `axme-code setup created .axme-code/ with oracle, decisions, memory, safety for this project.`;
+
+  saveMemory(projectPath, {
+    slug,
+    type: "pattern",
+    title,
+    description,
+    body: isWorkspace
+      ? `Two-level storage: workspace root .axme-code/ + per-repo .axme-code/ (${repoCount} repos). Both have oracle, decisions, memory, safety, sessions, plans, deploy. Call axme_context with repo path for per-repo gate.`
+      : `Single project .axme-code/ with oracle, decisions, memory, safety, sessions, plans, deploy.`,
+    keywords: ["axme-code", "setup", "storage", "initialized", "per-repo"],
+    source: "init-scan",
+    sessionId: null,
+    date: new Date().toISOString().slice(0, 10),
+    scope: ["all"],
+  });
+}
+
 function usage(): void {
   console.log(`AXME Code - MCP server for Claude Code CLI
 
@@ -239,6 +268,12 @@ async function main() {
         writeFileSync(gitignorePath, ".axme-code/\n", "utf-8");
         console.log("  .gitignore: created with .axme-code/");
       }
+
+      // Write bootstrap memory to AXME Code storage
+      const repoCount = isWorkspace
+        ? ws.projects.filter(p => existsSync(join(projectPath, p.path, ".git"))).length
+        : 0;
+      writeBootstrapToAxmeMemory(projectPath, isWorkspace, repoCount);
 
       console.log("\nDone! Run 'claude' to start using AXME tools.");
       break;

@@ -17,6 +17,8 @@ import { saveDecisionTool } from "./tools/decision-tools.js";
 import { updateSafetyTool, showSafetyTool } from "./tools/safety-tools.js";
 import { statusTool, worklogTool } from "./tools/status.js";
 import { detectWorkspace } from "./utils/workspace-detector.js";
+import { createSession } from "./storage/sessions.js";
+import { logSessionStart } from "./storage/worklog.js";
 
 // --- Server state (detected at startup from cwd) ---
 
@@ -25,6 +27,11 @@ const serverWorkspace = detectWorkspace(serverCwd);
 const isWorkspace = serverWorkspace.type !== "single";
 const defaultProjectPath = serverCwd;
 const defaultWorkspacePath = isWorkspace ? serverCwd : null;
+
+// --- Session (one MCP server instance = one session) ---
+
+const currentSession = createSession(defaultProjectPath);
+logSessionStart(defaultProjectPath, currentSession.id);
 
 // --- Build instructions for Claude Code ---
 
@@ -36,6 +43,7 @@ function buildInstructions(): string {
   if (isWorkspace) {
     parts.push(`Workspace: ${defaultWorkspacePath} (${serverWorkspace.type}, ${serverWorkspace.projects.length} projects).`);
     parts.push("Call axme_context at session start to load workspace overview.");
+    parts.push("Each repo has its own .axme-code/ storage initialized during setup.");
     parts.push("Before working with any specific repo, call axme_context with that repo's path.");
   } else {
     parts.push("Call axme_context at session start to load project knowledge base.");
@@ -113,7 +121,7 @@ server.tool(
     scope: z.array(z.string()).optional().describe("Project scope (omit for current project only)"),
   },
   async ({ project_path, type, title, description, body, keywords, scope }) => {
-    const result = saveMemoryTool(pp(project_path), { type, title, description, body, keywords, scope });
+    const result = saveMemoryTool(pp(project_path), { type, title, description, body, keywords, scope }, currentSession.id);
     return { content: [{ type: "text" as const, text: `Memory saved: ${result.slug} (${type})` }] };
   },
 );
