@@ -36,14 +36,24 @@ const DEFAULT_BASH_RULES: BashRules = {
     "tree", "file", "stat", "du",
   ],
   deniedPrefixes: [
+    // Destructive system commands
     "rm -rf /", "chmod 777", "curl | sh", "curl | bash", "wget | sh",
+    // Destructive git (also enforced by checkGit, belt-and-suspenders)
+    "git push --force", "git checkout -- .", "git clean -f",
+    // Agent guardrails - publish/release must be human-initiated
+    "gh workflow run deploy-prod", "gh release create",
+    "npm publish", "twine upload", "docker push",
   ],
   deniedCommands: ["shutdown", "reboot", "halt", "poweroff", "mkfs", "dd if="],
 };
 
 const DEFAULT_FS_RULES: FilesystemRules = {
   readOnlyPaths: [],
-  deniedPaths: ["/etc/passwd", "/etc/shadow", "~/.ssh/id_*", "~/.aws/credentials"],
+  deniedPaths: [
+    "/etc/passwd", "/etc/shadow",
+    "~/.ssh/id_*", "~/.aws/credentials", "~/.gnupg/*",
+    ".env", "*.pem", "*.key",
+  ],
 };
 
 export function defaultRules(): SafetyRules {
