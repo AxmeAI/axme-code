@@ -24,50 +24,57 @@ import type { WorkspaceInfo, WorkspaceProject } from "../types.js";
 
 /**
  * Detect workspace type and project list from a directory.
+ *
+ * Uses manifest-based detection first (VSCode, .sln, pnpm, etc.),
+ * then ENRICHES with any git repos found on disk that aren't in the manifest.
+ * This ensures no repo is missed even if the manifest is incomplete.
  */
 export function detectWorkspace(cwd: string): WorkspaceInfo {
   const root = resolve(cwd);
 
-  const vsResult = detectVSCodeWorkspace(root);
-  if (vsResult) return vsResult;
+  // Try manifest-based detectors in priority order
+  const result =
+    detectVSCodeWorkspace(root) ??
+    detectDotnetSolution(root) ??
+    detectJetBrains(root) ??
+    detectSublime(root) ??
+    detectRush(root) ??
+    detectPnpmWorkspace(root) ??
+    detectNpmWorkspace(root) ??
+    detectLerna(root) ??
+    detectNx(root) ??
+    detectGradle(root) ??
+    detectMaven(root) ??
+    detectGitSubmodules(root) ??
+    detectMultiGit(root);
 
-  const slnResult = detectDotnetSolution(root);
-  if (slnResult) return slnResult;
+  if (!result) {
+    return { type: "single", root, projects: [{ path: ".", name: basename(root) }], manifestPath: null };
+  }
 
-  const jbResult = detectJetBrains(root);
-  if (jbResult) return jbResult;
+  // Enrich: add any git repos found on disk that aren't in the manifest
+  return enrichWithGitRepos(root, result);
+}
 
-  const sublResult = detectSublime(root);
-  if (sublResult) return sublResult;
+/**
+ * Scan for .git/ subdirectories and add any that are missing from the detected project list.
+ */
+function enrichWithGitRepos(root: string, ws: WorkspaceInfo): WorkspaceInfo {
+  const knownPaths = new Set(ws.projects.map(p => p.path));
+  let added = 0;
 
-  const rushResult = detectRush(root);
-  if (rushResult) return rushResult;
+  for (const entry of safeReaddir(root)) {
+    if (entry.startsWith(".") || ["node_modules", "dist", "build", ".git"].includes(entry)) continue;
+    if (knownPaths.has(entry)) continue;
 
-  const pnpmResult = detectPnpmWorkspace(root);
-  if (pnpmResult) return pnpmResult;
+    const entryPath = join(root, entry);
+    if (isDir(entryPath) && existsSync(join(entryPath, ".git"))) {
+      ws.projects.push({ path: entry, name: entry });
+      added++;
+    }
+  }
 
-  const npmResult = detectNpmWorkspace(root);
-  if (npmResult) return npmResult;
-
-  const lernaResult = detectLerna(root);
-  if (lernaResult) return lernaResult;
-
-  const nxResult = detectNx(root);
-  if (nxResult) return nxResult;
-
-  const gradleResult = detectGradle(root);
-  if (gradleResult) return gradleResult;
-
-  const mavenResult = detectMaven(root);
-  if (mavenResult) return mavenResult;
-
-  const subResult = detectGitSubmodules(root);
-  if (subResult) return subResult;
-
-  const multiGitResult = detectMultiGit(root);
-  if (multiGitResult) return multiGitResult;
-
-  return { type: "single", root, projects: [{ path: ".", name: basename(root) }], manifestPath: null };
+  return ws;
 }
 
 // --- Detectors ---
