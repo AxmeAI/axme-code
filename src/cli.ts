@@ -80,19 +80,19 @@ function generateClaudeMd(projectPath: string, isWorkspace: boolean): void {
 
 /**
  * Check if Claude auth is available.
- * Checks: ANTHROPIC_API_KEY, or `claude` binary in PATH (means claude login was done).
+ * Checks: ANTHROPIC_API_KEY, or claude binary exists on disk.
  */
 function hasAuth(): boolean {
   if (process.env.ANTHROPIC_API_KEY) return true;
 
-  try {
-    const { execSync } = require("node:child_process");
-    // Just check if claude binary exists in PATH
-    execSync("which claude", { stdio: "pipe", timeout: 3000 });
-    return true;
-  } catch {
-    return false;
+  // Check common claude binary locations directly (no shell needed)
+  const { env } = process;
+  const pathDirs = (env.PATH || "").split(":");
+  for (const dir of pathDirs) {
+    if (existsSync(join(dir, "claude"))) return true;
   }
+
+  return false;
 }
 
 function generateWorkspaceYaml(workspacePath: string, ws: WorkspaceInfo): void {
