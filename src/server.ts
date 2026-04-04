@@ -54,12 +54,13 @@ server.tool(
 // --- axme_context ---
 server.tool(
   "axme_context",
-  "Read full project context (oracle + decisions + safety + memory). Use this at the start of each task to understand the project.",
+  "Read full project context (oracle + decisions + safety + memory + test plan + active plans). Use this at the start of each task. If working in a workspace with multiple repos, pass workspace_path too for merged context.",
   {
     project_path: z.string().describe("Absolute path to the project root"),
+    workspace_path: z.string().optional().describe("Absolute path to workspace root (for multi-repo workspace merge)"),
   },
-  async ({ project_path }) => {
-    return { content: [{ type: "text" as const, text: getFullContext(project_path) }] };
+  async ({ project_path, workspace_path }) => {
+    return { content: [{ type: "text" as const, text: getFullContext(project_path, workspace_path) }] };
   },
 );
 
@@ -211,6 +212,30 @@ server.tool(
   },
   async ({ project_path, limit }) => {
     return { content: [{ type: "text" as const, text: worklogTool(project_path, limit) }] };
+  },
+);
+
+// --- axme_workspace ---
+server.tool(
+  "axme_workspace",
+  "Detect workspace type and list all projects. Shows workspace format (VSCode, pnpm, npm, Gradle, multi-git, etc.) and project list.",
+  {
+    path: z.string().describe("Absolute path to check for workspace"),
+  },
+  async ({ path }) => {
+    const { detectWorkspace } = await import("./utils/workspace-detector.js");
+    const ws = detectWorkspace(path);
+    if (ws.type === "single") {
+      return { content: [{ type: "text" as const, text: `Single project (not a workspace): ${ws.root}` }] };
+    }
+    const lines = [
+      `Workspace: ${ws.type}`,
+      `Root: ${ws.root}`,
+      ws.manifestPath ? `Manifest: ${ws.manifestPath}` : null,
+      `Projects (${ws.projects.length}):`,
+      ...ws.projects.map(p => `  - ${p.name} (${p.path})`),
+    ].filter(Boolean);
+    return { content: [{ type: "text" as const, text: lines.join("\n") }] };
   },
 );
 

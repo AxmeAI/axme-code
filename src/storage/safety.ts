@@ -149,6 +149,86 @@ export function showSafety(projectPath: string): string {
   return yaml.dump(rules, { lineWidth: 120 });
 }
 
+// --- Enforcement ---
+
+export type SafetyVerdict = { allowed: true } | { allowed: false; reason: string };
+
+/**
+ * Check if a bash command is safe.
+ */
+export function checkBash(rules: SafetyRules, command: string): SafetyVerdict {
+  const trimmed = command.trim();
+  const firstCmd = trimmed.split("|")[0].trim();
+  const pipeNormalized = trimmed.split("|").map(s => s.trim().split(/\s+/)[0]).join(" | ");
+
+  for (const denied of rules.bash.deniedCommands) {
+    if (trimmed.includes(denied)) return { allowed: false, reason: `Denied command: ${denied}` };
+  }
+  for (const prefix of rules.bash.deniedPrefixes) {
+    if (firstCmd.startsWith(prefix)) return { allowed: false, reason: `Denied prefix: ${prefix}` };
+    if (prefix.includes("|")) {
+      if (pipeNormalized === prefix || pipeNormalized.startsWith(prefix)) {
+        return { allowed: false, reason: `Denied prefix: ${prefix}` };
+      }
+    } else {
+      for (const seg of trimmed.split("|").map(s => s.trim())) {
+        if (seg.startsWith(prefix)) return { allowed: false, reason: `Denied prefix: ${prefix}` };
+      }
+    }
+  }
+  return { allowed: true };
+}
+
+/**
+ * Check if a git operation is safe.
+ */
+export function checkGit(rules: SafetyRules, command: string): SafetyVerdict {
+  const trimmed = command.trim();
+  if (!rules.git.allowForcePush && (trimmed.includes("--force") || trimmed.includes("-f"))) {
+    if (trimmed.startsWith("git push")) return { allowed: false, reason: "Force push is not allowed" };
+  }
+  if (!rules.git.allowDirectPushToMain) {
+    for (const branch of rules.git.protectedBranches) {
+      if (trimmed.includes(`push origin ${branch}`) || trimmed.includes(`push upstream ${branch}`)) {
+        return { allowed: false, reason: `Direct push to ${branch} is not allowed` };
+      }
+    }
+  }
+  if (trimmed.includes("reset --hard")) {
+    return { allowed: false, reason: "git reset --hard is not allowed (destroys uncommitted work)" };
+  }
+  return { allowed: true };
+}
+
+/**
+ * Check if a file path is allowed.
+ */
+export function checkFilePath(rules: SafetyRules, filePath: string, operation: "read" | "write"): SafetyVerdict {
+  for (const denied of rules.filesystem.deniedPaths) {
+    const pattern = denied.replace("~", process.env.HOME ?? "");
+    if (matchesPattern(filePath, pattern)) return { allowed: false, reason: `Path denied: ${denied}` };
+  }
+  if (operation === "write") {
+    for (const readOnly of rules.filesystem.readOnlyPaths) {
+      if (filePath.startsWith(readOnly)) return { allowed: false, reason: `Path is read-only: ${readOnly}` };
+    }
+  }
+  return { allowed: true };
+}
+
+function matchesPattern(filePath: string, pattern: string): boolean {
+  if (filePath === pattern || filePath.startsWith(pattern)) return true;
+  if (pattern.includes("*")) {
+    const starIdx = pattern.indexOf("*");
+    const prefix = pattern.slice(0, starIdx);
+    const suffix = pattern.slice(starIdx + 1);
+    if (prefix === "" && suffix) return filePath.endsWith(suffix) || filePath.split("/").pop()?.endsWith(suffix) === true;
+    if (prefix && !suffix) return filePath.startsWith(prefix);
+    if (prefix && suffix) return filePath.startsWith(prefix) && filePath.endsWith(suffix);
+  }
+  return false;
+}
+
 // --- Merge ---
 
 function mergeSafetyRules(base: SafetyRules, override: Partial<SafetyRules>): SafetyRules {
