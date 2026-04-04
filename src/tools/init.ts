@@ -42,10 +42,28 @@ export interface InitResult {
 export async function initProjectWithLLM(projectPath: string, opts?: {
   presets?: string[];
   workspaceMode?: boolean;
+  force?: boolean;
 }): Promise<InitResult> {
   const startTime = Date.now();
   const axmeDir = join(projectPath, AXME_CODE_DIR);
   const alreadyExists = pathExists(axmeDir);
+
+  // Skip if already fully initialized (has LLM-scanned decisions)
+  if (alreadyExists && !opts?.force) {
+    const existing = listDecisions(projectPath);
+    const hasLlmScan = existing.some(d => d.source === "init-scan");
+    if (hasLlmScan) {
+      return {
+        projectPath, created: false,
+        oracle: { files: 4, llm: true },
+        decisions: { count: existing.length, fromScan: existing.filter(d => d.source === "init-scan").length, fromPresets: existing.filter(d => d.source === "preset").length },
+        memories: { count: listMemories(projectPath).length, fromPresets: 0 },
+        safety: { created: false, llm: true, summary: "already initialized" },
+        config: false, cost: zeroCost(), durationMs: 0, errors: [],
+      };
+    }
+  }
+
   ensureDir(axmeDir);
 
   const presets = opts?.presets ?? DEFAULT_PROJECT_CONFIG.presets;
