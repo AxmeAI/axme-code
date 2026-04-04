@@ -218,13 +218,16 @@ export function checkFilePath(rules: SafetyRules, filePath: string, operation: "
 
 function matchesPattern(filePath: string, pattern: string): boolean {
   if (filePath === pattern || filePath.startsWith(pattern)) return true;
+  const fileName = filePath.split("/").pop() ?? "";
+  // Basename match: ".env" matches "/any/path/.env"
+  if (fileName === pattern) return true;
   if (pattern.includes("*")) {
     const starIdx = pattern.indexOf("*");
     const prefix = pattern.slice(0, starIdx);
     const suffix = pattern.slice(starIdx + 1);
-    if (prefix === "" && suffix) return filePath.endsWith(suffix) || filePath.split("/").pop()?.endsWith(suffix) === true;
-    if (prefix && !suffix) return filePath.startsWith(prefix);
-    if (prefix && suffix) return filePath.startsWith(prefix) && filePath.endsWith(suffix);
+    if (prefix === "" && suffix) return filePath.endsWith(suffix) || fileName.endsWith(suffix);
+    if (prefix && !suffix) return filePath.startsWith(prefix) || fileName.startsWith(prefix);
+    if (prefix && suffix) return (filePath.startsWith(prefix) && filePath.endsWith(suffix)) || (fileName.startsWith(prefix) && fileName.endsWith(suffix));
   }
   return false;
 }

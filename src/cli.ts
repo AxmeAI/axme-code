@@ -5,7 +5,7 @@
  *   axme-code setup [path]   - Full init (LLM if API key available) + .mcp.json + CLAUDE.md
  *   axme-code serve           - Start MCP server (stdio, used by .mcp.json)
  *   axme-code status [path]   - Show project status
- *   axme-code hook <name> <json> - Run hook (post-tool-use, session-end)
+ *   axme-code hook <name> <json> - Run hook (pre-tool-use, post-tool-use, session-end)
  */
 
 import { resolve, join } from "node:path";
@@ -119,18 +119,26 @@ function configureHooks(projectPath: string): void {
   }
 
   // Remove old hooks (without --workspace) and re-create with correct path
-  if (settings.hooks?.PostToolUse) {
-    settings.hooks.PostToolUse = settings.hooks.PostToolUse.filter(
-      (h: any) => !JSON.stringify(h).includes("axme-code"),
-    );
-  }
-  if (settings.hooks?.SessionEnd) {
-    settings.hooks.SessionEnd = settings.hooks.SessionEnd.filter(
-      (h: any) => !JSON.stringify(h).includes("axme-code"),
-    );
+  for (const hookType of ["PreToolUse", "PostToolUse", "SessionEnd"]) {
+    if (settings.hooks?.[hookType]) {
+      settings.hooks[hookType] = settings.hooks[hookType].filter(
+        (h: any) => !JSON.stringify(h).includes("axme-code"),
+      );
+    }
   }
 
   if (!settings.hooks) settings.hooks = {};
+
+  // PreToolUse: HARD safety enforcement - blocks dangerous commands before execution
+  if (!settings.hooks.PreToolUse) settings.hooks.PreToolUse = [];
+  settings.hooks.PreToolUse.push({
+    matcher: "Bash|Read|Write|Edit|NotebookEdit|Glob|Grep",
+    hooks: [{
+      type: "command",
+      command: `axme-code hook pre-tool-use --workspace ${projectPath}`,
+      timeout: 5,
+    }],
+  });
 
   // PostToolUse: track filesChanged after Edit/Write
   // --workspace is hardcoded so hooks always write to workspace root, regardless of cwd
@@ -304,7 +312,10 @@ async function main() {
       const wsIdx = args.indexOf("--workspace");
       const workspacePath = wsIdx >= 0 && args[wsIdx + 1] ? args[wsIdx + 1] : undefined;
 
-      if (hookName === "post-tool-use") {
+      if (hookName === "pre-tool-use") {
+        const { runPreToolUseHook } = await import("./hooks/pre-tool-use.js");
+        await runPreToolUseHook(workspacePath);
+      } else if (hookName === "post-tool-use") {
         const { runPostToolUseHook } = await import("./hooks/post-tool-use.js");
         await runPostToolUseHook(workspacePath);
       } else if (hookName === "session-end") {
