@@ -5,8 +5,11 @@
  * Workspace-aware: merges workspace-level + project-level data when workspace_path provided.
  */
 
-import { oracleContext, showOracle, oracleExists } from "../storage/oracle.js";
+import { oracleContext, showOracle, oracleExists, loadOracleFiles } from "../storage/oracle.js";
 import { decisionsContext, showDecisions, enforceableDecisionsContext, listDecisions } from "../storage/decisions.js";
+import { pathExists } from "../storage/engine.js";
+import { join } from "node:path";
+import { AXME_CODE_DIR } from "../types.js";
 import { safetyContext, loadSafetyRules } from "../storage/safety.js";
 import { allMemoryContext, listMemories } from "../storage/memory.js";
 import { mergeDecisions, mergeMemories, mergeSafetyRules } from "../storage/workspace-merge.js";
@@ -84,7 +87,18 @@ export function getFullContext(projectPath: string, workspacePath?: string): str
   if (plans) parts.push(plans);
 
   if (parts.length === 0) {
-    return "Project not initialized. Run axme_init first.";
+    return "Project not initialized. Ask the user to run 'axme-code setup' in terminal.";
+  }
+
+  // Check if LLM init was done (LLM-scanned oracle has rich content, deterministic has minimal)
+  const decisions = listDecisions(projectPath);
+  const llmDecisions = decisions.filter(d => d.source === "init-scan");
+  if (llmDecisions.length === 0 && oracleExists(projectPath)) {
+    const files = loadOracleFiles(projectPath);
+    const oracleIsMinimal = files && files.stack.length < 200 && !files.patterns.includes("CLAUDE.md");
+    if (oracleIsMinimal) {
+      parts.push("\n---\n**WARNING:** This project was initialized with deterministic scan only (no LLM). Oracle and decisions may be incomplete. Ask the user to run `axme-code setup " + projectPath + "` in terminal for deep LLM scan.");
+    }
   }
 
   return parts.join("\n\n");

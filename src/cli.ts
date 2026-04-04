@@ -9,10 +9,14 @@
  */
 
 import { resolve, join } from "node:path";
-import { writeFileSync, existsSync, readFileSync, appendFileSync } from "node:fs";
+import { writeFileSync, existsSync, readFileSync, appendFileSync, mkdirSync } from "node:fs";
+import yaml from "js-yaml";
 import { initProjectDeterministic, initProjectWithLLM, initWorkspaceWithLLM } from "./tools/init.js";
 import { statusTool } from "./tools/status.js";
 import { detectWorkspace } from "./utils/workspace-detector.js";
+import { atomicWrite, ensureDir } from "./storage/engine.js";
+import type { WorkspaceInfo } from "./types.js";
+import { AXME_CODE_DIR } from "./types.js";
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -73,6 +77,62 @@ function generateClaudeMd(projectPath: string, isWorkspace: boolean): void {
   }
 }
 
+function generateWorkspaceYaml(workspacePath: string, ws: WorkspaceInfo): void {
+  const wsYaml = yaml.dump({
+    name: workspacePath.split("/").pop(),
+    type: ws.type,
+    manifest: ws.manifestPath,
+    projects: ws.projects,
+  }, { lineWidth: 120 });
+  ensureDir(join(workspacePath, AXME_CODE_DIR));
+  atomicWrite(join(workspacePath, AXME_CODE_DIR, "workspace.yaml"), wsYaml);
+  console.log("  workspace.yaml: created");
+}
+
+function configureHooks(projectPath: string): void {
+  const claudeDir = join(projectPath, ".claude");
+  const settingsPath = join(claudeDir, "settings.json");
+
+  // Read existing settings
+  let settings: Record<string, any> = {};
+  if (existsSync(settingsPath)) {
+    try { settings = JSON.parse(readFileSync(settingsPath, "utf-8")); } catch { settings = {}; }
+  }
+
+  // Check if hooks already configured
+  if (settings.hooks?.PostToolUse?.some?.((h: any) => JSON.stringify(h).includes("axme-code"))) {
+    return; // already configured
+  }
+
+  if (!settings.hooks) settings.hooks = {};
+
+  // PostToolUse: track filesChanged after Edit/Write
+  if (!settings.hooks.PostToolUse) settings.hooks.PostToolUse = [];
+  settings.hooks.PostToolUse.push({
+    matcher: "Edit|Write|NotebookEdit",
+    hooks: [{
+      type: "command",
+      command: "axme-code hook post-tool-use",
+      timeout: 10,
+    }],
+  });
+
+  // SessionEnd: full session audit (memories + decisions + safety + oracle)
+  if (!settings.hooks.SessionEnd) settings.hooks.SessionEnd = [];
+  settings.hooks.SessionEnd.push({
+    hooks: [{
+      type: "command",
+      command: "axme-code hook session-end",
+      timeout: 120,
+    }],
+  });
+
+  // Write settings
+  mkdirSync(claudeDir, { recursive: true });
+  writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n", "utf-8");
+  console.log("  .claude/settings.json: hooks configured (PostToolUse + SessionEnd)");
+}
+
 function usage(): void {
   console.log(`AXME Code - MCP server for Claude Code CLI
 
@@ -98,11 +158,15 @@ async function main() {
         console.log(`Initializing AXME Code in ${projectPath}...`);
       }
 
-      // Init .axme-code/ - always try LLM, fall back to deterministic if it fails
+      // Init .axme-code/ - try LLM with timeout, fall back to deterministic if it fails
       // Agent SDK uses Claude subscription credentials (OAuth) or ANTHROPIC_API_KEY
+      const LLM_TIMEOUT_MS = 10 * 60 * 1000; // 10 min per project max
+      const withTimeout = <T>(promise: Promise<T>, ms: number): Promise<T> =>
+        Promise.race([promise, new Promise<never>((_, reject) => setTimeout(() => reject(new Error("LLM init timed out")), ms))]);
+
       try {
         if (isWorkspace) {
-          const { workspaceResult, projectResults } = await initWorkspaceWithLLM(projectPath);
+          const { workspaceResult, projectResults } = await withTimeout(initWorkspaceWithLLM(projectPath), LLM_TIMEOUT_MS * ws.projects.length);
           const totalCost = workspaceResult.cost.costUsd + projectResults.reduce((s, r) => s + r.cost.costUsd, 0);
           console.log(`  Workspace: oracle ${workspaceResult.oracle.llm ? "LLM" : "deterministic"}, ${workspaceResult.decisions.count} decisions, ${workspaceResult.memories.count} memories`);
           for (const r of projectResults) {
@@ -114,7 +178,7 @@ async function main() {
             for (const e of workspaceResult.errors) console.log(`  Warning: ${e}`);
           }
         } else {
-          const result = await initProjectWithLLM(projectPath);
+          const result = await withTimeout(initProjectWithLLM(projectPath), LLM_TIMEOUT_MS);
           console.log(`  Oracle: ${result.oracle.files} files (${result.oracle.llm ? "LLM scan" : "deterministic"})`);
           console.log(`  Decisions: ${result.decisions.count} (${result.decisions.fromScan} LLM + ${result.decisions.fromPresets} presets)`);
           console.log(`  Memories: ${result.memories.count} (${result.memories.fromPresets} from presets)`);
@@ -139,6 +203,7 @@ async function main() {
             const r = initProjectDeterministic(projPath);
             console.log(`  ${project.name}: ${r.decisions.count} decisions, ${r.memories.count} memories`);
           }
+          generateWorkspaceYaml(projectPath, ws);
         }
       }
 
@@ -155,6 +220,9 @@ async function main() {
 
       // Generate CLAUDE.md
       generateClaudeMd(projectPath, isWorkspace);
+
+      // Configure Claude Code hooks in .claude/settings.json
+      configureHooks(projectPath);
 
       // Add .axme-code/ to .gitignore
       const gitignorePath = join(projectPath, ".gitignore");

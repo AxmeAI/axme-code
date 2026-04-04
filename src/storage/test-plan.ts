@@ -90,8 +90,11 @@ export function generateTestPlan(projectPath: string): TestPlan {
     plan.auto.push({ name: "Type check", command: "npx tsc --noEmit", expected: "exit 0", required: true });
   }
 
-  if (existsSync(join(projectPath, "pyproject.toml")) || existsSync(join(projectPath, "setup.py"))) {
-    if (existsSync(join(projectPath, "tests"))) {
+  const hasPython = existsSync(join(projectPath, "pyproject.toml"))
+    || existsSync(join(projectPath, "setup.py"))
+    || existsSync(join(projectPath, "requirements.txt"));
+  if (hasPython) {
+    if (existsSync(join(projectPath, "tests")) || existsSync(join(projectPath, "test"))) {
       plan.auto.push({ name: "Python tests", command: "python -m pytest", expected: "exit 0", required: true });
     }
   }
