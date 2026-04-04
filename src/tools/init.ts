@@ -43,6 +43,7 @@ export async function initProjectWithLLM(projectPath: string, opts?: {
   presets?: string[];
   workspaceMode?: boolean;
   force?: boolean;
+  onProgress?: (msg: string) => void;
 }): Promise<InitResult> {
   const startTime = Date.now();
   const axmeDir = join(projectPath, AXME_CODE_DIR);
@@ -119,6 +120,10 @@ export async function initProjectWithLLM(projectPath: string, opts?: {
   }
 
   // --- LLM scanners in PARALLEL ---
+  const log = opts?.onProgress ?? (() => {});
+  const projectName = projectPath.split("/").pop();
+  log(`  [${projectName}] LLM scanning (oracle + decisions + safety + deploy)...`);
+
   let oracleLlm = false;
   let oracleFiles = 0;
   let scanDecisionCount = 0;
@@ -151,6 +156,7 @@ export async function initProjectWithLLM(projectPath: string, opts?: {
   ]);
 
   // Process results
+  log(`  [${projectName}] Scanners complete, processing results...`);
   for (const settled of scanners) {
     if (settled.status === "rejected") {
       errors.push(`LLM scan failed: ${settled.reason?.message ?? settled.reason}`);
@@ -240,12 +246,18 @@ export async function initProjectWithLLM(projectPath: string, opts?: {
  */
 export async function initWorkspaceWithLLM(workspacePath: string, opts?: {
   presets?: string[];
+  onProgress?: (msg: string) => void;
 }): Promise<{ workspaceResult: InitResult; projectResults: InitResult[] }> {
+  const log = opts?.onProgress ?? (() => {});
+
   // Phase 1: workspace-level init
+  log("Phase 1: Scanning workspace overview...");
   const workspaceResult = await initProjectWithLLM(workspacePath, {
     presets: opts?.presets,
     workspaceMode: true,
+    onProgress: log,
   });
+  log(`Phase 1 complete: ${workspaceResult.decisions.count} decisions, $${workspaceResult.cost.costUsd.toFixed(2)}`);
 
   // Generate workspace.yaml
   try {
@@ -272,19 +284,34 @@ export async function initWorkspaceWithLLM(workspacePath: string, opts?: {
 
     // Filter to git repos only
     const gitRepos = ws.projects.filter(p => existsSync(join(workspacePath, p.path, ".git")));
+    log(`Phase 2: Scanning ${gitRepos.length} repos (${CONCURRENCY} parallel)...`);
 
     // Run in batches of CONCURRENCY
+    let completed = 0;
     for (let i = 0; i < gitRepos.length; i += CONCURRENCY) {
       const batch = gitRepos.slice(i, i + CONCURRENCY);
+      const batchNum = Math.floor(i / CONCURRENCY) + 1;
+      const totalBatches = Math.ceil(gitRepos.length / CONCURRENCY);
+      log(`Batch ${batchNum}/${totalBatches}: ${batch.map(p => p.name).join(", ")}`);
+
       const batchResults = await Promise.allSettled(
-        batch.map(project => initProjectWithLLM(join(workspacePath, project.path), { presets: opts?.presets }))
+        batch.map(project => initProjectWithLLM(join(workspacePath, project.path), { presets: opts?.presets, onProgress: log }))
       );
 
       for (let j = 0; j < batchResults.length; j++) {
         const settled = batchResults[j];
+        completed++;
         if (settled.status === "fulfilled") {
-          projectResults.push(settled.value);
+          const r = settled.value;
+          const name = r.projectPath.split("/").pop();
+          if (r.durationMs === 0) {
+            log(`  [${completed}/${gitRepos.length}] ${name}: skipped (already initialized)`);
+          } else {
+            log(`  [${completed}/${gitRepos.length}] ${name}: ${r.decisions.count} decisions, $${r.cost.costUsd.toFixed(2)}, ${(r.durationMs / 1000).toFixed(0)}s`);
+          }
+          projectResults.push(r);
         } else {
+          log(`  [${completed}/${gitRepos.length}] ${batch[j].name}: FAILED (${settled.reason?.message ?? "unknown"})`);
           projectResults.push({
             projectPath: join(workspacePath, batch[j].path),
             created: false,

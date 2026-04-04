@@ -188,7 +188,7 @@ async function main() {
 
       // Init with LLM scanners (parallel)
       if (isWorkspace) {
-        const { workspaceResult, projectResults } = await initWorkspaceWithLLM(projectPath);
+        const { workspaceResult, projectResults } = await initWorkspaceWithLLM(projectPath, { onProgress: console.log });
         const totalCost = workspaceResult.cost.costUsd + projectResults.reduce((s, r) => s + r.cost.costUsd, 0);
         console.log(`  Workspace: ${workspaceResult.decisions.count} decisions, ${workspaceResult.memories.count} memories`);
         for (const r of projectResults) {
@@ -201,7 +201,7 @@ async function main() {
         }
         generateWorkspaceYaml(projectPath, ws);
       } else {
-        const result = await initProjectWithLLM(projectPath);
+        const result = await initProjectWithLLM(projectPath, { onProgress: console.log });
         console.log(`  Oracle: ${result.oracle.files} files (${result.oracle.llm ? "LLM scan" : "deterministic fallback"})`);
         console.log(`  Decisions: ${result.decisions.count} (${result.decisions.fromScan} LLM + ${result.decisions.fromPresets} presets)`);
         console.log(`  Memories: ${result.memories.count} (${result.memories.fromPresets} from presets)`);
