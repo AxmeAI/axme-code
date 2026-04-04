@@ -2,24 +2,86 @@
  * AXME Code CLI - setup and management commands.
  *
  * Commands:
- *   axme-code setup [path]   - Create .mcp.json and init .axme-code/
+ *   axme-code setup [path]   - Full init (LLM if API key available) + .mcp.json + CLAUDE.md
  *   axme-code serve           - Start MCP server (stdio, used by .mcp.json)
  *   axme-code status [path]   - Show project status
+ *   axme-code hook <name> <json> - Run hook (post-tool-use, session-end)
  */
 
 import { resolve, join } from "node:path";
-import { writeFileSync, existsSync, readFileSync } from "node:fs";
-import { initProjectDeterministic } from "./tools/init.js";
+import { writeFileSync, existsSync, readFileSync, appendFileSync } from "node:fs";
+import { initProjectDeterministic, initProjectWithLLM, initWorkspaceWithLLM } from "./tools/init.js";
 import { statusTool } from "./tools/status.js";
+import { detectWorkspace } from "./utils/workspace-detector.js";
 
 const args = process.argv.slice(2);
 const command = args[0];
+
+// --- CLAUDE.md templates ---
+
+const SINGLE_REPO_CLAUDE_MD = `## AXME Code
+
+### Session Start (MANDATORY)
+Call axme_context tool with this project's path at the start of every session.
+This loads: oracle, decisions, safety rules, memories, test plan, active plans.
+Do NOT skip - without context you will miss critical project rules.
+
+### During Work
+- Error pattern or successful approach discovered -> call axme_save_memory immediately
+- Architectural decision made or discovered -> call axme_save_decision immediately
+- New safety constraint found -> call axme_update_safety immediately
+Do not defer - save when discovered.
+
+### Available AXME Tools
+axme_context, axme_save_memory, axme_search_memory, axme_save_decision,
+axme_update_safety, axme_safety, axme_status, axme_worklog, axme_workspace
+`;
+
+const WORKSPACE_CLAUDE_MD = `## AXME Code - Workspace
+
+### Session Start (MANDATORY)
+Call axme_context with this workspace root path to load workspace overview.
+
+### Per-Repo Gate (MANDATORY)
+BEFORE reading code, making changes, or running tests in any repo:
+  call axme_context with that repo's path to load repo-specific context.
+Each repo has unique decisions and safety rules. Workspace context alone is NOT enough.
+
+### During Work
+- Save memories/decisions/safety rules immediately when discovered
+- For cross-project findings: include scope parameter (e.g. scope: ["all"])
+
+### Available AXME Tools
+axme_context, axme_save_memory, axme_search_memory, axme_save_decision,
+axme_update_safety, axme_safety, axme_status, axme_worklog, axme_workspace
+`;
+
+function generateClaudeMd(projectPath: string, isWorkspace: boolean): void {
+  const claudeMdPath = join(projectPath, "CLAUDE.md");
+  const section = isWorkspace ? WORKSPACE_CLAUDE_MD : SINGLE_REPO_CLAUDE_MD;
+
+  if (existsSync(claudeMdPath)) {
+    const content = readFileSync(claudeMdPath, "utf-8");
+    if (content.includes("## AXME Code")) {
+      return; // already has our section
+    }
+    appendFileSync(claudeMdPath, "\n\n" + section, "utf-8");
+    console.log("  CLAUDE.md: appended AXME Code section");
+  } else {
+    writeFileSync(claudeMdPath, section, "utf-8");
+    console.log("  CLAUDE.md: created");
+  }
+}
+
+function hasApiKey(): boolean {
+  return !!process.env.ANTHROPIC_API_KEY;
+}
 
 function usage(): void {
   console.log(`AXME Code - MCP server for Claude Code CLI
 
 Usage:
-  axme-code setup [path]    Initialize project and create .mcp.json
+  axme-code setup [path]    Initialize project (LLM scan + .mcp.json + CLAUDE.md)
   axme-code serve           Start MCP server (stdio transport)
   axme-code status [path]   Show project status
   axme-code help            Show this help
@@ -31,37 +93,64 @@ async function main() {
   switch (command) {
     case "setup": {
       const projectPath = resolve(args[1] || ".");
-      console.log(`Initializing AXME Code in ${projectPath}...`);
+      const ws = detectWorkspace(projectPath);
+      const isWorkspace = ws.type !== "single";
 
-      // Init .axme-code/ (deterministic only, LLM scan runs via axme_init tool in Claude)
-      const result = initProjectDeterministic(projectPath);
-      console.log(`  Oracle: ${result.oracle.files} files (deterministic - run axme_init in Claude for LLM scan)`);
-      console.log(`  Decisions: ${result.decisions.count} (${result.decisions.fromPresets} from presets)`);
-      console.log(`  Memories: ${result.memories.count} (${result.memories.fromPresets} from presets)`);
-      console.log(`  Safety: ${result.safety.created ? "created" : "exists"}`);
+      if (isWorkspace) {
+        console.log(`Initializing AXME Code workspace in ${projectPath} (${ws.type}, ${ws.projects.length} projects)...`);
+      } else {
+        console.log(`Initializing AXME Code in ${projectPath}...`);
+      }
+
+      // Init .axme-code/ - LLM if API key available, deterministic fallback
+      if (hasApiKey()) {
+        if (isWorkspace) {
+          const { workspaceResult, projectResults } = await initWorkspaceWithLLM(projectPath);
+          const totalCost = workspaceResult.cost.costUsd + projectResults.reduce((s, r) => s + r.cost.costUsd, 0);
+          console.log(`  Workspace: oracle ${workspaceResult.oracle.llm ? "LLM" : "deterministic"}, ${workspaceResult.decisions.count} decisions, ${workspaceResult.memories.count} memories`);
+          for (const r of projectResults) {
+            const name = r.projectPath.split("/").pop();
+            console.log(`  ${name}: ${r.decisions.count} decisions (${r.decisions.fromScan} LLM + ${r.decisions.fromPresets} presets)`);
+          }
+          console.log(`  Total cost: $${totalCost.toFixed(2)}`);
+          if (workspaceResult.errors.length > 0) {
+            for (const e of workspaceResult.errors) console.log(`  Warning: ${e}`);
+          }
+        } else {
+          const result = await initProjectWithLLM(projectPath);
+          console.log(`  Oracle: ${result.oracle.files} files (${result.oracle.llm ? "LLM scan" : "deterministic"})`);
+          console.log(`  Decisions: ${result.decisions.count} (${result.decisions.fromScan} LLM + ${result.decisions.fromPresets} presets)`);
+          console.log(`  Memories: ${result.memories.count} (${result.memories.fromPresets} from presets)`);
+          console.log(`  Safety: ${result.safety.llm ? "LLM scan" : "defaults + presets"}`);
+          console.log(`  Cost: $${result.cost.costUsd.toFixed(2)}, ${(result.durationMs / 1000).toFixed(1)}s`);
+          if (result.errors.length > 0) {
+            for (const e of result.errors) console.log(`  Warning: ${e}`);
+          }
+        }
+      } else {
+        const result = initProjectDeterministic(projectPath);
+        console.log(`  Oracle: ${result.oracle.files} files (deterministic)`);
+        console.log(`  Decisions: ${result.decisions.count} (${result.decisions.fromPresets} from presets)`);
+        console.log(`  Memories: ${result.memories.count} (${result.memories.fromPresets} from presets)`);
+        console.log(`  Safety: defaults + presets`);
+        console.log(`  Tip: set ANTHROPIC_API_KEY for deep LLM scan (reads CLAUDE.md, CI configs, source code)`);
+      }
 
       // Create or update .mcp.json
       const mcpPath = join(projectPath, ".mcp.json");
       let mcpConfig: Record<string, any> = {};
-
       if (existsSync(mcpPath)) {
-        try {
-          mcpConfig = JSON.parse(readFileSync(mcpPath, "utf-8"));
-        } catch {
-          mcpConfig = {};
-        }
+        try { mcpConfig = JSON.parse(readFileSync(mcpPath, "utf-8")); } catch { mcpConfig = {}; }
       }
-
       if (!mcpConfig.mcpServers) mcpConfig.mcpServers = {};
-      mcpConfig.mcpServers.axme = {
-        command: "axme-code",
-        args: ["serve"],
-      };
-
+      mcpConfig.mcpServers.axme = { command: "axme-code", args: ["serve"] };
       writeFileSync(mcpPath, JSON.stringify(mcpConfig, null, 2) + "\n", "utf-8");
-      console.log(`  .mcp.json: ${existsSync(mcpPath) ? "updated" : "created"}`);
+      console.log(`  .mcp.json: updated`);
 
-      // Add .axme-code/ to .gitignore if not already there
+      // Generate CLAUDE.md
+      generateClaudeMd(projectPath, isWorkspace);
+
+      // Add .axme-code/ to .gitignore
       const gitignorePath = join(projectPath, ".gitignore");
       if (existsSync(gitignorePath)) {
         const content = readFileSync(gitignorePath, "utf-8");
@@ -79,7 +168,6 @@ async function main() {
     }
 
     case "serve": {
-      // Import and start MCP server
       await import("./server.js");
       break;
     }
@@ -91,7 +179,6 @@ async function main() {
     }
 
     case "hook": {
-      // Hook subcommands: axme-code hook <hook-name> <json>
       const hookName = args[1];
       if (hookName === "post-tool-use") {
         const { runPostToolUseHook } = await import("./hooks/post-tool-use.js");
