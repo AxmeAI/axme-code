@@ -86,21 +86,9 @@ function hasAuth(): boolean {
   if (process.env.ANTHROPIC_API_KEY) return true;
 
   // Check Claude CLI OAuth tokens (from `claude login`)
+  // Claude stores credentials in ~/.claude/.credentials.json
   const claudeDir = join(homedir(), ".claude");
-  if (existsSync(claudeDir)) {
-    // Claude stores auth in ~/.claude/ after login
-    // Check for common auth indicators
-    if (existsSync(join(claudeDir, ".credentials"))) return true;
-    if (existsSync(join(claudeDir, "credentials.json"))) return true;
-    if (existsSync(join(claudeDir, "auth.json"))) return true;
-    // If ~/.claude/ exists with any config, claude login was likely done
-    try {
-      const files = require("node:fs").readdirSync(claudeDir);
-      if (files.some((f: string) => f.includes("credential") || f.includes("auth") || f.includes("token") || f.includes("oauth"))) return true;
-      // If settings exist, user has configured claude - likely authenticated
-      if (files.includes("settings.json") || files.includes("settings.local.json")) return true;
-    } catch {}
-  }
+  if (existsSync(join(claudeDir, ".credentials.json"))) return true;
 
   return false;
 }
