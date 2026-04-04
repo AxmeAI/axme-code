@@ -128,11 +128,24 @@ async function main() {
           }
         }
       } else {
-        const result = initProjectDeterministic(projectPath);
-        console.log(`  Oracle: ${result.oracle.files} files (deterministic)`);
-        console.log(`  Decisions: ${result.decisions.count} (${result.decisions.fromPresets} from presets)`);
-        console.log(`  Memories: ${result.memories.count} (${result.memories.fromPresets} from presets)`);
+        // Deterministic fallback (no API key)
+        const wsResult = initProjectDeterministic(projectPath);
+        console.log(`  Oracle: ${wsResult.oracle.files} files (deterministic)`);
+        console.log(`  Decisions: ${wsResult.decisions.count} (${wsResult.decisions.fromPresets} from presets)`);
+        console.log(`  Memories: ${wsResult.memories.count} (${wsResult.memories.fromPresets} from presets)`);
         console.log(`  Safety: defaults + presets`);
+
+        // If workspace, also init each repo deterministically
+        if (isWorkspace) {
+          const { existsSync } = await import("node:fs");
+          for (const project of ws.projects) {
+            const projPath = join(projectPath, project.path);
+            if (!existsSync(join(projPath, ".git"))) continue;
+            const r = initProjectDeterministic(projPath);
+            console.log(`  ${project.name}: ${r.decisions.count} decisions, ${r.memories.count} memories`);
+          }
+        }
+
         console.log(`  Tip: set ANTHROPIC_API_KEY for deep LLM scan (reads CLAUDE.md, CI configs, source code)`);
       }
 
