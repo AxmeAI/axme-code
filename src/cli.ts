@@ -11,7 +11,8 @@
 import { resolve, join } from "node:path";
 import { writeFileSync, existsSync, readFileSync, appendFileSync, mkdirSync } from "node:fs";
 import yaml from "js-yaml";
-import { initProjectDeterministic, initProjectWithLLM, initWorkspaceWithLLM } from "./tools/init.js";
+import { initProjectWithLLM, initWorkspaceWithLLM } from "./tools/init.js";
+import { homedir } from "node:os";
 import { statusTool } from "./tools/status.js";
 import { detectWorkspace } from "./utils/workspace-detector.js";
 import { atomicWrite, ensureDir } from "./storage/engine.js";
@@ -75,6 +76,33 @@ function generateClaudeMd(projectPath: string, isWorkspace: boolean): void {
     writeFileSync(claudeMdPath, section, "utf-8");
     console.log("  CLAUDE.md: created");
   }
+}
+
+/**
+ * Check if Claude auth is available (subscription OAuth or API key).
+ */
+function hasAuth(): boolean {
+  // Check API key
+  if (process.env.ANTHROPIC_API_KEY) return true;
+
+  // Check Claude CLI OAuth tokens (from `claude login`)
+  const claudeDir = join(homedir(), ".claude");
+  if (existsSync(claudeDir)) {
+    // Claude stores auth in ~/.claude/ after login
+    // Check for common auth indicators
+    if (existsSync(join(claudeDir, ".credentials"))) return true;
+    if (existsSync(join(claudeDir, "credentials.json"))) return true;
+    if (existsSync(join(claudeDir, "auth.json"))) return true;
+    // If ~/.claude/ exists with any config, claude login was likely done
+    try {
+      const files = require("node:fs").readdirSync(claudeDir);
+      if (files.some((f: string) => f.includes("credential") || f.includes("auth") || f.includes("token") || f.includes("oauth"))) return true;
+      // If settings exist, user has configured claude - likely authenticated
+      if (files.includes("settings.json") || files.includes("settings.local.json")) return true;
+    } catch {}
+  }
+
+  return false;
 }
 
 function generateWorkspaceYaml(workspacePath: string, ws: WorkspaceInfo): void {
@@ -158,53 +186,38 @@ async function main() {
         console.log(`Initializing AXME Code in ${projectPath}...`);
       }
 
-      // Init .axme-code/ - try LLM with timeout, fall back to deterministic if it fails
-      // Agent SDK uses Claude subscription credentials (OAuth) or ANTHROPIC_API_KEY
-      const LLM_TIMEOUT_MS = 10 * 60 * 1000; // 10 min per project max
-      const withTimeout = <T>(promise: Promise<T>, ms: number): Promise<T> =>
-        Promise.race([promise, new Promise<never>((_, reject) => setTimeout(() => reject(new Error("LLM init timed out")), ms))]);
+      // Pre-flight auth check
+      if (!hasAuth()) {
+        console.error(`\nError: No Claude authentication found.\n`);
+        console.error(`AXME Code requires Claude subscription or API access for LLM scanning.`);
+        console.error(`To authenticate, run one of:`);
+        console.error(`  claude login              (Claude subscription)`);
+        console.error(`  export ANTHROPIC_API_KEY=sk-ant-...  (API key)\n`);
+        process.exit(1);
+      }
 
-      try {
-        if (isWorkspace) {
-          const { workspaceResult, projectResults } = await withTimeout(initWorkspaceWithLLM(projectPath), LLM_TIMEOUT_MS * ws.projects.length);
-          const totalCost = workspaceResult.cost.costUsd + projectResults.reduce((s, r) => s + r.cost.costUsd, 0);
-          console.log(`  Workspace: oracle ${workspaceResult.oracle.llm ? "LLM" : "deterministic"}, ${workspaceResult.decisions.count} decisions, ${workspaceResult.memories.count} memories`);
-          for (const r of projectResults) {
-            const name = r.projectPath.split("/").pop();
-            console.log(`  ${name}: ${r.decisions.count} decisions (${r.decisions.fromScan} LLM + ${r.decisions.fromPresets} presets)`);
-          }
-          if (totalCost > 0) console.log(`  Total cost: $${totalCost.toFixed(2)}`);
-          if (workspaceResult.errors.length > 0) {
-            for (const e of workspaceResult.errors) console.log(`  Warning: ${e}`);
-          }
-        } else {
-          const result = await withTimeout(initProjectWithLLM(projectPath), LLM_TIMEOUT_MS);
-          console.log(`  Oracle: ${result.oracle.files} files (${result.oracle.llm ? "LLM scan" : "deterministic"})`);
-          console.log(`  Decisions: ${result.decisions.count} (${result.decisions.fromScan} LLM + ${result.decisions.fromPresets} presets)`);
-          console.log(`  Memories: ${result.memories.count} (${result.memories.fromPresets} from presets)`);
-          console.log(`  Safety: ${result.safety.llm ? "LLM scan" : "defaults + presets"}`);
-          if (result.cost.costUsd > 0) console.log(`  Cost: $${result.cost.costUsd.toFixed(2)}, ${(result.durationMs / 1000).toFixed(1)}s`);
-          if (result.errors.length > 0) {
-            for (const e of result.errors) console.log(`  Warning: ${e}`);
-          }
+      // Init with LLM scanners (parallel)
+      if (isWorkspace) {
+        const { workspaceResult, projectResults } = await initWorkspaceWithLLM(projectPath);
+        const totalCost = workspaceResult.cost.costUsd + projectResults.reduce((s, r) => s + r.cost.costUsd, 0);
+        console.log(`  Workspace: ${workspaceResult.decisions.count} decisions, ${workspaceResult.memories.count} memories`);
+        for (const r of projectResults) {
+          const name = r.projectPath.split("/").pop();
+          console.log(`  ${name}: ${r.decisions.count} decisions (${r.decisions.fromScan} LLM + ${r.decisions.fromPresets} presets)`);
         }
-      } catch (err: any) {
-        // LLM init failed entirely - fall back to deterministic
-        console.log(`  LLM init failed (${err.message}), using deterministic fallback...`);
-        const wsResult = initProjectDeterministic(projectPath);
-        console.log(`  Oracle: ${wsResult.oracle.files} files (deterministic)`);
-        console.log(`  Decisions: ${wsResult.decisions.count} (${wsResult.decisions.fromPresets} from presets)`);
-        console.log(`  Memories: ${wsResult.memories.count} (${wsResult.memories.fromPresets} from presets)`);
-
-        if (isWorkspace) {
-          for (const project of ws.projects) {
-            const projPath = join(projectPath, project.path);
-            if (!existsSync(join(projPath, ".git"))) continue;
-            const r = initProjectDeterministic(projPath);
-            console.log(`  ${project.name}: ${r.decisions.count} decisions, ${r.memories.count} memories`);
-          }
-          generateWorkspaceYaml(projectPath, ws);
+        if (totalCost > 0) console.log(`  Total cost: $${totalCost.toFixed(2)}`);
+        for (const e of [...workspaceResult.errors, ...projectResults.flatMap(r => r.errors)]) {
+          console.log(`  Warning: ${e}`);
         }
+        generateWorkspaceYaml(projectPath, ws);
+      } else {
+        const result = await initProjectWithLLM(projectPath);
+        console.log(`  Oracle: ${result.oracle.files} files (${result.oracle.llm ? "LLM scan" : "deterministic fallback"})`);
+        console.log(`  Decisions: ${result.decisions.count} (${result.decisions.fromScan} LLM + ${result.decisions.fromPresets} presets)`);
+        console.log(`  Memories: ${result.memories.count} (${result.memories.fromPresets} from presets)`);
+        console.log(`  Safety: ${result.safety.llm ? "LLM scan" : "defaults + presets"}`);
+        if (result.cost.costUsd > 0) console.log(`  Cost: $${result.cost.costUsd.toFixed(2)}, ${(result.durationMs / 1000).toFixed(1)}s`);
+        for (const e of result.errors) console.log(`  Warning: ${e}`);
       }
 
       // Create or update .mcp.json
