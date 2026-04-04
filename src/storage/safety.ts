@@ -154,15 +154,35 @@ export function showSafety(projectPath: string): string {
 export type SafetyVerdict = { allowed: true } | { allowed: false; reason: string };
 
 /**
+ * Strip quoted content from a command string so safety checks
+ * don't match text inside commit messages, PR bodies, echo args, etc.
+ */
+function stripQuoted(command: string): string {
+  let result = "";
+  let inSingle = false;
+  let inDouble = false;
+  let i = 0;
+  while (i < command.length) {
+    const ch = command[i];
+    if (ch === "\\" && !inSingle && i + 1 < command.length) { i += 2; continue; }
+    if (ch === "'" && !inDouble) { inSingle = !inSingle; i++; continue; }
+    if (ch === '"' && !inSingle) { inDouble = !inDouble; i++; continue; }
+    if (!inSingle && !inDouble) result += ch;
+    i++;
+  }
+  return result;
+}
+
+/**
  * Check if a bash command is safe.
  */
 export function checkBash(rules: SafetyRules, command: string): SafetyVerdict {
-  const trimmed = command.trim();
-  const firstCmd = trimmed.split("|")[0].trim();
-  const pipeNormalized = trimmed.split("|").map(s => s.trim().split(/\s+/)[0]).join(" | ");
+  const stripped = stripQuoted(command.trim());
+  const firstCmd = stripped.split("|")[0].trim();
+  const pipeNormalized = stripped.split("|").map(s => s.trim().split(/\s+/)[0]).join(" | ");
 
   for (const denied of rules.bash.deniedCommands) {
-    if (trimmed.includes(denied)) return { allowed: false, reason: `Denied command: ${denied}` };
+    if (stripped.includes(denied)) return { allowed: false, reason: `Denied command: ${denied}` };
   }
   for (const prefix of rules.bash.deniedPrefixes) {
     if (firstCmd.startsWith(prefix)) return { allowed: false, reason: `Denied prefix: ${prefix}` };
@@ -171,7 +191,7 @@ export function checkBash(rules: SafetyRules, command: string): SafetyVerdict {
         return { allowed: false, reason: `Denied prefix: ${prefix}` };
       }
     } else {
-      for (const seg of trimmed.split("|").map(s => s.trim())) {
+      for (const seg of stripped.split("|").map(s => s.trim())) {
         if (seg.startsWith(prefix)) return { allowed: false, reason: `Denied prefix: ${prefix}` };
       }
     }
@@ -183,18 +203,18 @@ export function checkBash(rules: SafetyRules, command: string): SafetyVerdict {
  * Check if a git operation is safe.
  */
 export function checkGit(rules: SafetyRules, command: string): SafetyVerdict {
-  const trimmed = command.trim();
-  if (!rules.git.allowForcePush && (trimmed.includes("--force") || trimmed.includes("-f"))) {
-    if (trimmed.startsWith("git push")) return { allowed: false, reason: "Force push is not allowed" };
+  const stripped = stripQuoted(command.trim());
+  if (!rules.git.allowForcePush && (stripped.includes("--force") || stripped.includes("-f"))) {
+    if (stripped.startsWith("git push")) return { allowed: false, reason: "Force push is not allowed" };
   }
   if (!rules.git.allowDirectPushToMain) {
     for (const branch of rules.git.protectedBranches) {
-      if (trimmed.includes(`push origin ${branch}`) || trimmed.includes(`push upstream ${branch}`)) {
+      if (stripped.includes(`push origin ${branch}`) || stripped.includes(`push upstream ${branch}`)) {
         return { allowed: false, reason: `Direct push to ${branch} is not allowed` };
       }
     }
   }
-  if (trimmed.includes("reset --hard")) {
+  if (stripped.includes("reset --hard")) {
     return { allowed: false, reason: "git reset --hard is not allowed (destroys uncommitted work)" };
   }
   return { allowed: true };
