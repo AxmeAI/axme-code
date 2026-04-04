@@ -17,8 +17,8 @@ import { saveDecisionTool } from "./tools/decision-tools.js";
 import { updateSafetyTool, showSafetyTool } from "./tools/safety-tools.js";
 import { statusTool, worklogTool } from "./tools/status.js";
 import { detectWorkspace } from "./utils/workspace-detector.js";
-import { createSession } from "./storage/sessions.js";
-import { logSessionStart } from "./storage/worklog.js";
+import { createSession, writeActiveSession, clearActiveSession, closeSession, loadSession } from "./storage/sessions.js";
+import { logSessionStart, logSessionEnd } from "./storage/worklog.js";
 
 // --- Server state (detected at startup from cwd) ---
 
@@ -31,7 +31,27 @@ const defaultWorkspacePath = isWorkspace ? serverCwd : null;
 // --- Session (one MCP server instance = one session) ---
 
 const currentSession = createSession(defaultProjectPath);
+writeActiveSession(defaultProjectPath, currentSession.id);
 logSessionStart(defaultProjectPath, currentSession.id);
+
+// Clean up session on process exit
+function onExit() {
+  try {
+    // Read latest session data from disk (hooks may have updated it)
+    const latest = loadSession(defaultProjectPath, currentSession.id);
+    closeSession(defaultProjectPath, currentSession.id);
+    clearActiveSession(defaultProjectPath);
+    logSessionEnd(defaultProjectPath, currentSession.id, {
+      turns: latest?.turns ?? 0,
+      filesChanged: latest?.filesChanged ?? [],
+    });
+  } catch {
+    // Best-effort cleanup
+  }
+}
+process.on("exit", onExit);
+process.on("SIGINT", () => { onExit(); process.exit(0); });
+process.on("SIGTERM", () => { onExit(); process.exit(0); });
 
 // --- Build instructions for Claude Code ---
 

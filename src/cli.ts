@@ -118,20 +118,28 @@ function configureHooks(projectPath: string): void {
     try { settings = JSON.parse(readFileSync(settingsPath, "utf-8")); } catch { settings = {}; }
   }
 
-  // Check if hooks already configured
-  if (settings.hooks?.PostToolUse?.some?.((h: any) => JSON.stringify(h).includes("axme-code"))) {
-    return; // already configured
+  // Remove old hooks (without --workspace) and re-create with correct path
+  if (settings.hooks?.PostToolUse) {
+    settings.hooks.PostToolUse = settings.hooks.PostToolUse.filter(
+      (h: any) => !JSON.stringify(h).includes("axme-code"),
+    );
+  }
+  if (settings.hooks?.SessionEnd) {
+    settings.hooks.SessionEnd = settings.hooks.SessionEnd.filter(
+      (h: any) => !JSON.stringify(h).includes("axme-code"),
+    );
   }
 
   if (!settings.hooks) settings.hooks = {};
 
   // PostToolUse: track filesChanged after Edit/Write
+  // --workspace is hardcoded so hooks always write to workspace root, regardless of cwd
   if (!settings.hooks.PostToolUse) settings.hooks.PostToolUse = [];
   settings.hooks.PostToolUse.push({
     matcher: "Edit|Write|NotebookEdit",
     hooks: [{
       type: "command",
-      command: "axme-code hook post-tool-use",
+      command: `axme-code hook post-tool-use --workspace ${projectPath}`,
       timeout: 10,
     }],
   });
@@ -141,7 +149,7 @@ function configureHooks(projectPath: string): void {
   settings.hooks.SessionEnd.push({
     hooks: [{
       type: "command",
-      command: "axme-code hook session-end",
+      command: `axme-code hook session-end --workspace ${projectPath}`,
       timeout: 120,
     }],
   });
@@ -292,12 +300,16 @@ async function main() {
 
     case "hook": {
       const hookName = args[1];
+      // Parse --workspace flag from CLI args
+      const wsIdx = args.indexOf("--workspace");
+      const workspacePath = wsIdx >= 0 && args[wsIdx + 1] ? args[wsIdx + 1] : undefined;
+
       if (hookName === "post-tool-use") {
         const { runPostToolUseHook } = await import("./hooks/post-tool-use.js");
-        await runPostToolUseHook();
+        await runPostToolUseHook(workspacePath);
       } else if (hookName === "session-end") {
         const { runSessionEndHook } = await import("./hooks/session-end.js");
-        await runSessionEndHook();
+        await runSessionEndHook(workspacePath);
       }
       break;
     }

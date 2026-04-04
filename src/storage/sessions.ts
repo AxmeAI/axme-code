@@ -2,19 +2,53 @@
  * Session Manager - tracks MCP server sessions.
  *
  * Location: .axme-code/sessions/<uuid>/meta.json
+ * Active session pointer: .axme-code/active-session (contains UUID)
+ *
+ * Hooks use readActiveSession() to find the current session ID
+ * instead of relying on Claude Code's session_id.
  */
 
 import { join } from "node:path";
 import { readdirSync, readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { ensureDir, writeJson, readJson, pathExists } from "./engine.js";
+import { ensureDir, writeJson, readJson, pathExists, atomicWrite, removeFile, readSafe } from "./engine.js";
 import type { SessionMeta } from "../types.js";
 import { AXME_CODE_DIR } from "../types.js";
 
 const SESSIONS_DIR = "sessions";
+const ACTIVE_SESSION_FILE = "active-session";
 
 function sessionsRoot(projectPath: string): string {
   return join(projectPath, AXME_CODE_DIR, SESSIONS_DIR);
+}
+
+function activeSessionPath(projectPath: string): string {
+  return join(projectPath, AXME_CODE_DIR, ACTIVE_SESSION_FILE);
+}
+
+/**
+ * Write the active session ID to .axme-code/active-session.
+ * Hooks read this file to determine which session to write to.
+ */
+export function writeActiveSession(projectPath: string, sessionId: string): void {
+  ensureDir(join(projectPath, AXME_CODE_DIR));
+  atomicWrite(activeSessionPath(projectPath), sessionId);
+}
+
+/**
+ * Read the active session ID from .axme-code/active-session.
+ * Returns null if no active session.
+ */
+export function readActiveSession(projectPath: string): string | null {
+  const content = readSafe(activeSessionPath(projectPath)).trim();
+  return content || null;
+}
+
+/**
+ * Remove the active-session pointer (called on process exit).
+ */
+export function clearActiveSession(projectPath: string): void {
+  removeFile(activeSessionPath(projectPath));
 }
 
 export function initSessionStore(projectPath: string): void {
