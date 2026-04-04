@@ -21,6 +21,42 @@ interface HookInput {
   tool_input: Record<string, any>;
 }
 
+/**
+ * Split a shell command into executable segments by &&, ||, ;, and |.
+ * Respects quoted strings so "git reset" inside quotes is not a segment.
+ */
+function splitCommandSegments(command: string): string[] {
+  const segments: string[] = [];
+  let current = "";
+  let inSingle = false;
+  let inDouble = false;
+  let i = 0;
+  while (i < command.length) {
+    const ch = command[i];
+    if (ch === "'" && !inDouble) { inSingle = !inSingle; current += ch; i++; continue; }
+    if (ch === '"' && !inSingle) { inDouble = !inDouble; current += ch; i++; continue; }
+    if (ch === "\\" && i + 1 < command.length) { current += ch + command[i + 1]; i += 2; continue; }
+    if (!inSingle && !inDouble) {
+      if ((ch === "&" && command[i + 1] === "&") || (ch === "|" && command[i + 1] === "|")) {
+        segments.push(current);
+        current = "";
+        i += 2;
+        continue;
+      }
+      if (ch === "|" || ch === ";" ) {
+        segments.push(current);
+        current = "";
+        i++;
+        continue;
+      }
+    }
+    current += ch;
+    i++;
+  }
+  if (current.trim()) segments.push(current);
+  return segments;
+}
+
 function deny(reason: string): void {
   const output = {
     hookSpecificOutput: {
@@ -45,8 +81,14 @@ function handlePreToolUse(workspacePath: string, event: HookInput): void {
       const command = (tool_input.command as string) ?? "";
       verdict = checkBash(rules, command);
       if (!verdict.allowed) break;
-      if (/\bgit\b/.test(command)) {
-        verdict = checkGit(rules, command);
+      // Only apply git checks to command segments that actually invoke git,
+      // not to text arguments that happen to contain "git" (e.g. PR body text).
+      for (const seg of splitCommandSegments(command)) {
+        const trimSeg = seg.trim();
+        if (/^\s*git\b/.test(trimSeg)) {
+          verdict = checkGit(rules, trimSeg);
+          if (!verdict.allowed) break;
+        }
       }
       break;
     }
