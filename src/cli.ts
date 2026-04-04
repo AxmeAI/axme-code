@@ -79,18 +79,19 @@ function generateClaudeMd(projectPath: string, isWorkspace: boolean): void {
 }
 
 /**
- * Check if Claude auth is available (subscription OAuth or API key).
+ * Check if Claude auth is available by running `claude --version`.
+ * If claude CLI is installed and authenticated, it exits 0.
  */
 function hasAuth(): boolean {
-  // Check API key
   if (process.env.ANTHROPIC_API_KEY) return true;
 
-  // Check Claude CLI OAuth tokens (from `claude login`)
-  // Claude stores credentials in ~/.claude/.credentials.json
-  const claudeDir = join(homedir(), ".claude");
-  if (existsSync(join(claudeDir, ".credentials.json"))) return true;
-
-  return false;
+  try {
+    const { execSync } = require("node:child_process");
+    execSync("claude --version", { stdio: "pipe", timeout: 5000 });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function generateWorkspaceYaml(workspacePath: string, ws: WorkspaceInfo): void {
