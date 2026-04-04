@@ -9,7 +9,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
-import { initProject } from "./tools/init.js";
+import { initProjectWithLLM } from "./tools/init.js";
 import { getFullContext, getOracle, getDecisions } from "./tools/context.js";
 import { saveMemoryTool, searchMemoryTool } from "./tools/memory-tools.js";
 import { saveDecisionTool } from "./tools/decision-tools.js";
@@ -30,23 +30,24 @@ server.tool(
     presets: z.array(z.string()).optional().describe("Preset bundle IDs to apply (default: essential-safety, ai-agent-guardrails)"),
   },
   async ({ project_path, presets }) => {
-    const result = initProject(project_path, { presets });
+    const result = await initProjectWithLLM(project_path, { presets });
     const status = result.created ? "Created" : "Updated";
-    return {
-      content: [{
-        type: "text" as const,
-        text: [
-          `${status} .axme-code/ in ${result.projectPath}`,
-          `Oracle: ${result.oracle.files} files`,
-          `Decisions: ${result.decisions.count} (${result.decisions.fromPresets} from presets)`,
-          `Memories: ${result.memories.count} (${result.memories.fromPresets} from presets)`,
-          `Safety: ${result.safety ? "created" : "exists"}`,
-          `Config: ${result.config ? "created" : "exists"}`,
-          "",
-          "Project initialized. Use axme_context to read the knowledge base.",
-        ].join("\n"),
-      }],
-    };
+    const costStr = result.cost.costUsd > 0 ? ` ($${result.cost.costUsd.toFixed(2)})` : "";
+    const durationStr = `${(result.durationMs / 1000).toFixed(1)}s`;
+    const lines = [
+      `${status} .axme-code/ in ${result.projectPath}`,
+      `Oracle: ${result.oracle.files} files${result.oracle.llm ? " (LLM scan)" : " (deterministic)"}`,
+      `Decisions: ${result.decisions.count} total (${result.decisions.fromScan} from LLM scan, ${result.decisions.fromPresets} from presets)`,
+      `Memories: ${result.memories.count} (${result.memories.fromPresets} from presets)`,
+      `Safety: ${result.safety.llm ? "LLM scan" : "defaults + presets"}${result.safety.summary ? ` - ${result.safety.summary}` : ""}`,
+      `Config: ${result.config ? "created" : "exists"}`,
+      `Init completed in ${durationStr}${costStr}`,
+    ];
+    if (result.errors.length > 0) {
+      lines.push("", "Warnings:", ...result.errors.map(e => `- ${e}`));
+    }
+    lines.push("", "Use axme_context to read the full knowledge base.");
+    return { content: [{ type: "text" as const, text: lines.join("\n") }] };
   },
 );
 

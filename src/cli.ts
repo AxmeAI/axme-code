@@ -9,7 +9,7 @@
 
 import { resolve, join } from "node:path";
 import { writeFileSync, existsSync, readFileSync } from "node:fs";
-import { initProject } from "./tools/init.js";
+import { initProjectDeterministic } from "./tools/init.js";
 import { statusTool } from "./tools/status.js";
 
 const args = process.argv.slice(2);
@@ -33,12 +33,12 @@ async function main() {
       const projectPath = resolve(args[1] || ".");
       console.log(`Initializing AXME Code in ${projectPath}...`);
 
-      // Init .axme-code/
-      const result = initProject(projectPath);
-      console.log(`  Oracle: ${result.oracle.files} files`);
+      // Init .axme-code/ (deterministic only, LLM scan runs via axme_init tool in Claude)
+      const result = initProjectDeterministic(projectPath);
+      console.log(`  Oracle: ${result.oracle.files} files (deterministic - run axme_init in Claude for LLM scan)`);
       console.log(`  Decisions: ${result.decisions.count} (${result.decisions.fromPresets} from presets)`);
       console.log(`  Memories: ${result.memories.count} (${result.memories.fromPresets} from presets)`);
-      console.log(`  Safety: ${result.safety ? "created" : "exists"}`);
+      console.log(`  Safety: ${result.safety.created ? "created" : "exists"}`);
 
       // Create or update .mcp.json
       const mcpPath = join(projectPath, ".mcp.json");
@@ -87,6 +87,19 @@ async function main() {
     case "status": {
       const projectPath = resolve(args[1] || ".");
       console.log(statusTool(projectPath));
+      break;
+    }
+
+    case "hook": {
+      // Hook subcommands: axme-code hook <hook-name> <json>
+      const hookName = args[1];
+      if (hookName === "post-tool-use") {
+        const { runPostToolUseHook } = await import("./hooks/post-tool-use.js");
+        await runPostToolUseHook();
+      } else if (hookName === "session-end") {
+        const { runSessionEndHook } = await import("./hooks/session-end.js");
+        await runSessionEndHook();
+      }
       break;
     }
 
