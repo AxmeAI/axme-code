@@ -73,10 +73,6 @@ function generateClaudeMd(projectPath: string, isWorkspace: boolean): void {
   }
 }
 
-function hasApiKey(): boolean {
-  return !!process.env.ANTHROPIC_API_KEY;
-}
-
 function usage(): void {
   console.log(`AXME Code - MCP server for Claude Code CLI
 
@@ -102,8 +98,9 @@ async function main() {
         console.log(`Initializing AXME Code in ${projectPath}...`);
       }
 
-      // Init .axme-code/ - LLM if API key available, deterministic fallback
-      if (hasApiKey()) {
+      // Init .axme-code/ - always try LLM, fall back to deterministic if it fails
+      // Agent SDK uses Claude subscription credentials (OAuth) or ANTHROPIC_API_KEY
+      try {
         if (isWorkspace) {
           const { workspaceResult, projectResults } = await initWorkspaceWithLLM(projectPath);
           const totalCost = workspaceResult.cost.costUsd + projectResults.reduce((s, r) => s + r.cost.costUsd, 0);
@@ -112,7 +109,7 @@ async function main() {
             const name = r.projectPath.split("/").pop();
             console.log(`  ${name}: ${r.decisions.count} decisions (${r.decisions.fromScan} LLM + ${r.decisions.fromPresets} presets)`);
           }
-          console.log(`  Total cost: $${totalCost.toFixed(2)}`);
+          if (totalCost > 0) console.log(`  Total cost: $${totalCost.toFixed(2)}`);
           if (workspaceResult.errors.length > 0) {
             for (const e of workspaceResult.errors) console.log(`  Warning: ${e}`);
           }
@@ -122,22 +119,20 @@ async function main() {
           console.log(`  Decisions: ${result.decisions.count} (${result.decisions.fromScan} LLM + ${result.decisions.fromPresets} presets)`);
           console.log(`  Memories: ${result.memories.count} (${result.memories.fromPresets} from presets)`);
           console.log(`  Safety: ${result.safety.llm ? "LLM scan" : "defaults + presets"}`);
-          console.log(`  Cost: $${result.cost.costUsd.toFixed(2)}, ${(result.durationMs / 1000).toFixed(1)}s`);
+          if (result.cost.costUsd > 0) console.log(`  Cost: $${result.cost.costUsd.toFixed(2)}, ${(result.durationMs / 1000).toFixed(1)}s`);
           if (result.errors.length > 0) {
             for (const e of result.errors) console.log(`  Warning: ${e}`);
           }
         }
-      } else {
-        // Deterministic fallback (no API key)
+      } catch (err: any) {
+        // LLM init failed entirely - fall back to deterministic
+        console.log(`  LLM init failed (${err.message}), using deterministic fallback...`);
         const wsResult = initProjectDeterministic(projectPath);
         console.log(`  Oracle: ${wsResult.oracle.files} files (deterministic)`);
         console.log(`  Decisions: ${wsResult.decisions.count} (${wsResult.decisions.fromPresets} from presets)`);
         console.log(`  Memories: ${wsResult.memories.count} (${wsResult.memories.fromPresets} from presets)`);
-        console.log(`  Safety: defaults + presets`);
 
-        // If workspace, also init each repo deterministically
         if (isWorkspace) {
-          const { existsSync } = await import("node:fs");
           for (const project of ws.projects) {
             const projPath = join(projectPath, project.path);
             if (!existsSync(join(projPath, ".git"))) continue;
@@ -145,8 +140,6 @@ async function main() {
             console.log(`  ${project.name}: ${r.decisions.count} decisions, ${r.memories.count} memories`);
           }
         }
-
-        console.log(`  Tip: set ANTHROPIC_API_KEY for deep LLM scan (reads CLAUDE.md, CI configs, source code)`);
       }
 
       // Create or update .mcp.json
