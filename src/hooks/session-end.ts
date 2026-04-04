@@ -18,6 +18,7 @@ import { saveMemories } from "../storage/memory.js";
 import { addDecision, listDecisions } from "../storage/decisions.js";
 import { updateSafetyRule } from "../storage/safety.js";
 import { writeOracleFiles, oracleContext } from "../storage/oracle.js";
+import { writeHandoff } from "../storage/plans.js";
 import { closeSession, loadSession, readActiveSession, clearActiveSession } from "../storage/sessions.js";
 import { pathExists } from "../storage/engine.js";
 import { join } from "node:path";
@@ -64,6 +65,8 @@ async function handleSessionEnd(workspacePath: string): Promise<void> {
           updateSafetyRule(workspacePath, r.ruleType as any, r.value);
         }
       }
+
+      if (audit.handoff) writeHandoff(workspacePath, audit.handoff);
 
       if (audit.oracleNeedsRescan && filesChanged.length > 0) {
         try {

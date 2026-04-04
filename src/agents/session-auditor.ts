@@ -11,7 +11,7 @@
  * Budget: $0.30
  */
 
-import type { Memory, Decision } from "../types.js";
+import type { Memory, Decision, SessionHandoff } from "../types.js";
 import { extractCostFromResult, zeroCost, type CostInfo } from "../utils/cost-extractor.js";
 import { toMemorySlug } from "../storage/memory.js";
 import { toSlug } from "../storage/decisions.js";
@@ -21,6 +21,7 @@ export interface SessionAuditResult {
   decisions: Omit<Decision, "id">[];
   safetyRules: Array<{ ruleType: string; value: string }>;
   oracleNeedsRescan: boolean;
+  handoff: SessionHandoff | null;
   cost: CostInfo;
   durationMs: number;
 }
@@ -70,6 +71,16 @@ value: <the command/path/branch>
 Did the project structure or stack change significantly in this session?
 Answer YES or NO.
 If YES, briefly describe what changed (new directories, new dependencies, renamed files).
+###END###
+
+###HANDOFF###
+Summarize what the next session needs to know to continue this work:
+
+stopped_at: <what was the agent working on when session ended, or "nothing" if clean>
+in_progress: <what tasks/PRs/branches are mid-work, or "none">
+blockers: <any blockers or issues discovered, or "none">
+next: <concrete next steps, or "none">
+dirty_branches: <git branches with uncommitted or unpushed work, or "none">
 ###END###
 
 Rules:
@@ -218,7 +229,22 @@ export function parseAuditOutput(output: string, sessionId: string): Omit<Sessio
     oracleNeedsRescan = true;
   }
 
-  return { memories, decisions, safetyRules, oracleNeedsRescan };
+  // Parse handoff
+  let handoff: SessionHandoff | null = null;
+  const handoffSection = extractSection(output, "HANDOFF");
+  if (handoffSection) {
+    const stoppedAt = getField(handoffSection, "stopped_at");
+    const inProgress = getField(handoffSection, "in_progress");
+    const blockers = getField(handoffSection, "blockers");
+    const next = getField(handoffSection, "next");
+    const dirtyBranches = getField(handoffSection, "dirty_branches");
+    const hasContent = [stoppedAt, inProgress, next].some(v => v && v !== "none" && v !== "nothing");
+    if (hasContent) {
+      handoff = { stoppedAt, inProgress, blockers, next, dirtyBranches };
+    }
+  }
+
+  return { memories, decisions, safetyRules, oracleNeedsRescan, handoff };
 }
 
 function extractSection(output: string, name: string): string | null {

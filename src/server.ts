@@ -17,7 +17,7 @@ import { saveDecisionTool } from "./tools/decision-tools.js";
 import { updateSafetyTool, showSafetyTool } from "./tools/safety-tools.js";
 import { statusTool, worklogTool } from "./tools/status.js";
 import { detectWorkspace } from "./utils/workspace-detector.js";
-import { createSession, writeActiveSession, clearActiveSession, closeSession, loadSession } from "./storage/sessions.js";
+import { createSession, writeActiveSession, clearActiveSession, closeSession, loadSession, incrementTurns } from "./storage/sessions.js";
 import { logSessionStart, logSessionEnd } from "./storage/worklog.js";
 
 // --- Server state (detected at startup from cwd) ---
@@ -33,6 +33,21 @@ const defaultWorkspacePath = isWorkspace ? serverCwd : null;
 const currentSession = createSession(defaultProjectPath);
 writeActiveSession(defaultProjectPath, currentSession.id);
 logSessionStart(defaultProjectPath, currentSession.id);
+
+// Turn counter: bump once per conversation turn (debounced 10s).
+// Within one assistant response, tool calls fire back-to-back (<1s apart).
+// Between turns there is always a human pause (>10s). So 10s threshold
+// reliably separates turns without over-counting.
+let lastTurnBumpAt = 0;
+const TURN_DEBOUNCE_MS = 10_000;
+
+function bumpTurn(): void {
+  const now = Date.now();
+  if (now - lastTurnBumpAt > TURN_DEBOUNCE_MS) {
+    incrementTurns(defaultProjectPath, currentSession.id);
+  }
+  lastTurnBumpAt = now;
+}
 
 // Clean up session on process exit
 function onExit() {
@@ -99,6 +114,7 @@ server.tool(
     workspace_path: z.string().optional().describe("Absolute path to workspace root (defaults to detected workspace)"),
   },
   async ({ project_path, workspace_path }) => {
+    bumpTurn();
     return { content: [{ type: "text" as const, text: getFullContext(pp(project_path), wp(workspace_path)) }] };
   },
 );
@@ -111,6 +127,7 @@ server.tool(
     project_path: z.string().optional().describe("Absolute path to the project root (defaults to server cwd)"),
   },
   async ({ project_path }) => {
+    bumpTurn();
     return { content: [{ type: "text" as const, text: getOracle(pp(project_path)) }] };
   },
 );
@@ -123,6 +140,7 @@ server.tool(
     project_path: z.string().optional().describe("Absolute path to the project root (defaults to server cwd)"),
   },
   async ({ project_path }) => {
+    bumpTurn();
     return { content: [{ type: "text" as const, text: getDecisions(pp(project_path)) }] };
   },
 );
@@ -141,6 +159,7 @@ server.tool(
     scope: z.array(z.string()).optional().describe("Project scope (omit for current project only)"),
   },
   async ({ project_path, type, title, description, body, keywords, scope }) => {
+    bumpTurn();
     const result = saveMemoryTool(pp(project_path), { type, title, description, body, keywords, scope }, currentSession.id);
     return { content: [{ type: "text" as const, text: `Memory saved: ${result.slug} (${type})` }] };
   },
@@ -155,6 +174,7 @@ server.tool(
     query: z.string().describe("Search query (keywords)"),
   },
   async ({ project_path, query }) => {
+    bumpTurn();
     const result = searchMemoryTool(pp(project_path), query);
     if (result.count === 0) return { content: [{ type: "text" as const, text: "No matching memories found." }] };
     const lines = result.results.map(m => `- **${m.title}** [${m.type}]: ${m.description}`);
@@ -175,6 +195,7 @@ server.tool(
     scope: z.array(z.string()).optional().describe("Project scope"),
   },
   async ({ project_path, title, decision, reasoning, enforce, scope }) => {
+    bumpTurn();
     const result = saveDecisionTool(pp(project_path), { title, decision, reasoning, enforce, scope });
     return { content: [{ type: "text" as const, text: `Decision saved: ${result.id} - ${title}` }] };
   },
@@ -190,6 +211,7 @@ server.tool(
     value: z.string().describe("Rule value (branch name, command prefix, or file path pattern)"),
   },
   async ({ project_path, rule_type, value }) => {
+    bumpTurn();
     const result = updateSafetyTool(pp(project_path), rule_type, value);
     return { content: [{ type: "text" as const, text: `Safety rule added: ${result.ruleType} = ${result.value}` }] };
   },
@@ -203,6 +225,7 @@ server.tool(
     project_path: z.string().optional().describe("Absolute path to the project root (defaults to server cwd)"),
   },
   async ({ project_path }) => {
+    bumpTurn();
     return { content: [{ type: "text" as const, text: showSafetyTool(pp(project_path)) }] };
   },
 );
@@ -215,6 +238,7 @@ server.tool(
     project_path: z.string().optional().describe("Absolute path to the project root (defaults to server cwd)"),
   },
   async ({ project_path }) => {
+    bumpTurn();
     return { content: [{ type: "text" as const, text: statusTool(pp(project_path)) }] };
   },
 );
@@ -228,6 +252,7 @@ server.tool(
     limit: z.number().optional().describe("Max events to show (default: 20)"),
   },
   async ({ project_path, limit }) => {
+    bumpTurn();
     return { content: [{ type: "text" as const, text: worklogTool(pp(project_path), limit) }] };
   },
 );
@@ -240,6 +265,7 @@ server.tool(
     path: z.string().optional().describe("Absolute path to check (defaults to server cwd)"),
   },
   async ({ path }) => {
+    bumpTurn();
     const ws = detectWorkspace(path || serverCwd);
     if (ws.type === "single") {
       return { content: [{ type: "text" as const, text: `Single project (not a workspace): ${ws.root}` }] };
