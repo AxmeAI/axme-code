@@ -24,6 +24,11 @@ import { extractCostFromResult, zeroCost, type CostInfo } from "../utils/cost-ex
 import { toMemorySlug } from "../storage/memory.js";
 import { toSlug, listDecisions } from "../storage/decisions.js";
 import { listMemories } from "../storage/memory.js";
+import {
+  renderConversationChunk,
+  splitTurnsIntoChunks,
+  type ConversationTurn,
+} from "../transcript-parser.js";
 
 export interface SessionAuditResult {
   memories: Memory[];
@@ -33,7 +38,28 @@ export interface SessionAuditResult {
   handoff: SessionHandoff | null;
   cost: CostInfo;
   durationMs: number;
+  /** Number of LLM calls made for this audit (1 for short sessions, 2+ for chunked). */
+  chunks?: number;
+  /** Estimated prompt tokens for observability. */
+  promptTokens?: number;
 }
+
+/**
+ * Maximum size of transcript content per LLM call, in characters. Roughly
+ * 150K tokens. Combined with ~30K for system prompt + workspace/existing
+ * context = ~180K total prompt, safely under the 200K single-message cap
+ * we observed in Claude Agent SDK for both Opus 4.6 and Sonnet 4.6.
+ *
+ * At 4 chars/token: 600_000 chars.
+ */
+const PER_CHUNK_TRANSCRIPT_BUDGET = 600_000;
+
+/**
+ * Soft limit on existing-context section. If accumulated decisions/memories
+ * exceed this, we truncate (keep the most recent). Prevents the existing-
+ * context section from eating the chunk budget as the project grows.
+ */
+const EXISTING_CONTEXT_MAX_CHARS = 60_000;
 
 const AUDIT_SYSTEM_PROMPT = `You are the AXME Code session auditor agent. You are NOT Claude Code. You are NOT continuing any user's work.
 
@@ -53,6 +79,33 @@ You have read-only tools available (Read, Grep, Glob). Use them ONLY to verify w
 
 The default answer for every category is "nothing". An empty section is the correct output for most sessions. Do not pad. Do not extract to look busy.
 
+==== USER CONFIRMATION IS MANDATORY (read before extracting anything) ====
+
+The storage modules (.axme-code/memory/, .axme-code/decisions/, .axme-code/safety/) are the canonical, durable knowledge base of the project. They must contain ONLY what the user has EXPLICITLY approved. The agent's proposals, suggestions, plans, and internal reasoning — even if well-founded — MUST NOT be extracted unless the user said yes to that specific item.
+
+For every MEMORY / DECISION / SAFETY candidate, look for EXPLICIT user confirmation in the transcript. If you cannot find it, REJECT the candidate.
+
+EXPLICIT USER CONFIRMATION examples (these count):
+- Direct agreement: "да, делаем так", "yes, do it", "ok, принято", "accepted", "правильно", "correct"
+- Direct correction: "don't do X", "нельзя", "не надо", "stop", "no, wrong"
+- Explicit rule from user: "always X", "never Y", "всегда X", "никогда Y"
+- Explicit policy: "we should never deploy without staging check", "agent must NEVER X"
+- Explicit endorsement of a specific proposal the agent made: "да, этот вариант подходит"
+
+NOT CONFIRMATION — REJECT these:
+- User silence after agent proposal
+- Hedging from the user: "hmm", "interesting", "maybe", "возможно", "посмотрим", "let's see"
+- User changes topic without addressing the proposal
+- User asks a follow-up question instead of agreeing ("а почему так?" is a question, not approval)
+- Agent says "I think we should X" or "let's do X" without an explicit user response
+- Agent's internal thinking blocks (thinking is NOT confirmation; it's the agent's reasoning)
+- Agent writes a plan and the user doesn't respond or responds with a different topic
+- Agent pattern-matched from other parts of the session
+
+When in doubt: REJECT. A missed extraction is recoverable next session; a wrong extraction pollutes storage permanently, and an operator has to hunt it down and delete it.
+
+HANDOFF section is EXEMPT from this rule — handoff describes factual session state (what was done, where we stopped), not accepted knowledge. Handoff does not require user confirmation.
+
 ==== YOUR VALIDATION WORKFLOW ====
 
 For EVERY candidate you consider extracting, run this check against .axme-code/ storage only:
@@ -68,22 +121,25 @@ HANDOFF SECTION NOTE: the handoff must describe the state AT THE END OF THE SESS
 ==== EXTRACTION CATEGORIES ====
 
 MEMORIES (type=feedback)
-Extract ONLY when the user explicitly corrected the agent, expressed a strong preference, or reacted negatively. Watch for: "don't", "stop", "always", "never", "no, wrong", user questioning agent's action, frustration, surprise. Also catch non-English equivalents (e.g. Russian "нельзя", "не надо", "всегда", "никогда", "неправильно", "сколько раз говорил").
+Requires USER CONFIRMATION (see above). Extract ONLY when the user explicitly corrected the agent, expressed a strong preference, or reacted negatively. Watch for: "don't", "stop", "always", "never", "no, wrong", user questioning agent's action, frustration, surprise. Also catch non-English equivalents (e.g. Russian "нельзя", "не надо", "всегда", "никогда", "неправильно", "сколько раз говорил").
 Required fields: what agent was doing, what user asked for instead, THE USER'S STATED REASON (if no reason was given, still extract but mark the Why as "user did not explain").
 
 MEMORIES (type=pattern)
-Extract ONLY when a non-obvious technique was discovered through trial and error AND the user explicitly validated it worked. NOT "we built feature X" — features are in the code.
+Requires USER CONFIRMATION (see above). Extract ONLY when a non-obvious technique was discovered through trial and error AND the user explicitly validated it worked ("да, так и оставим", "yes that worked"). NOT "we built feature X" — features are in the code. Agent saying "this approach worked" alone is not enough; find the user's explicit endorsement.
 
 DECISIONS
-Extract ONLY if BOTH:
+Extract ONLY if ALL THREE:
 (a) The decision is NOT visible in the resulting code/config/diff — someone reading the code cannot recover the reasoning or the rule.
-(b) The user explicitly stated it as a rule/policy/constraint in the transcript, OR the user agreed to a proposed rule/policy/constraint.
+(b) The user explicitly stated it as a rule/policy/constraint in the transcript, OR the user explicitly said yes to a specific proposed rule (not silence, not "ok maybe", not topic change — see USER CONFIRMATION section above).
+(c) The decision has a clear "rule shape" — something a future session should follow, not a one-time action.
 
 REJECT:
 - "We added feature X because Y" — feature is in the code
 - "Use X instead of Y" — both visible in diff
 - "Changed approach from A to B" — git log has this
 - "User confirmed implementation Z" — implementation is in the code
+- Agent proposed X and user did not respond — no confirmation
+- User said "hmm" / "interesting" / "maybe" — not confirmation
 
 ACCEPT:
 - Process rules the user stated: "never merge without staging check"
@@ -91,8 +147,16 @@ ACCEPT:
 - Accepted trade-offs: "we accept this limitation for now"
 - Negative rules: "do not write to X"
 
+DECISIONS OUTPUT FIELD NAMES — CRITICAL
+Use EXACTLY these field names for each DECISION block:
+  title, decision, reasoning, enforce, scope
+DO NOT use ADR-style field names. Specifically rejected by the parser and the rules:
+  slug (parser generates from title), status, rationale (use "reasoning"),
+  alternatives_considered, consequences, context
+If you emit ADR-style fields the extraction will be salvaged where possible but logged as a parser warning, which is a failure signal for this task.
+
 SAFETY
-Extract ONLY if a new bash_deny/bash_allow/fs_deny/git_protected_branch rule was produced from a real signal (user said so, or an incident happened in this session).
+Requires USER CONFIRMATION (see above). Extract ONLY if the user explicitly mandated a new bash_deny/bash_allow/fs_deny/git_protected_branch rule ("agent must never run X", "block writes to Y", "main branch is protected from force push"). An incident happening in the session is NOT enough by itself — incidents go to the worklog, not to safety rules. Safety rules persist forever and must come from explicit user mandate.
 
 HANDOFF
 Restate session state with specifics based on the transcript alone. This section does NOT require novelty.
@@ -297,12 +361,20 @@ function buildWorkspaceContext(
 /**
  * Run full session audit — extracts memories, decisions, safety rules, oracle changes, handoff.
  *
+ * For short sessions (transcript fits in PER_CHUNK_TRANSCRIPT_BUDGET), this is
+ * a single LLM call. For long sessions, the transcript is split into chunks at
+ * turn boundaries and each chunk is audited in sequence, with previous chunks'
+ * extractions passed as "already extracted" context to avoid duplicates. The
+ * final handoff is taken from the last chunk (most recent session state).
+ *
  * @param opts.sessionOrigin - The path where the session was opened (workspace root
  *   OR a single repo). Used to resolve .axme-code/ storage and as the default scope.
  * @param opts.workspaceInfo - Optional workspace structure for multi-repo sessions.
  *   When provided, the auditor is given the list of repos so it can assign scope.
- * @param opts.sessionTranscript - Filtered conversation text from a Claude Code
- *   transcript (see transcript-parser.ts). Preferred input.
+ * @param opts.sessionTurns - Filtered conversation turns from a Claude Code transcript
+ *   (via parseAndRenderTranscripts). Preferred input — enables chunking for long sessions.
+ * @param opts.sessionTranscript - Pre-rendered transcript string. Fallback when turns
+ *   are not available. Used as a single chunk.
  * @param opts.sessionEvents - Fallback: worklog events joined as text. Used when
  *   no Claude Code transcript is attached to the session.
  */
@@ -310,32 +382,150 @@ export async function runSessionAudit(opts: {
   sessionId: string;
   sessionOrigin: string;
   workspaceInfo?: WorkspaceInfo;
+  sessionTurns?: ConversationTurn[];
   sessionTranscript?: string;
   sessionEvents?: string;
   filesChanged: string[];
   /** Optional model override. If not passed, callers typically read the
    *  auditor_model field from .axme-code/config.yaml via readConfig(). The
-   *  hard default (DEFAULT_AUDITOR_MODEL) is Sonnet 4.6 — enough for the
-   *  short audit task once the transcript is wrapped in XML. */
+   *  hard default (DEFAULT_AUDITOR_MODEL) is Sonnet 4.6. */
   model?: string;
 }): Promise<SessionAuditResult> {
-  const sdk = await import("@anthropic-ai/claude-agent-sdk");
   const startTime = Date.now();
+  const model = opts.model ?? DEFAULT_AUDITOR_MODEL;
+
+  // Build fixed context parts once — they are reused across all chunks.
+  const existingContext = truncateExistingContext(
+    buildExistingContext(opts.sessionOrigin, opts.workspaceInfo),
+    EXISTING_CONTEXT_MAX_CHARS,
+  );
+  const workspaceContext = buildWorkspaceContext(opts.sessionOrigin, opts.filesChanged, opts.workspaceInfo);
+
+  // Decide the chunking strategy based on which input the caller provided.
+  let chunks: string[];
+  if (opts.sessionTurns && opts.sessionTurns.length > 0) {
+    // Preferred path: we have structured turns, so we can chunk at turn boundaries.
+    const fixedOverhead =
+      AUDIT_PROMPT.length +
+      workspaceContext.length +
+      existingContext.length +
+      JSON.stringify(opts.filesChanged).length +
+      2000; // headers, labels, inter-chunk context
+    const perChunkCharBudget = Math.max(100_000, PER_CHUNK_TRANSCRIPT_BUDGET - fixedOverhead);
+    const turnChunks = splitTurnsIntoChunks(opts.sessionTurns, perChunkCharBudget);
+    chunks = turnChunks.map((c, i) =>
+      renderConversationChunk(c, { index: i + 1, total: turnChunks.length }),
+    );
+  } else if (opts.sessionTranscript) {
+    // Legacy path: pre-rendered transcript string. Use as a single chunk.
+    // Not splittable cleanly without reparsing, so we accept the size as-is.
+    chunks = [opts.sessionTranscript];
+  } else if (opts.sessionEvents) {
+    // Worklog fallback. Wrap in structured tag so model sees data not chat.
+    chunks = [`<session_worklog_events>\n${opts.sessionEvents}\n</session_worklog_events>`];
+  } else {
+    chunks = [""];
+  }
+
+  process.stderr.write(
+    `AXME audit for ${opts.sessionId}: ${chunks.length} chunk(s), ` +
+      `fixed_overhead=${(workspaceContext.length + existingContext.length).toLocaleString()} chars, ` +
+      `model=${model}\n`,
+  );
+
+  // Run audit per chunk, accumulating results. Each subsequent chunk receives
+  // the previous chunks' extractions as "already extracted" context to prevent
+  // duplicates.
+  const mergedMemories: Memory[] = [];
+  const mergedDecisions: Omit<Decision, "id">[] = [];
+  const mergedSafetyRules: Array<{ ruleType: string; value: string; scope?: string[] }> = [];
+  let mergedHandoff: SessionHandoff | null = null;
+  let oracleNeedsRescan = false;
+  let totalCostUsd = 0;
+  let totalCostCached: CostInfo | undefined;
+  let totalPromptChars = 0;
+
+  for (let i = 0; i < chunks.length; i++) {
+    const chunkBlock = chunks[i];
+    const alreadyExtractedContext = formatAlreadyExtracted(
+      mergedMemories,
+      mergedDecisions,
+      mergedSafetyRules,
+    );
+    const chunkResult = await runSingleAuditCall({
+      sessionId: opts.sessionId,
+      sessionOrigin: opts.sessionOrigin,
+      model,
+      auditPrompt: AUDIT_PROMPT,
+      workspaceContext,
+      existingContext,
+      alreadyExtractedContext,
+      filesChanged: opts.filesChanged,
+      chunkBlock,
+      chunkIndex: i + 1,
+      totalChunks: chunks.length,
+    });
+
+    totalPromptChars += chunkResult.promptChars;
+    if (chunkResult.cost) {
+      totalCostCached = chunkResult.cost;
+      totalCostUsd += chunkResult.cost.costUsd ?? 0;
+    }
+
+    // Merge extractions (dedup by slug for memories/decisions; dedup by
+    // ruleType+value for safety).
+    mergeMemories(mergedMemories, chunkResult.memories);
+    mergeDecisions(mergedDecisions, chunkResult.decisions);
+    mergeSafetyRules(mergedSafetyRules, chunkResult.safetyRules);
+    if (chunkResult.oracleNeedsRescan) oracleNeedsRescan = true;
+    // Last chunk's handoff wins — it describes end-of-session state.
+    if (chunkResult.handoff) mergedHandoff = chunkResult.handoff;
+  }
+
+  const finalCost: CostInfo = totalCostCached
+    ? { ...totalCostCached, costUsd: totalCostUsd }
+    : zeroCost();
+
+  return {
+    memories: mergedMemories,
+    decisions: mergedDecisions,
+    safetyRules: mergedSafetyRules,
+    oracleNeedsRescan,
+    handoff: mergedHandoff,
+    cost: finalCost,
+    durationMs: Date.now() - startTime,
+    chunks: chunks.length,
+    promptTokens: Math.round(totalPromptChars / 4),
+  };
+}
+
+/**
+ * Run a single LLM audit call on one chunk. Returns parsed per-chunk extractions
+ * plus the raw prompt size (for observability).
+ */
+async function runSingleAuditCall(opts: {
+  sessionId: string;
+  sessionOrigin: string;
+  model: string;
+  auditPrompt: string;
+  workspaceContext: string;
+  existingContext: string;
+  alreadyExtractedContext: string;
+  filesChanged: string[];
+  chunkBlock: string;
+  chunkIndex: number;
+  totalChunks: number;
+}): Promise<Omit<SessionAuditResult, "cost" | "durationMs" | "chunks" | "promptTokens"> & {
+  cost?: CostInfo;
+  promptChars: number;
+}> {
+  const sdk = await import("@anthropic-ai/claude-agent-sdk");
 
   const queryOpts = {
     cwd: opts.sessionOrigin,
-    model: opts.model ?? DEFAULT_AUDITOR_MODEL,
-    // Custom system prompt. Critical: do NOT use the claude_code preset here —
-    // that preset instructs the model to behave as Claude Code main agent,
-    // which caused the auditor to think it was continuing the user's work
-    // instead of performing an audit.
+    model: opts.model,
     systemPrompt: AUDIT_SYSTEM_PROMPT,
-    // Do NOT inherit project settings (.mcp.json, .claude/settings.json).
-    // Those bring MCP servers, hooks, and other context that make the auditor
-    // think it is in an active working session. The auditor must be isolated.
     settingSources: [],
-    // No MCP servers attached — the auditor must not have axme_* tools, which
-    // would feed it the full project context and make it behave as main agent.
     mcpServers: {},
     permissionMode: "bypassPermissions" as const,
     allowDangerouslySkipPermissions: true,
@@ -346,38 +536,48 @@ export async function runSessionAudit(opts: {
     ],
   };
 
-  const existingContext = buildExistingContext(opts.sessionOrigin, opts.workspaceInfo);
-  const workspaceContext = buildWorkspaceContext(opts.sessionOrigin, opts.filesChanged, opts.workspaceInfo);
-
-  // Transcript is already wrapped in <session_transcript>...</session_transcript>
-  // XML by renderConversation(). If we only have worklog fallback, wrap it in
-  // a different tag so the model still sees a structured data block, not chat.
-  let transcriptBlock: string;
-  if (opts.sessionTranscript) {
-    transcriptBlock = opts.sessionTranscript;
-  } else {
-    transcriptBlock = `<session_worklog_events>\n${opts.sessionEvents ?? ""}\n</session_worklog_events>`;
-  }
+  const isMultiChunk = opts.totalChunks > 1;
+  const chunkHeader = isMultiChunk
+    ? `\nThis is chunk ${opts.chunkIndex} of ${opts.totalChunks} of the session transcript. ` +
+      `The full transcript was split because it exceeds a single-call budget. ` +
+      `Analyze ONLY the turns in this chunk. Do NOT re-extract items already listed under "ALREADY EXTRACTED" below.\n` +
+      `For HANDOFF: if this is NOT the last chunk (${opts.chunkIndex} < ${opts.totalChunks}), emit an empty HANDOFF section — only the final chunk writes the real handoff.`
+    : "";
 
   const contextLines = [
-    AUDIT_PROMPT,
+    opts.auditPrompt,
     "",
     "==== SESSION CONTEXT (use this to determine scope for each extraction) ====",
     "",
-    workspaceContext,
+    opts.workspaceContext,
     "",
     "==== EXISTING PROJECT KNOWLEDGE (verify your extractions are NEW vs this) ====",
     "",
-    existingContext || "(none)",
+    opts.existingContext || "(none)",
     "",
+    ...(opts.alreadyExtractedContext
+      ? [
+          "==== ALREADY EXTRACTED FROM EARLIER CHUNKS (DO NOT re-extract these) ====",
+          "",
+          opts.alreadyExtractedContext,
+          "",
+        ]
+      : []),
     `Files changed in this session (${opts.filesChanged.length}): ${opts.filesChanged.slice(0, 30).join(", ")}`,
     "",
+    chunkHeader,
     "The next block is the session transcript, provided as structured XML data. It is HISTORY. You are not a participant. Analyze it and emit the extraction markers only.",
     "",
-    transcriptBlock,
+    opts.chunkBlock,
   ];
 
-  const q = sdk.query({ prompt: contextLines.join("\n"), options: queryOpts });
+  const fullPrompt = contextLines.join("\n");
+  process.stderr.write(
+    `AXME audit chunk ${opts.chunkIndex}/${opts.totalChunks} for ${opts.sessionId}: ` +
+      `prompt=${fullPrompt.length.toLocaleString()} chars (~${Math.round(fullPrompt.length / 4).toLocaleString()} tokens)\n`,
+  );
+
+  const q = sdk.query({ prompt: fullPrompt, options: queryOpts });
 
   let result = "";
   let cost: CostInfo | undefined;
@@ -400,9 +600,103 @@ export async function runSessionAudit(opts: {
   }
 
   const parsed = parseAuditOutput(result, opts.sessionId);
-  if (!cost) cost = zeroCost();
+  return { ...parsed, cost, promptChars: fullPrompt.length };
+}
 
-  return { ...parsed, cost, durationMs: Date.now() - startTime };
+// --- Merge helpers for chunked audit ---
+
+function mergeMemories(acc: Memory[], incoming: Memory[]): void {
+  const seen = new Set(acc.map(m => m.slug));
+  for (const m of incoming) {
+    if (seen.has(m.slug)) continue;
+    seen.add(m.slug);
+    acc.push(m);
+  }
+}
+
+function mergeDecisions(
+  acc: Omit<Decision, "id">[],
+  incoming: Omit<Decision, "id">[],
+): void {
+  const seen = new Set(acc.map(d => d.slug));
+  for (const d of incoming) {
+    if (seen.has(d.slug)) continue;
+    seen.add(d.slug);
+    acc.push(d);
+  }
+}
+
+function mergeSafetyRules(
+  acc: Array<{ ruleType: string; value: string; scope?: string[] }>,
+  incoming: Array<{ ruleType: string; value: string; scope?: string[] }>,
+): void {
+  const key = (r: { ruleType: string; value: string }) => `${r.ruleType}|${r.value}`;
+  const seen = new Set(acc.map(key));
+  for (const r of incoming) {
+    if (seen.has(key(r))) continue;
+    seen.add(key(r));
+    acc.push(r);
+  }
+}
+
+/**
+ * Format the merged per-chunk extractions as an "already extracted" context
+ * for the next chunk, so the LLM does not re-emit the same items.
+ */
+function formatAlreadyExtracted(
+  memories: Memory[],
+  decisions: Omit<Decision, "id">[],
+  safetyRules: Array<{ ruleType: string; value: string }>,
+): string {
+  if (memories.length === 0 && decisions.length === 0 && safetyRules.length === 0) {
+    return "";
+  }
+  const parts: string[] = [];
+  if (memories.length > 0) {
+    parts.push(
+      "## Memories already extracted from earlier chunks:\n" +
+        memories.map(m => `- [${m.type}] ${m.title}: ${m.description}`).join("\n"),
+    );
+  }
+  if (decisions.length > 0) {
+    parts.push(
+      "## Decisions already extracted from earlier chunks:\n" +
+        decisions.map(d => `- ${d.title}: ${d.decision.slice(0, 120)}`).join("\n"),
+    );
+  }
+  if (safetyRules.length > 0) {
+    parts.push(
+      "## Safety rules already extracted from earlier chunks:\n" +
+        safetyRules.map(r => `- ${r.ruleType}: ${r.value}`).join("\n"),
+    );
+  }
+  return parts.join("\n\n");
+}
+
+/**
+ * Truncate existingContext if it exceeds the soft limit. Keeps the header and
+ * as many recent lines as fit. Prevents stale knowledge accumulation from
+ * eating the chunk budget as the project grows over time.
+ */
+function truncateExistingContext(context: string, maxChars: number): string {
+  if (context.length <= maxChars) return context;
+  const lines = context.split("\n");
+  // Keep section headers (lines starting with "##") and the last N lines that fit.
+  const headerLines = lines.filter(l => l.startsWith("##"));
+  const dataLines = lines.filter(l => !l.startsWith("##") && l.trim());
+  // Take the last data lines that fit under the budget, then re-attach headers.
+  const reserved = headerLines.join("\n").length + 200;
+  const budget = maxChars - reserved;
+  const kept: string[] = [];
+  let used = 0;
+  for (let i = dataLines.length - 1; i >= 0; i--) {
+    const line = dataLines[i];
+    if (used + line.length + 1 > budget) break;
+    kept.unshift(line);
+    used += line.length + 1;
+  }
+  const trimNote = `\n(existingContext truncated: showing ${kept.length} of ${dataLines.length} entries, most recent first)`;
+  return [...headerLines, ...kept, trimNote].join("\n");
 }
 
 /**
@@ -417,13 +711,31 @@ export function parseAuditOutput(output: string, sessionId: string): Omit<Sessio
   if (memoriesSection) {
     for (const block of memoriesSection.split("---").filter(b => b.trim())) {
       const get = (key: string) => getField(block, key);
-      const slug = toMemorySlug(get("slug"));
       const type = get("type");
       const title = get("title");
-      if (!slug || !title || (type !== "feedback" && type !== "pattern")) continue;
+      if (!title) {
+        // Strip trailing ###SAFETY### / ###DECISIONS### markers that sometimes
+        // bleed into the memories section when the LLM forgot to close it —
+        // those aren't real blocks, just skip without logging.
+        if (block.trim().startsWith("###")) continue;
+        process.stderr.write(`AXME auditor: memory block dropped (no title): ${block.slice(0, 200)}\n`);
+        continue;
+      }
+      // slug: use LLM-provided value if present, otherwise synthesize from title.
+      // Opus sometimes omits slug because the prompt says "parser generates from title".
+      const rawSlug = get("slug");
+      const slug = toMemorySlug(rawSlug || title);
+      if (!slug) {
+        process.stderr.write(`AXME auditor: memory block "${title}" dropped (could not generate slug)\n`);
+        continue;
+      }
+      if (type !== "feedback" && type !== "pattern") {
+        process.stderr.write(`AXME auditor: memory block "${title}" dropped (invalid type: ${type || "missing"})\n`);
+        continue;
+      }
 
       const keywordsRaw = get("keywords");
-      const scopeRaw = get("scope");
+      const scope = parseScopeField(get("scope"));
       const bodyMatch = block.match(/^body:\s*([\s\S]*)$/m);
 
       memories.push({
@@ -432,32 +744,58 @@ export function parseAuditOutput(output: string, sessionId: string): Omit<Sessio
         keywords: keywordsRaw ? keywordsRaw.split(",").map(k => k.trim()).filter(Boolean) : [],
         source: "session", sessionId, date: today,
         body: bodyMatch ? bodyMatch[1].trim() : "",
-        ...(scopeRaw && scopeRaw !== "all" ? { scope: scopeRaw.split(",").map(s => s.trim()).filter(Boolean) } : {}),
-        ...(scopeRaw === "all" ? { scope: ["all"] } : {}),
+        ...(scope ? { scope } : {}),
       });
     }
   }
 
   // Parse decisions
+  // Tolerant of ADR-style field names (rationale, consequences, status, alternatives_considered)
+  // that Opus sometimes emits despite the strict prompt. Brackets around scope values are
+  // stripped. Drops are never silent — each rejected block logs its reason to stderr so the
+  // operator can see why the auditor's output was filtered.
   const decisions: Omit<Decision, "id">[] = [];
   const decisionsSection = extractSection(output, "DECISIONS");
   if (decisionsSection) {
     for (const block of decisionsSection.split("---").filter(b => b.trim())) {
       const get = (key: string) => getField(block, key);
       const title = get("title");
-      const decision = get("decision");
-      if (!title || !decision) continue;
+      // Primary: "decision" field from our spec. Fallback: synthesize from ADR fields.
+      let decision = get("decision");
+      if (!decision) {
+        // ADR-style fallback: Opus sometimes produces this even when told not to.
+        // We salvage rather than drop silently.
+        const consequences = get("consequences");
+        const context = get("context");
+        const status = get("status");
+        const parts: string[] = [];
+        if (status) parts.push(`[${status}]`);
+        if (context) parts.push(`Context: ${context}`);
+        if (consequences) parts.push(`Consequences: ${consequences}`);
+        if (parts.length > 0) decision = parts.join(" ");
+      }
+      // reasoning field with rationale as synonym
+      const reasoning = get("reasoning") || get("rationale") || "Extracted from session";
+
+      if (!title) {
+        if (block.trim().startsWith("###")) continue;
+        process.stderr.write(`AXME auditor: decision block dropped (no title): ${block.slice(0, 200)}\n`);
+        continue;
+      }
+      if (!decision) {
+        process.stderr.write(`AXME auditor: decision block "${title}" dropped (no decision/rationale/consequences field)\n`);
+        continue;
+      }
 
       const enforceRaw = get("enforce").toLowerCase();
-      const scopeRaw = get("scope");
+      const scope = parseScopeField(get("scope"));
       decisions.push({
         slug: toSlug(title), title, decision,
-        reasoning: get("reasoning") || "Extracted from session",
+        reasoning,
         date: today, source: "session",
         enforce: enforceRaw === "required" ? "required" : enforceRaw === "advisory" ? "advisory" : null,
         sessionId,
-        ...(scopeRaw && scopeRaw !== "all" ? { scope: scopeRaw.split(",").map(s => s.trim()).filter(Boolean) } : {}),
-        ...(scopeRaw === "all" ? { scope: ["all"] } : {}),
+        ...(scope ? { scope } : {}),
       });
     }
   }
@@ -469,13 +807,16 @@ export function parseAuditOutput(output: string, sessionId: string): Omit<Sessio
     for (const block of safetySection.split("---").filter(b => b.trim())) {
       const ruleType = getField(block, "rule_type");
       const value = getField(block, "value");
-      if (!ruleType || !value) continue;
-      const scopeRaw = getField(block, "scope");
-      const scope = scopeRaw === "all"
-        ? ["all"]
-        : scopeRaw
-          ? scopeRaw.split(",").map(s => s.trim()).filter(Boolean)
-          : undefined;
+      if (!ruleType) {
+        if (block.trim().startsWith("###")) continue;
+        process.stderr.write(`AXME auditor: safety block dropped (no rule_type): ${block.slice(0, 200)}\n`);
+        continue;
+      }
+      if (!value) {
+        process.stderr.write(`AXME auditor: safety block dropped (no value, rule_type=${ruleType})\n`);
+        continue;
+      }
+      const scope = parseScopeField(getField(block, "scope"));
       safetyRules.push({ ruleType, value, ...(scope ? { scope } : {}) });
     }
   }
@@ -507,16 +848,47 @@ export function parseAuditOutput(output: string, sessionId: string): Omit<Sessio
 
 function extractSection(output: string, name: string): string | null {
   const startMarker = `###${name}###`;
-  const endMarker = "###END###";
   const startIdx = output.indexOf(startMarker);
   if (startIdx === -1) return null;
   const contentStart = startIdx + startMarker.length;
-  const endIdx = output.indexOf(endMarker, contentStart);
-  if (endIdx === -1) return output.slice(contentStart).trim();
-  return output.slice(contentStart, endIdx).trim();
+
+  // Find the earliest of: ###END###, or the next ### marker of any kind.
+  // This prevents "bleed through" when the LLM forgot to close a section —
+  // we stop at the next section header rather than consuming everything.
+  const remaining = output.slice(contentStart);
+  // Regex: find any ### marker (###END### or next ###SECTION###)
+  const nextMarkerMatch = remaining.match(/###(END|[A-Z_]+)###/);
+  if (!nextMarkerMatch) return remaining.trim();
+  return remaining.slice(0, nextMarkerMatch.index).trim();
 }
 
 function getField(block: string, key: string): string {
   const m = block.match(new RegExp(`^${key}:\\s*(.*)$`, "m"));
   return m ? m[1].trim() : "";
+}
+
+/**
+ * Parse a scope field value from auditor output. Handles:
+ *   - "all" → ["all"]
+ *   - "axme-code" → ["axme-code"]
+ *   - "[axme-code]" → ["axme-code"] (strips brackets)
+ *   - "[axme-code, axme-cli]" → ["axme-code", "axme-cli"]
+ *   - "axme-code, axme-cli" → ["axme-code", "axme-cli"]
+ *   - empty → undefined
+ *
+ * Also strips YAML-style list quotes and extra whitespace.
+ */
+function parseScopeField(raw: string): string[] | undefined {
+  if (!raw) return undefined;
+  // Strip wrapping brackets and quotes
+  let s = raw.trim();
+  if (s.startsWith("[") && s.endsWith("]")) s = s.slice(1, -1);
+  s = s.trim();
+  if (!s) return undefined;
+  const parts = s.split(",")
+    .map(p => p.trim().replace(/^["']|["']$/g, "").trim())
+    .filter(Boolean);
+  if (parts.length === 0) return undefined;
+  if (parts.length === 1 && parts[0] === "all") return ["all"];
+  return parts;
 }

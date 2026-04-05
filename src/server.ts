@@ -18,12 +18,14 @@ import { updateSafetyTool, showSafetyTool } from "./tools/safety-tools.js";
 import { statusTool, worklogTool } from "./tools/status.js";
 import { detectWorkspace } from "./utils/workspace-detector.js";
 import {
-  createSession,
-  writeActiveSession,
   incrementTurns,
   findOrphanSessions,
+  listClaudeSessionMappings,
+  clearClaudeSessionMapping,
+  clearLegacyActiveSession,
+  readClaudeSessionMapping,
 } from "./storage/sessions.js";
-import { logSessionStart, logEvent } from "./storage/worklog.js";
+import { logEvent } from "./storage/worklog.js";
 import { runSessionCleanup } from "./session-cleanup.js";
 
 // --- Server state (detected at startup from cwd) ---
@@ -34,25 +36,57 @@ const isWorkspace = serverWorkspace.type !== "single";
 const defaultProjectPath = serverCwd;
 const defaultWorkspacePath = isWorkspace ? serverCwd : null;
 
-// --- Session (one MCP server instance = one session) ---
+// The MCP server does NOT create an AXME session at startup. AXME sessions
+// are created lazily by hooks on the first tool call — that's when we learn
+// the Claude session_id, which is the key for multi-window isolation.
+//
+// Instead of a single "currentSession", the server owns all AXME sessions
+// created by hooks whose parent process id equals our own parent process
+// id (i.e., the same Claude Code instance that spawned us). At disconnect,
+// we close all of them.
+const OWN_PPID = process.ppid;
 
-const currentSession = createSession(defaultProjectPath);
-writeActiveSession(defaultProjectPath, currentSession.id);
-logSessionStart(defaultProjectPath, currentSession.id);
+// Clean up any legacy .axme-code/active-session single-file marker from
+// older versions. It is stale by definition after the switch to per-Claude
+// mapping files.
+clearLegacyActiveSession(defaultProjectPath);
 
-// Turn counter: bump once per conversation turn (debounced 10s).
-// Within one assistant response, tool calls fire back-to-back (<1s apart).
-// Between turns there is always a human pause (>10s). So 10s threshold
-// reliably separates turns without over-counting.
+// Turn counter: incremented on each MCP tool call (debounced 10s).
+// We can only bump the current session's turns if we know which session
+// the tool call belongs to. Since the MCP server does not know its Claude
+// session_id directly, we bump the most recently used mapping as a best
+// effort. For workspaces with a single active window this is accurate;
+// for multi-window it may occasionally misattribute a turn.
 let lastTurnBumpAt = 0;
 const TURN_DEBOUNCE_MS = 10_000;
 
 function bumpTurn(): void {
   const now = Date.now();
   if (now - lastTurnBumpAt > TURN_DEBOUNCE_MS) {
-    incrementTurns(defaultProjectPath, currentSession.id);
+    // Find the most recent own mapping and bump its session.
+    const owned = listClaudeSessionMappings(defaultProjectPath)
+      .filter(m => m.ownerPpid === OWN_PPID);
+    if (owned.length > 0) {
+      // We have no per-mapping timestamp to sort by; bump all owned sessions
+      // (normally one per MCP server). Each call is o(1).
+      for (const m of owned) {
+        try { incrementTurns(defaultProjectPath, m.axmeSessionId); } catch {}
+      }
+    }
   }
   lastTurnBumpAt = now;
+}
+
+/**
+ * Return the AXME session UUID owned by this MCP server for worklog purposes.
+ * If there are multiple owned sessions (shouldn't happen normally), returns
+ * the first one. If none, returns undefined — the caller should pass no
+ * sessionId to the worklog.
+ */
+function getOwnedSessionIdForLogging(): string | undefined {
+  const owned = listClaudeSessionMappings(defaultProjectPath)
+    .filter(m => m.ownerPpid === OWN_PPID);
+  return owned[0]?.axmeSessionId;
 }
 
 // Session cleanup is triggered by transport.onclose (see main() below) rather
@@ -64,10 +98,27 @@ let cleanupRunning = false;
 async function cleanupAndExit(reason: string): Promise<void> {
   if (cleanupRunning) return;
   cleanupRunning = true;
+
+  // Find all mapping files owned by our Claude Code parent process and
+  // run cleanup for each. We identify ownership by ppid equality: the
+  // Claude Code process that spawned us also spawns the hook subprocesses,
+  // which recorded their ppid in the mapping file.
   try {
-    await runSessionCleanup(defaultProjectPath, currentSession.id, { clearActive: true });
+    const mappings = listClaudeSessionMappings(defaultProjectPath);
+    const owned = mappings.filter(m => m.ownerPpid === OWN_PPID);
+    process.stderr.write(
+      `AXME cleanup (${reason}): ${owned.length} owned session(s) of ${mappings.length} total\n`,
+    );
+    for (const m of owned) {
+      try {
+        await runSessionCleanup(defaultProjectPath, m.axmeSessionId);
+      } catch (err) {
+        process.stderr.write(`AXME cleanup failed for ${m.axmeSessionId}: ${err}\n`);
+      }
+      try { clearClaudeSessionMapping(defaultProjectPath, m.claudeSessionId); } catch {}
+    }
   } catch (err) {
-    process.stderr.write(`AXME session cleanup failed (${reason}): ${err}\n`);
+    process.stderr.write(`AXME cleanup scan failed (${reason}): ${err}\n`);
   }
   process.exit(0);
 }
@@ -164,7 +215,8 @@ server.tool(
   },
   async ({ project_path, type, title, description, body, keywords, scope }) => {
     bumpTurn();
-    const result = saveMemoryTool(pp(project_path), { type, title, description, body, keywords, scope }, currentSession.id);
+    const sid = getOwnedSessionIdForLogging();
+    const result = saveMemoryTool(pp(project_path), { type, title, description, body, keywords, scope }, sid);
     return { content: [{ type: "text" as const, text: `Memory saved: ${result.slug} (${type})` }] };
   },
 );
@@ -318,9 +370,18 @@ async function main() {
 
 async function auditOrphansInBackground(): Promise<void> {
   try {
+    // Find orphaned sessions (closedAt=null, pid belongs to a dead Claude Code
+    // process, not yet audited, under retry cap). Skip any session that is
+    // currently owned by this MCP server via an active mapping file.
+    const ownedAxmeIds = new Set(
+      listClaudeSessionMappings(defaultProjectPath)
+        .filter(m => m.ownerPpid === OWN_PPID)
+        .map(m => m.axmeSessionId),
+    );
+
     const orphans = findOrphanSessions(defaultProjectPath);
     for (const orphan of orphans) {
-      if (orphan.id === currentSession.id) continue; // never touch self
+      if (ownedAxmeIds.has(orphan.id)) continue; // never touch our own active sessions
       try {
         const result = await runSessionCleanup(defaultProjectPath, orphan.id);
         logEvent(defaultProjectPath, "session_orphan_closed", orphan.id, {
@@ -330,7 +391,7 @@ async function auditOrphansInBackground(): Promise<void> {
           memories: result.memories,
           decisions: result.decisions,
           costUsd: result.costUsd,
-          closedBy: currentSession.id,
+          closedByPpid: OWN_PPID,
         });
       } catch (err) {
         process.stderr.write(`AXME orphan audit failed for ${orphan.id}: ${err}\n`);

@@ -11,7 +11,7 @@
  */
 
 import { join } from "node:path";
-import { readWorklog, logSessionEnd } from "./storage/worklog.js";
+import { readWorklog, logSessionEnd, logError } from "./storage/worklog.js";
 import { saveScopedMemories } from "./storage/memory.js";
 import { saveScopedDecisions } from "./storage/decisions.js";
 import { saveScopedSafetyRule, type SafetyRuleType } from "./storage/safety.js";
@@ -21,14 +21,41 @@ import {
   closeSession,
   loadSession,
   markAudited,
-  clearActiveSession,
-  readActiveSession,
+  writeSession,
 } from "./storage/sessions.js";
 import { pathExists } from "./storage/engine.js";
 import { parseAndRenderTranscripts } from "./transcript-parser.js";
 import { detectWorkspace } from "./utils/workspace-detector.js";
 import { readConfig } from "./storage/config.js";
 import { AXME_CODE_DIR } from "./types.js";
+
+/**
+ * Record an audit failure on the session: bump auditAttempts, save lastAuditError,
+ * log to worklog, write to stderr. Silent swallow is an anti-pattern.
+ */
+function recordAuditFailure(
+  workspacePath: string,
+  sessionId: string,
+  err: unknown,
+  phase: string,
+): void {
+  const errMsg = err instanceof Error ? err.message : String(err);
+  const errStack = err instanceof Error ? err.stack : undefined;
+  try {
+    const s = loadSession(workspacePath, sessionId);
+    if (s) {
+      s.auditAttempts = (s.auditAttempts ?? 0) + 1;
+      s.lastAuditError = `[${phase}] ${errMsg}`;
+      writeSession(workspacePath, s);
+    }
+  } catch {
+    // Secondary failure writing the error record itself — nothing else we can do.
+  }
+  try {
+    logError(workspacePath, sessionId, `audit failed (${phase}): ${errMsg}`);
+  } catch {}
+  process.stderr.write(`AXME audit failed (${phase}) for ${sessionId}: ${errStack ?? errMsg}\n`);
+}
 
 export interface SessionCleanupResult {
   sessionId: string;
@@ -52,14 +79,11 @@ export interface SessionCleanupResult {
  * chars), skips the LLM audit but still closes the session cleanly.
  *
  * @param workspacePath - Absolute path to the AXME workspace/project root
- * @param sessionId - UUID of the session to audit and close
- * @param opts.clearActive - If true, also clears .axme-code/active-session (only the
- *                           currently-active MCP server should do this)
+ * @param sessionId - UUID of the AXME session to audit and close
  */
 export async function runSessionCleanup(
   workspacePath: string,
   sessionId: string,
-  opts: { clearActive?: boolean } = {},
 ): Promise<SessionCleanupResult> {
   const base: SessionCleanupResult = {
     sessionId,
@@ -84,31 +108,32 @@ export async function runSessionCleanup(
   // Dedup: if audit already ran, don't repeat. Just ensure session is closed.
   if (session.auditedAt) {
     if (!session.closedAt) closeSession(workspacePath, sessionId);
-    if (opts.clearActive && readActiveSession(workspacePath) === sessionId) {
-      clearActiveSession(workspacePath);
-    }
     return { ...base, skipped: "already-audited" };
   }
 
   const filesChanged = session.filesChanged ?? [];
 
-  // Prefer the Claude Code transcript (filtered conversation) over the worklog
-  // when available. Transcripts contain the actual user/assistant dialog with
-  // reasoning, corrections, and agreements — exactly what the auditor needs.
-  // The worklog only has sparse structural events (session_start, memory_saved, etc).
+  // Prefer the Claude Code transcript (filtered conversation turns) over the
+  // worklog when available. Transcripts contain the actual user/assistant
+  // dialog with reasoning, corrections, and agreements — exactly what the
+  // auditor needs. The worklog only has sparse structural events.
+  //
+  // We pass sessionTurns (structured) to the auditor so it can chunk the
+  // transcript at turn boundaries for long sessions. sessionTranscript (the
+  // pre-rendered string) is only used as a display fallback.
   const claudeSessions = session.claudeSessions ?? [];
-  let sessionTranscript: string | undefined;
+  let sessionTurns: import("./transcript-parser.js").ConversationTurn[] | undefined;
   if (claudeSessions.length > 0) {
     const parsed = parseAndRenderTranscripts(claudeSessions);
-    if (parsed.rendered.length > 0) {
-      sessionTranscript = parsed.rendered;
+    if (parsed.allTurns.length > 0) {
+      sessionTurns = parsed.allTurns;
     }
   }
 
   // Fallback: if no transcript is attached (pre-transcript-audit sessions, or
   // a session that ended before any hook fired), use the worklog events.
   let sessionEvents: string | undefined;
-  if (!sessionTranscript) {
+  if (!sessionTurns) {
     const events = readWorklog(workspacePath, { limit: 500 });
     sessionEvents = events
       .filter(e => e.sessionId === sessionId)
@@ -119,7 +144,9 @@ export async function runSessionCleanup(
 
   const result: SessionCleanupResult = { ...base };
   let auditSucceeded = false;
-  const activityLength = (sessionTranscript ?? sessionEvents ?? "").length;
+  const activityLength = sessionTurns
+    ? sessionTurns.reduce((s, t) => s + t.content.length, 0)
+    : (sessionEvents ?? "").length;
   const hasActivity = activityLength > 50;
 
   // Detect whether the session was opened at a workspace root or a single repo.
@@ -141,7 +168,7 @@ export async function runSessionCleanup(
         sessionId,
         sessionOrigin: workspacePath,
         workspaceInfo: isWorkspaceSession ? workspaceInfo : undefined,
-        sessionTranscript,
+        sessionTurns,
         sessionEvents,
         filesChanged,
         model: config.auditorModel,
@@ -188,8 +215,12 @@ export async function runSessionCleanup(
           const oracleResult = await runOracleScan({ projectPath: workspacePath });
           writeOracleFiles(workspacePath, oracleResult.files);
           result.oracleRescanned = true;
-        } catch {
-          // Oracle rescan failure is non-fatal — audit artifacts already saved
+        } catch (err) {
+          // Oracle rescan failure is non-fatal — audit artifacts are already saved.
+          // But we record it so the operator has visibility.
+          const msg = err instanceof Error ? err.message : String(err);
+          try { logError(workspacePath, sessionId, `oracle rescan failed: ${msg}`); } catch {}
+          process.stderr.write(`AXME oracle rescan failed for ${sessionId}: ${msg}\n`);
         }
       }
 
@@ -199,9 +230,11 @@ export async function runSessionCleanup(
       result.safetyRules = audit.safetyRules.length;
       result.costUsd = audit.cost?.costUsd ?? 0;
       auditSucceeded = true;
-    } catch {
-      // Audit failure is non-fatal. We deliberately leave auditedAt null so
-      // the startup fallback can retry on the next MCP server start.
+    } catch (err) {
+      // Audit failure is non-fatal for the caller (we still close the session),
+      // but it MUST be logged. Silent swallowing is an anti-pattern. The retry
+      // cap in findOrphanSessions prevents infinite re-runs.
+      recordAuditFailure(workspacePath, sessionId, err, "runSessionAudit");
     }
   }
 
@@ -222,9 +255,9 @@ export async function runSessionCleanup(
     auditRan: result.auditRan,
   });
 
-  if (opts.clearActive && readActiveSession(workspacePath) === sessionId) {
-    clearActiveSession(workspacePath);
-  }
+  // Note: clearing the per-Claude-session mapping file is the caller's
+  // responsibility — they know which Claude session_id to clear. The
+  // SessionEnd hook and MCP server transport-close handler both do this.
 
   return result;
 }

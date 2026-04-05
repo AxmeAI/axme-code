@@ -108,6 +108,13 @@ export function parseTranscript(path: string): ConversationTurn[] {
     for (const block of msg.content) {
       const btype = block.type;
 
+      // EXPLICIT SAFEGUARD: skip image blocks. Images (screenshots, attached
+      // pictures) are large base64 payloads and carry no useful signal for
+      // the auditor. In practice they live inside tool_result blocks which we
+      // already ignore, but this explicit skip prevents regression if we ever
+      // start processing tool_result partial content.
+      if (btype === "image") continue;
+
       // USER text: drop IDE notifications and system reminders
       if (role === "user" && btype === "text") {
         const text = String(block.text || "").trim();
@@ -183,7 +190,28 @@ function escapeXml(s: string): string {
  *   </session_transcript>
  */
 export function renderConversation(turns: ConversationTurn[]): string {
-  const lines: string[] = ["<session_transcript>"];
+  return renderConversationChunk(turns, { index: 1, total: 1 });
+}
+
+/**
+ * Render a subset of turns as one chunk, wrapped in
+ * <session_transcript_chunk index="N" total="M">...</session_transcript_chunk>
+ * when it is part of a multi-chunk audit, or <session_transcript>...</session_transcript>
+ * for a single-chunk audit (index=1, total=1).
+ */
+export function renderConversationChunk(
+  turns: ConversationTurn[],
+  chunk: { index: number; total: number },
+): string {
+  const isSingleChunk = chunk.total === 1;
+  const openTag = isSingleChunk
+    ? "<session_transcript>"
+    : `<session_transcript_chunk index="${chunk.index}" total="${chunk.total}">`;
+  const closeTag = isSingleChunk
+    ? "</session_transcript>"
+    : "</session_transcript_chunk>";
+
+  const lines: string[] = [openTag];
   let toolBuffer: string[] = [];
 
   const flushToolBuffer = () => {
@@ -208,9 +236,74 @@ export function renderConversation(turns: ConversationTurn[]): string {
     }
   }
   flushToolBuffer();
-  lines.push("</session_transcript>");
+  lines.push(closeTag);
 
   return lines.join("\n");
+}
+
+/**
+ * Estimate the rendered size (in chars) of a single turn when emitted as XML.
+ * Used to pack turns into chunks without rendering every possible split.
+ */
+function estimateTurnRenderSize(turn: ConversationTurn): number {
+  // Rough upper bound: content length + tag overhead (~60 chars for open+close+indent).
+  return turn.content.length + 60;
+}
+
+/**
+ * Split a sequence of turns into chunks, each whose rendered size fits under
+ * maxCharsPerChunk. Splits happen ONLY on turn boundaries (never mid-thinking,
+ * mid-user_message, or mid-assistant_message). If a single turn exceeds the
+ * budget on its own (pathological), it gets its own chunk and the caller must
+ * decide whether to truncate or skip it — we return it as-is.
+ *
+ * Returns an array of turn subsets. Render each with renderConversationChunk.
+ */
+export function splitTurnsIntoChunks(
+  turns: ConversationTurn[],
+  maxCharsPerChunk: number,
+): ConversationTurn[][] {
+  if (turns.length === 0) return [];
+
+  // Fast path: everything fits in one chunk.
+  const totalSize = turns.reduce((s, t) => s + estimateTurnRenderSize(t), 0);
+  // +100 for the XML wrapper tags overhead.
+  if (totalSize + 100 <= maxCharsPerChunk) {
+    return [turns];
+  }
+
+  const chunks: ConversationTurn[][] = [];
+  let current: ConversationTurn[] = [];
+  let currentSize = 100; // wrapper overhead
+
+  for (const turn of turns) {
+    const turnSize = estimateTurnRenderSize(turn);
+
+    // If this turn alone exceeds the budget, flush current chunk and give it
+    // its own oversized chunk. Caller can decide how to handle it.
+    if (turnSize > maxCharsPerChunk - 100) {
+      if (current.length > 0) {
+        chunks.push(current);
+        current = [];
+        currentSize = 100;
+      }
+      chunks.push([turn]);
+      continue;
+    }
+
+    // If adding this turn would exceed the budget, flush and start a new chunk.
+    if (currentSize + turnSize > maxCharsPerChunk) {
+      chunks.push(current);
+      current = [turn];
+      currentSize = 100 + turnSize;
+    } else {
+      current.push(turn);
+      currentSize += turnSize;
+    }
+  }
+
+  if (current.length > 0) chunks.push(current);
+  return chunks;
 }
 
 /**
@@ -239,19 +332,32 @@ export function parseAndRenderTranscript(path: string): ParsedTranscript {
 /**
  * Parse and render multiple transcripts (for multi-agent sessions), joining
  * them with role labels so the auditor can distinguish which agent said what.
+ * Also returns the combined turns list for downstream chunking.
  */
 export function parseAndRenderTranscripts(
   refs: Array<{ id: string; transcriptPath: string; role?: string }>,
-): { rendered: string; totalRaw: number; totalFiltered: number } {
-  if (refs.length === 0) return { rendered: "", totalRaw: 0, totalFiltered: 0 };
+): {
+  rendered: string;
+  totalRaw: number;
+  totalFiltered: number;
+  /** Combined turns across all refs, for chunking in the auditor. */
+  allTurns: ConversationTurn[];
+} {
+  if (refs.length === 0) return { rendered: "", totalRaw: 0, totalFiltered: 0, allTurns: [] };
   if (refs.length === 1) {
     const parsed = parseAndRenderTranscript(refs[0].transcriptPath);
-    return { rendered: parsed.rendered, totalRaw: parsed.rawSize, totalFiltered: parsed.filteredSize };
+    return {
+      rendered: parsed.rendered,
+      totalRaw: parsed.rawSize,
+      totalFiltered: parsed.filteredSize,
+      allTurns: parsed.turns,
+    };
   }
 
   const parts: string[] = [];
   let totalRaw = 0;
   let totalFiltered = 0;
+  const allTurns: ConversationTurn[] = [];
   for (const ref of refs) {
     const parsed = parseAndRenderTranscript(ref.transcriptPath);
     if (parsed.rendered.length === 0) continue;
@@ -260,6 +366,7 @@ export function parseAndRenderTranscripts(
     parts.push("");
     totalRaw += parsed.rawSize;
     totalFiltered += parsed.filteredSize;
+    allTurns.push(...parsed.turns);
   }
-  return { rendered: parts.join("\n"), totalRaw, totalFiltered };
+  return { rendered: parts.join("\n"), totalRaw, totalFiltered, allTurns };
 }

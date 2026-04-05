@@ -83,7 +83,7 @@ const result = await runSessionAudit({
   sessionId,
   sessionOrigin: WORKSPACE,
   workspaceInfo,
-  sessionTranscript: parsed.rendered,
+  sessionTurns: parsed.turns,
   filesChanged,
   model: modelArg,
 });
@@ -93,6 +93,7 @@ console.log();
 console.log("=".repeat(70));
 console.log(`AUDIT RESULT  (${elapsed}s, $${result.cost.costUsd?.toFixed(4) ?? "?"})`);
 console.log("=".repeat(70));
+console.log(`Chunks: ${result.chunks ?? 1}  |  Total prompt tokens: ${result.promptTokens ?? "?"}`);
 console.log();
 
 console.log(`### MEMORIES (${result.memories.length}) ###`);

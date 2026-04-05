@@ -15,7 +15,11 @@
  */
 
 import { join } from "node:path";
-import { readActiveSession, attachClaudeSession } from "../storage/sessions.js";
+import {
+  ensureAxmeSessionForClaude,
+  readClaudeSessionMapping,
+  clearClaudeSessionMapping,
+} from "../storage/sessions.js";
 import { runSessionCleanup } from "../session-cleanup.js";
 import { pathExists } from "../storage/engine.js";
 import { AXME_CODE_DIR } from "../types.js";
@@ -29,23 +33,28 @@ interface SessionEndInput {
 async function handleSessionEnd(workspacePath: string, input: SessionEndInput): Promise<void> {
   if (!pathExists(join(workspacePath, AXME_CODE_DIR))) return;
 
-  const sessionId = readActiveSession(workspacePath);
-  if (!sessionId) return;
+  // SessionEnd must know which Claude session is ending. If it does not,
+  // there is nothing we can safely do — we cannot guess which of possibly
+  // several parallel sessions is closing.
+  if (!input.session_id) return;
 
-  // If Claude Code passes session_id + transcript_path in the SessionEnd
-  // event, make sure it is attached before the audit runs. PreToolUse
-  // should already have done this during the session, but a session that
-  // only had read-only MCP tool calls (no Edit/Write, no PreToolUse-matched
-  // tools) might not have been attached yet.
-  if (input.session_id && input.transcript_path) {
-    attachClaudeSession(workspacePath, sessionId, {
-      id: input.session_id,
-      transcriptPath: input.transcript_path,
-      role: "main",
-    });
+  // If PreToolUse / PostToolUse already created the AXME session for this
+  // Claude session, we find it via the mapping. If not (e.g. the session
+  // only made read-only MCP tool calls), create it now so the audit still
+  // runs against whatever filesChanged/worklog we have.
+  let axmeSessionId = readClaudeSessionMapping(workspacePath, input.session_id);
+  if (!axmeSessionId && input.transcript_path) {
+    axmeSessionId = ensureAxmeSessionForClaude(
+      workspacePath,
+      input.session_id,
+      input.transcript_path,
+    );
   }
+  if (!axmeSessionId) return;
 
-  await runSessionCleanup(workspacePath, sessionId, { clearActive: true });
+  await runSessionCleanup(workspacePath, axmeSessionId);
+  // Clear this Claude session's mapping file — the session is over.
+  clearClaudeSessionMapping(workspacePath, input.session_id);
 }
 
 /**
