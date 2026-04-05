@@ -63,6 +63,7 @@ export function createSession(projectPath: string): SessionMeta {
     closedAt: null,
     turns: 0,
     filesChanged: [],
+    pid: process.pid,
   };
   writeSession(projectPath, session);
   return session;
@@ -83,6 +84,59 @@ export function closeSession(projectPath: string, id: string): void {
   if (!session) return;
   session.closedAt = new Date().toISOString();
   writeSession(projectPath, session);
+}
+
+/**
+ * Mark a session as audited by the LLM session auditor.
+ * Used by both auto-audit (transport close) and startup fallback
+ * to prevent duplicate audits on the same session.
+ */
+export function markAudited(projectPath: string, id: string): void {
+  const session = loadSession(projectPath, id);
+  if (!session) return;
+  session.auditedAt = new Date().toISOString();
+  writeSession(projectPath, session);
+}
+
+/**
+ * Check if a process with the given PID is currently running.
+ * Uses signal 0 (no-op signal) to probe process existence.
+ *
+ * Returns true if process is alive, false if dead.
+ * EPERM (permission denied) is treated as alive — the process exists
+ * but belongs to another user, which is extremely rare in our context
+ * and safer to treat as alive than as dead.
+ */
+export function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err: any) {
+    if (err?.code === "EPERM") return true;
+    return false;
+  }
+}
+
+/**
+ * Find sessions that still need an LLM audit: auditedAt is null AND
+ * their owning MCP server process is no longer running.
+ *
+ * Sessions without a pid field (pre-auto-audit format) are skipped —
+ * we cannot determine if they are orphans without a PID to probe.
+ *
+ * Note: closedAt is intentionally NOT checked. A session may have
+ * closedAt set but auditedAt null if its auto-audit failed — these
+ * need a retry on the next startup.
+ */
+export function findOrphanSessions(projectPath: string): SessionMeta[] {
+  const orphans: SessionMeta[] = [];
+  for (const session of listSessions(projectPath)) {
+    if (session.auditedAt) continue;
+    if (session.pid == null) continue;
+    if (isPidAlive(session.pid)) continue;
+    orphans.push(session);
+  }
+  return orphans;
 }
 
 export function listSessions(projectPath: string, opts?: { limit?: number }): SessionMeta[] {
@@ -108,27 +162,18 @@ export function getLastSession(projectPath: string): SessionMeta | null {
 }
 
 /**
- * Ensure a session exists - create it if not found.
- * Used by hooks that receive session_id from Claude Code harness.
+ * Track a file change in an existing session.
+ *
+ * Called from the PostToolUse hook, which runs in a separate process from
+ * the MCP server. If the session file cannot be read (transient I/O error
+ * or missing), this function silently returns instead of creating a new
+ * session — recreating would destroy the real session's turns counter and
+ * filesChanged list. Losing a single filesChanged entry is a far better
+ * tradeoff than resetting the session to turns=0.
  */
-export function ensureSession(projectPath: string, id: string): SessionMeta {
-  const existing = loadSession(projectPath, id);
-  if (existing) return existing;
-
-  initSessionStore(projectPath);
-  const session: SessionMeta = {
-    id,
-    createdAt: new Date().toISOString(),
-    closedAt: null,
-    turns: 0,
-    filesChanged: [],
-  };
-  writeSession(projectPath, session);
-  return session;
-}
-
 export function trackFileChanged(projectPath: string, sessionId: string, filePath: string): void {
-  const session = ensureSession(projectPath, sessionId);
+  const session = loadSession(projectPath, sessionId);
+  if (!session) return;
   if (!session.filesChanged.includes(filePath)) {
     session.filesChanged.push(filePath);
     writeSession(projectPath, session);

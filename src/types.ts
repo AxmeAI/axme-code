@@ -140,6 +140,7 @@ export interface FilesystemRules {
 export type WorklogEventType =
   | "session_start"
   | "session_end"
+  | "session_orphan_closed"
   | "agent_turn"
   | "check_result"
   | "memory_saved"
@@ -160,6 +161,10 @@ export interface SessionMeta {
   closedAt: string | null;
   turns: number;
   filesChanged: string[];
+  /** PID of MCP server process. Used to detect orphaned sessions after crashes. Optional for backward compat. */
+  pid?: number;
+  /** ISO timestamp when LLM session audit completed. Used to dedupe auto-audit vs startup fallback. */
+  auditedAt?: string;
 }
 
 // --- Config ---

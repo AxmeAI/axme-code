@@ -17,8 +17,14 @@ import { saveDecisionTool } from "./tools/decision-tools.js";
 import { updateSafetyTool, showSafetyTool } from "./tools/safety-tools.js";
 import { statusTool, worklogTool } from "./tools/status.js";
 import { detectWorkspace } from "./utils/workspace-detector.js";
-import { createSession, writeActiveSession, clearActiveSession, closeSession, loadSession, incrementTurns } from "./storage/sessions.js";
-import { logSessionStart, logSessionEnd } from "./storage/worklog.js";
+import {
+  createSession,
+  writeActiveSession,
+  incrementTurns,
+  findOrphanSessions,
+} from "./storage/sessions.js";
+import { logSessionStart, logEvent } from "./storage/worklog.js";
+import { runSessionCleanup } from "./session-cleanup.js";
 
 // --- Server state (detected at startup from cwd) ---
 
@@ -49,24 +55,22 @@ function bumpTurn(): void {
   lastTurnBumpAt = now;
 }
 
-// Clean up session on process exit
-function onExit() {
+// Session cleanup is triggered by transport.onclose (see main() below) rather
+// than process.on("exit") — the async runSessionCleanup must finish before
+// the MCP process exits, which "exit" handlers cannot await.
+// SIGINT/SIGTERM are handled in main() to call the same cleanup path.
+
+let cleanupRunning = false;
+async function cleanupAndExit(reason: string): Promise<void> {
+  if (cleanupRunning) return;
+  cleanupRunning = true;
   try {
-    // Read latest session data from disk (hooks may have updated it)
-    const latest = loadSession(defaultProjectPath, currentSession.id);
-    closeSession(defaultProjectPath, currentSession.id);
-    clearActiveSession(defaultProjectPath);
-    logSessionEnd(defaultProjectPath, currentSession.id, {
-      turns: latest?.turns ?? 0,
-      filesChanged: latest?.filesChanged ?? [],
-    });
-  } catch {
-    // Best-effort cleanup
+    await runSessionCleanup(defaultProjectPath, currentSession.id, { clearActive: true });
+  } catch (err) {
+    process.stderr.write(`AXME session cleanup failed (${reason}): ${err}\n`);
   }
+  process.exit(0);
 }
-process.on("exit", onExit);
-process.on("SIGINT", () => { onExit(); process.exit(0); });
-process.on("SIGTERM", () => { onExit(); process.exit(0); });
 
 // --- Build instructions for Claude Code ---
 
@@ -284,7 +288,57 @@ server.tool(
 // --- Start server ---
 async function main() {
   const transport = new StdioServerTransport();
+
+  // Auto-audit on disconnect: when Claude Code closes the stdio pipe, stdin
+  // receives EOF. The MCP server process survives (Claude Code is known to
+  // not kill child MCP servers on exit, issue #1935), giving us time to run
+  // the full LLM audit before we exit ourselves.
+  //
+  // Note: we listen on process.stdin directly because MCP SDK's
+  // StdioServerTransport only handles 'data' and 'error' events — it does
+  // not react to stdin 'end'/'close', so transport.onclose never fires on
+  // its own. This bypasses that limitation.
+  process.stdin.on("end", () => { void cleanupAndExit("stdin-end"); });
+  process.stdin.on("close", () => { void cleanupAndExit("stdin-close"); });
+
+  process.on("SIGINT", () => { void cleanupAndExit("sigint"); });
+  process.on("SIGTERM", () => { void cleanupAndExit("sigterm"); });
+  process.on("SIGHUP", () => { void cleanupAndExit("sighup"); });
+
   await server.connect(transport);
+
+  // Startup fallback: audit any orphaned sessions left behind by previous
+  // MCP servers that were killed before auto-audit could run (e.g. SIGKILL
+  // from VS Code force-close). Runs in the background so it does not block
+  // server startup.
+  setTimeout(() => {
+    void auditOrphansInBackground();
+  }, 3000);
+}
+
+async function auditOrphansInBackground(): Promise<void> {
+  try {
+    const orphans = findOrphanSessions(defaultProjectPath);
+    for (const orphan of orphans) {
+      if (orphan.id === currentSession.id) continue; // never touch self
+      try {
+        const result = await runSessionCleanup(defaultProjectPath, orphan.id);
+        logEvent(defaultProjectPath, "session_orphan_closed", orphan.id, {
+          turns: orphan.turns,
+          filesChanged: orphan.filesChanged.length,
+          auditRan: result.auditRan,
+          memories: result.memories,
+          decisions: result.decisions,
+          costUsd: result.costUsd,
+          closedBy: currentSession.id,
+        });
+      } catch (err) {
+        process.stderr.write(`AXME orphan audit failed for ${orphan.id}: ${err}\n`);
+      }
+    }
+  } catch (err) {
+    process.stderr.write(`AXME orphan scan failed: ${err}\n`);
+  }
 }
 
 main().catch((err) => {
