@@ -48,13 +48,38 @@ This prevents you from missing freshly-extracted rules from the previous
 session that might contradict what you are about to do.
 `;
 
+const STORAGE_PATH_GUIDANCE = `
+### Storage paths (critical)
+For any direct inspection of .axme-code/ files via Bash (ls, cat, grep, find),
+ALWAYS use the absolute path from axme_context output's "# AXME Storage Root"
+header. Do NOT use relative paths from your cwd. In a multi-repo workspace the
+workspace root and each child repo both have their own separate .axme-code/
+storage, and reading the wrong one silently gives you stale or missing data.
+
+Every session's meta.json contains an "origin" field with the absolute path of
+the directory where the MCP server was running when the session was created.
+Whenever you pick up a session file directly (not via axme_context) — for
+example to audit a previous run, verify an audit log, or cross-reference past
+work — read meta.origin FIRST to confirm which .axme-code/ storage that session
+belongs to. This is the authoritative per-session source of truth.
+
+### Reloading axme-code after code changes
+Running 'npm run build' in axme-code does NOT reload the MCP server attached to
+the current VS Code window — Node caches modules in memory for the server's
+lifetime. After any code change to axme-code, close and reopen the VS Code
+window (Developer: Reload Window) before testing new behavior. The detached
+audit worker reads fresh code from disk on each invocation, so audit-logic
+iterations take effect immediately; only changes to the MCP server itself
+(tool definitions, cleanupAndExit, startup) require a window reload.
+`;
+
 const SINGLE_REPO_CLAUDE_MD = `## AXME Code
 
 ### Session Start (MANDATORY)
 Call axme_context tool with this project's path at the start of every session.
 This loads: oracle, decisions, safety rules, memories, test plan, active plans.
 Do NOT skip - without context you will miss critical project rules.
-${PENDING_AUDITS_GUIDANCE}
+${PENDING_AUDITS_GUIDANCE}${STORAGE_PATH_GUIDANCE}
 ### During Work
 - Error pattern or successful approach discovered -> call axme_save_memory immediately
 - Architectural decision made or discovered -> call axme_save_decision immediately
@@ -76,7 +101,7 @@ Every repo has its own .axme-code/ storage (oracle, decisions, memory, safety) c
 BEFORE reading code, making changes, or running tests in any repo:
   call axme_context with that repo's path to load repo-specific context.
 Each repo has unique decisions and safety rules. Workspace context alone is NOT enough.
-${PENDING_AUDITS_GUIDANCE}
+${PENDING_AUDITS_GUIDANCE}${STORAGE_PATH_GUIDANCE}
 ### During Work
 - Save memories/decisions/safety rules immediately when discovered
 - For cross-project findings: include scope parameter (e.g. scope: ["all"])
@@ -347,6 +372,36 @@ async function main() {
         await runSessionEndHook(workspacePath);
       }
       break;
+    }
+
+    case "audit-session": {
+      // Standalone entry point for the detached audit worker. Takes the
+      // workspace path and an AXME session id, runs runSessionCleanup on
+      // the pair, and exits. This is what src/audit-spawner.ts spawns in
+      // a detached child — it is also directly invokable from the shell
+      // for manual force re-audit of a specific session.
+      const wsIdx = args.indexOf("--workspace");
+      const sidIdx = args.indexOf("--session");
+      const workspacePath = wsIdx >= 0 && args[wsIdx + 1] ? resolve(args[wsIdx + 1]) : undefined;
+      const sessionId = sidIdx >= 0 && args[sidIdx + 1] ? args[sidIdx + 1] : undefined;
+      if (!workspacePath || !sessionId) {
+        console.error("audit-session requires --workspace <path> --session <axme-uuid>");
+        process.exit(2);
+      }
+      process.stderr.write(
+        `axme-code audit-session: workspace=${workspacePath} session=${sessionId} pid=${process.pid}\n`,
+      );
+      try {
+        const { runSessionCleanup } = await import("./session-cleanup.js");
+        const result = await runSessionCleanup(workspacePath, sessionId);
+        process.stderr.write(`axme-code audit-session: ${JSON.stringify(result)}\n`);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        const stack = err instanceof Error ? err.stack : undefined;
+        process.stderr.write(`axme-code audit-session FAILED: ${stack ?? msg}\n`);
+        process.exit(1);
+      }
+      process.exit(0);
     }
 
     case "help":

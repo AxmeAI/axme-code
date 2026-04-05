@@ -27,7 +27,7 @@ import {
   readClaudeSessionMapping,
 } from "./storage/sessions.js";
 import { logEvent } from "./storage/worklog.js";
-import { runSessionCleanup } from "./session-cleanup.js";
+import { spawnDetachedAuditWorker } from "./audit-spawner.js";
 
 // --- Server state (detected at startup from cwd) ---
 
@@ -94,30 +94,46 @@ function getOwnedSessionIdForLogging(): string | undefined {
 }
 
 // Session cleanup is triggered by transport.onclose (see main() below) rather
-// than process.on("exit") — the async runSessionCleanup must finish before
-// the MCP process exits, which "exit" handlers cannot await.
-// SIGINT/SIGTERM are handled in main() to call the same cleanup path.
+// than process.on("exit") — exit handlers cannot do meaningful work.
+//
+// CRITICAL: cleanupAndExit DOES NOT run the audit itself. It spawns a detached
+// background worker process per owned session and exits immediately. Why:
+//
+//   VS Code may kill this MCP server process within milliseconds of closing
+//   the Claude Code window (especially in center-editor-tab mode where the
+//   tab close triggers an immediate SIGKILL, unlike the side-panel mode which
+//   gives us more time). Running the audit synchronously here means it dies
+//   mid-LLM-call and the session gets stuck at phase="started" forever.
+//
+//   The detached worker runs in its own process group (setsid via
+//   `detached: true`), survives any signal to this server's process group,
+//   and reads fresh code from dist/cli.mjs on every spawn — so iteration on
+//   the auditor does not require a VS Code window reload.
+//
+//   The worker is `axme-code audit-session --workspace X --session Y` and
+//   it calls the same runSessionCleanup() this file used to call directly.
+//   Concurrency is handled by auditStatus="pending" + stale timeout inside
+//   runSessionCleanup itself — two workers for the same session cannot both
+//   run the LLM, the second will hit "concurrent-audit" skip and exit.
 
 let cleanupRunning = false;
 async function cleanupAndExit(reason: string): Promise<void> {
   if (cleanupRunning) return;
   cleanupRunning = true;
 
-  // Find all mapping files owned by our Claude Code parent process and
-  // run cleanup for each. We identify ownership by ppid equality: the
-  // Claude Code process that spawned us also spawns the hook subprocesses,
-  // which recorded their ppid in the mapping file.
+  // Find all mapping files owned by our Claude Code parent process, spawn a
+  // detached audit worker for each, clear the mapping, and exit. No awaiting.
   try {
     const mappings = listClaudeSessionMappings(defaultProjectPath);
     const owned = mappings.filter(m => m.ownerPpid === OWN_PPID);
     process.stderr.write(
-      `AXME cleanup (${reason}): ${owned.length} owned session(s) of ${mappings.length} total\n`,
+      `AXME cleanup (${reason}): ${owned.length} owned session(s) of ${mappings.length} total — spawning detached audit workers\n`,
     );
     for (const m of owned) {
       try {
-        await runSessionCleanup(defaultProjectPath, m.axmeSessionId);
+        spawnDetachedAuditWorker(defaultProjectPath, m.axmeSessionId);
       } catch (err) {
-        process.stderr.write(`AXME cleanup failed for ${m.axmeSessionId}: ${err}\n`);
+        process.stderr.write(`AXME cleanup: failed to spawn worker for ${m.axmeSessionId}: ${err}\n`);
       }
       try { clearClaudeSessionMapping(defaultProjectPath, m.claudeSessionId); } catch {}
     }
@@ -143,6 +159,9 @@ function buildInstructions(): string {
     parts.push("Call axme_context at session start to load project knowledge base.");
   }
   parts.push("Save memories, decisions, and safety rules immediately when discovered during work.");
+  parts.push(
+    `STORAGE ROOT: ${defaultProjectPath}/.axme-code — for any direct inspection of .axme-code/ files via Bash (ls, cat, grep, find), use this ABSOLUTE path. Do NOT use relative paths from your cwd; in a multi-repo workspace your cwd may point to a child repo with its own separate .axme-code/ storage. Every session's meta.json also contains an "origin" field with its absolute parent directory — read it to verify which storage a given session belongs to.`,
+  );
   parts.push(
     "IMPORTANT: if axme_context output contains a '## ⚠️ Pending audits' section, " +
       "a previous session's audit is still running and the knowledge base is incomplete. " +
@@ -392,19 +411,21 @@ async function auditOrphansInBackground(): Promise<void> {
     const orphans = findOrphanSessions(defaultProjectPath);
     for (const orphan of orphans) {
       if (ownedAxmeIds.has(orphan.id)) continue; // never touch our own active sessions
+      // Spawn a detached worker instead of awaiting runSessionCleanup inline.
+      // Same reasoning as cleanupAndExit: the MCP server can be killed by VS
+      // Code at any time, and we do not want orphan audits to die mid-run.
+      // logEvent is fire-and-forget here — the worker will write its own
+      // session_end / audit log when it completes.
       try {
-        const result = await runSessionCleanup(defaultProjectPath, orphan.id);
+        spawnDetachedAuditWorker(defaultProjectPath, orphan.id);
         logEvent(defaultProjectPath, "session_orphan_closed", orphan.id, {
           turns: orphan.turns,
           filesChanged: orphan.filesChanged.length,
-          auditRan: result.auditRan,
-          memories: result.memories,
-          decisions: result.decisions,
-          costUsd: result.costUsd,
           closedByPpid: OWN_PPID,
+          workerSpawned: true,
         });
       } catch (err) {
-        process.stderr.write(`AXME orphan audit failed for ${orphan.id}: ${err}\n`);
+        process.stderr.write(`AXME orphan audit: failed to spawn worker for ${orphan.id}: ${err}\n`);
       }
     }
   } catch (err) {

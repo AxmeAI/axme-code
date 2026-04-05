@@ -193,6 +193,24 @@ export interface SessionMeta {
   closedAt: string | null;
   turns: number;
   filesChanged: string[];
+  /**
+   * Absolute path to the directory where the MCP server was running when
+   * this session was created. This is the authoritative "session origin"
+   * and the parent of the .axme-code/ directory that contains this session.
+   *
+   * Why we store it: an operator (or an agent that picked up the meta.json
+   * directly instead of going through axme_context) can look at this field
+   * and know exactly which .axme-code/ storage this session belongs to. In
+   * a multi-repo workspace the workspace root and each child repo each
+   * have their own .axme-code/, and cwd-relative lookups are ambiguous.
+   * `origin` removes the ambiguity: it is always absolute, always points to
+   * the correct storage root (origin + "/.axme-code"), and never changes
+   * after session creation.
+   *
+   * Optional for backward compat with sessions created before this field
+   * was added.
+   */
+  origin?: string;
   /** PID of the Claude Code process that owns this session. Used by orphan cleanup. Optional for backward compat. */
   pid?: number;
   /** ISO timestamp when LLM session audit completed. Used to dedupe auto-audit vs startup fallback. */

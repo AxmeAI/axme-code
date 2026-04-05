@@ -557,6 +557,12 @@ export function createSession(projectPath: string): SessionMeta {
     closedAt: null,
     turns: 0,
     filesChanged: [],
+    // `origin` is the absolute path of the session's parent directory — the
+    // directory that contains .axme-code/. Stored at creation time and never
+    // updated, so any later reader of this meta.json can find the correct
+    // storage root unambiguously (origin + "/.axme-code"). See SessionMeta
+    // JSDoc in types.ts for the full rationale.
+    origin: projectPath,
     pid: getClaudeCodePid(),
   };
   writeSession(projectPath, session);
