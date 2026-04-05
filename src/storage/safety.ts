@@ -6,11 +6,13 @@
  */
 
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import yaml from "js-yaml";
 import { atomicWrite, ensureDir, pathExists } from "./engine.js";
 import type { SafetyRules, GitRules, BashRules, FilesystemRules } from "../types.js";
 import { AXME_CODE_DIR } from "../types.js";
+
+export type SafetyRuleType = "git_protected_branch" | "bash_deny" | "bash_allow" | "fs_deny" | "fs_readonly";
 
 const SAFETY_DIR = "safety";
 const RULES_FILE = "rules.yaml";
@@ -277,4 +279,99 @@ function mergeSafetyRules(base: SafetyRules, override: Partial<SafetyRules>): Sa
       deniedPaths: override.filesystem?.deniedPaths ?? base.filesystem.deniedPaths,
     },
   };
+}
+
+/**
+ * Union-merge two SafetyRules — the result ALLOWS what either allows and
+ * DENIES what either denies. Used by loadMergedSafetyRules to combine
+ * workspace-level base rules with repo-level additions.
+ *
+ * - protectedBranches: union
+ * - allowedPrefixes: union (broadens allow list)
+ * - deniedPrefixes / deniedCommands: union (stricter; a deny wins)
+ * - deniedPaths / readOnlyPaths: union (stricter)
+ * - allowForcePush / allowDirectPushToMain: AND (stricter: both must allow)
+ * - requirePrForMain: OR (either requiring is stricter)
+ */
+function unionMergeSafety(a: SafetyRules, b: SafetyRules): SafetyRules {
+  const uniq = (arr: string[]) => Array.from(new Set(arr));
+  return {
+    git: {
+      protectedBranches: uniq([...a.git.protectedBranches, ...b.git.protectedBranches]),
+      allowForcePush: a.git.allowForcePush && b.git.allowForcePush,
+      allowDirectPushToMain: a.git.allowDirectPushToMain && b.git.allowDirectPushToMain,
+      requirePrForMain: a.git.requirePrForMain || b.git.requirePrForMain,
+    },
+    bash: {
+      allowedPrefixes: uniq([...a.bash.allowedPrefixes, ...b.bash.allowedPrefixes]),
+      deniedPrefixes: uniq([...a.bash.deniedPrefixes, ...b.bash.deniedPrefixes]),
+      deniedCommands: uniq([...a.bash.deniedCommands, ...b.bash.deniedCommands]),
+    },
+    filesystem: {
+      readOnlyPaths: uniq([...a.filesystem.readOnlyPaths, ...b.filesystem.readOnlyPaths]),
+      deniedPaths: uniq([...a.filesystem.deniedPaths, ...b.filesystem.deniedPaths]),
+    },
+  };
+}
+
+// --- Scoped storage ---
+
+/**
+ * Save a safety rule respecting its scope. If scope is "all" or empty, the
+ * rule goes to workspace-level .axme-code/safety/rules.yaml (base rules that
+ * apply everywhere). If scope lists specific repos, the rule is written to
+ * each repo's own .axme-code/safety/rules.yaml.
+ *
+ * The PreToolUse hook will union-merge workspace + repo rules at check time.
+ */
+export function saveScopedSafetyRule(
+  ruleType: SafetyRuleType,
+  value: string,
+  scope: string[] | undefined,
+  projectPath: string,
+  workspacePath?: string,
+): { target: "workspace" | "project" | "scoped"; repos: string[] } {
+  // No scope, empty scope, or ["all"] → write to the session origin.
+  // If a workspacePath is available (workspace session), write there.
+  // Otherwise fall through to projectPath (single-repo session).
+  const isAllScope = !scope || scope.length === 0 || (scope.length === 1 && scope[0] === "all");
+  if (isAllScope) {
+    const target = workspacePath ?? projectPath;
+    updateSafetyRule(target, ruleType, value);
+    return { target: workspacePath ? "workspace" : "project", repos: [] };
+  }
+
+  // Scoped: write to each listed repo (skip "all" if mixed)
+  const repos: string[] = [];
+  if (workspacePath) {
+    for (const repoName of scope) {
+      if (repoName === "all") continue;
+      const targetPath = resolve(workspacePath, repoName);
+      if (pathExists(join(targetPath, ".axme-code")) || pathExists(join(targetPath, ".git"))) {
+        updateSafetyRule(targetPath, ruleType, value);
+        repos.push(repoName);
+      }
+    }
+  } else {
+    // Single-repo session with a scope list: just write to the project
+    updateSafetyRule(projectPath, ruleType, value);
+    repos.push(projectPath.split("/").pop() ?? "");
+  }
+  return { target: "scoped", repos };
+}
+
+/**
+ * Load safety rules merging workspace-level base with the specific repo's
+ * override, if any. This is what the PreToolUse hook uses when evaluating
+ * a tool call against a file inside a specific repo.
+ *
+ * If workspacePath is provided AND the file/command belongs to a specific
+ * repo, rules from both levels are union-merged (stricter wins on conflicts).
+ * Otherwise, just loads rules from projectPath.
+ */
+export function loadMergedSafetyRules(projectPath: string, workspacePath?: string): SafetyRules {
+  const projectRules = loadSafetyRules(projectPath);
+  if (!workspacePath || workspacePath === projectPath) return projectRules;
+  const workspaceRules = loadSafetyRules(workspacePath);
+  return unionMergeSafety(workspaceRules, projectRules);
 }

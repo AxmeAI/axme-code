@@ -10,11 +10,14 @@
  * Silent exit (no output) = allow.
  */
 
-import { loadSafetyRules, checkBash, checkGit, checkFilePath } from "../storage/safety.js";
+import { loadMergedSafetyRules, checkBash, checkGit, checkFilePath } from "../storage/safety.js";
 import { pathExists } from "../storage/engine.js";
 import { attachClaudeSession, readActiveSession } from "../storage/sessions.js";
-import { join } from "node:path";
+import { detectWorkspace } from "../utils/workspace-detector.js";
+import { dirname, join, resolve } from "node:path";
+import { existsSync } from "node:fs";
 import { AXME_CODE_DIR } from "../types.js";
+import type { SafetyRules } from "../types.js";
 import type { SafetyVerdict } from "../storage/safety.js";
 
 interface HookInput {
@@ -71,10 +74,38 @@ function deny(reason: string): void {
   process.stdout.write(JSON.stringify(output));
 }
 
-function handlePreToolUse(workspacePath: string, event: HookInput): void {
+/**
+ * Walk up from a file path looking for the nearest git repo root.
+ * Stops at the workspace boundary. Returns the workspace itself if no
+ * containing repo is found (falls back to workspace-level rules).
+ */
+function findContainingRepo(filePath: string, workspaceRoot: string): string {
+  let dir = resolve(filePath);
+  // If it's a file (not a directory), start from its directory
+  try {
+    const stat = existsSync(dir);
+    if (!stat) {
+      // Path doesn't exist yet (e.g. a file about to be written) — use parent
+      dir = dirname(dir);
+    }
+  } catch {
+    dir = dirname(dir);
+  }
+
+  const rootResolved = resolve(workspaceRoot);
+  while (dir.startsWith(rootResolved) && dir !== rootResolved) {
+    if (existsSync(join(dir, ".git"))) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return rootResolved;
+}
+
+function handlePreToolUse(sessionOrigin: string, event: HookInput): void {
   const { tool_name, tool_input } = event;
 
-  if (!pathExists(join(workspacePath, AXME_CODE_DIR))) return;
+  if (!pathExists(join(sessionOrigin, AXME_CODE_DIR))) return;
 
   // Attach Claude Code session (id + transcript path) to the current AXME
   // session on every tool call. Dedup'd by id inside the storage helper, so
@@ -82,9 +113,9 @@ function handlePreToolUse(workspacePath: string, event: HookInput): void {
   // PostToolUse) so the attachment happens before any safety denial — we
   // want the audit trail even for blocked tools.
   if (event.session_id && event.transcript_path) {
-    const axmeSessionId = readActiveSession(workspacePath);
+    const axmeSessionId = readActiveSession(sessionOrigin);
     if (axmeSessionId) {
-      attachClaudeSession(workspacePath, axmeSessionId, {
+      attachClaudeSession(sessionOrigin, axmeSessionId, {
         id: event.session_id,
         transcriptPath: event.transcript_path,
         role: "main",
@@ -92,12 +123,31 @@ function handlePreToolUse(workspacePath: string, event: HookInput): void {
     }
   }
 
-  const rules = loadSafetyRules(workspacePath);
+  // Determine if the session origin is a workspace (multi-repo) or a single repo.
+  // For multi-repo workspaces, safety rules are merged from workspace-level +
+  // the specific repo being touched. For single repos, only one level exists.
+  const workspaceInfo = detectWorkspace(sessionOrigin);
+  const isWorkspace = workspaceInfo.type !== "single";
+  const workspaceRoot = isWorkspace ? sessionOrigin : undefined;
+
+  // Resolve the target repo for file-based tool calls. For Bash we use the
+  // workspace-level rules (commands are not tied to a specific repo).
+  function loadRulesForFile(filePath: string): SafetyRules {
+    if (!isWorkspace) return loadMergedSafetyRules(sessionOrigin);
+    const repo = findContainingRepo(filePath, workspaceRoot!);
+    return loadMergedSafetyRules(repo, workspaceRoot);
+  }
+
+  function loadRulesForBash(): SafetyRules {
+    return loadMergedSafetyRules(sessionOrigin, workspaceRoot);
+  }
+
   let verdict: SafetyVerdict = { allowed: true };
 
   switch (tool_name) {
     case "Bash": {
       const command = (tool_input.command as string) ?? "";
+      const rules = loadRulesForBash();
       verdict = checkBash(rules, command);
       if (!verdict.allowed) break;
       // Only apply git checks to command segments that actually invoke git,
@@ -116,6 +166,7 @@ function handlePreToolUse(workspacePath: string, event: HookInput): void {
     case "Grep": {
       const filePath = (tool_input.file_path || tool_input.path) as string;
       if (filePath) {
+        const rules = loadRulesForFile(filePath);
         verdict = checkFilePath(rules, filePath, "read");
       }
       break;
@@ -125,6 +176,7 @@ function handlePreToolUse(workspacePath: string, event: HookInput): void {
     case "NotebookEdit": {
       const filePath = (tool_input.file_path || tool_input.path) as string;
       if (filePath) {
+        const rules = loadRulesForFile(filePath);
         verdict = checkFilePath(rules, filePath, "write");
       }
       break;

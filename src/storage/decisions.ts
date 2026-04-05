@@ -94,29 +94,56 @@ export function enforceableDecisionsContext(projectPath: string): string {
   return parts.join("\n");
 }
 
+/**
+ * Save decisions with scope-based routing. Accepts decisions WITHOUT an id —
+ * each target path generates its own sequential id independently (so repo A
+ * and repo B can both have D-042 pointing to different decisions).
+ *
+ * Routing:
+ * - No scope / empty scope / ["all"] → session origin (projectPath). If a
+ *   workspacePath is provided, "all" means workspace root so the rule is
+ *   discoverable workspace-wide.
+ * - [repoName] / [repoName, ...] → each listed repo inside the workspace.
+ */
 export function saveScopedDecisions(
-  decisions: Decision[], projectPath: string, workspacePath?: string,
+  decisions: Array<Omit<Decision, "id">>, projectPath: string, workspacePath?: string,
 ): { saved: number; crossProject: number } {
   let saved = 0, crossProject = 0;
   const projectName = projectPath.split("/").pop() ?? "";
 
   for (const d of decisions) {
-    if (!d.scope || d.scope.length === 0 || (d.scope.length === 1 && d.scope[0] === projectName)) {
-      saveDecisions(projectPath, [d]);
+    const scope = d.scope;
+    const isAllScope = !scope || scope.length === 0 || (scope.length === 1 && scope[0] === "all");
+    const isSelfScope = scope && scope.length === 1 && scope[0] === projectName;
+
+    if (isAllScope) {
+      // "all" scope goes to the session origin. In a workspace session that's
+      // the workspace root (discoverable by any repo); in a single-repo session
+      // it's that repo's .axme-code/.
+      addDecision(projectPath, d);
+      saved++;
+    } else if (isSelfScope) {
+      addDecision(projectPath, d);
       saved++;
     } else if (workspacePath) {
-      saveDecisions(workspacePath, [d]);
-      crossProject++;
-      for (const target of d.scope) {
+      // Write to each listed repo. Do NOT write a copy to workspace root — the
+      // rule is repo-specific, not universal.
+      let writtenToRepo = false;
+      for (const target of scope!) {
         if (target === "all") continue;
         const targetPath = resolve(workspacePath, target);
         if (pathExists(join(targetPath, ".axme-code")) || pathExists(join(targetPath, ".git"))) {
-          saveDecisions(targetPath, [d]);
+          addDecision(targetPath, d);
+          writtenToRepo = true;
+          crossProject++;
         }
       }
+      // Fallback: if none of the listed repos exist, write to workspace root
+      // so the rule isn't silently dropped.
+      if (!writtenToRepo) addDecision(workspacePath, d);
       saved++;
     } else {
-      saveDecisions(projectPath, [d]);
+      addDecision(projectPath, d);
       saved++;
     }
   }
