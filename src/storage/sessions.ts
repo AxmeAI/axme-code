@@ -374,13 +374,24 @@ export function clearLegacyActiveSession(projectPath: string): void {
 
 /**
  * Ensure an AXME session exists for the given Claude session. Lazy-created
- * on the first hook call that knows its Claude session_id. Subsequent calls
- * for the same Claude session return the existing mapping.
+ * on the first hook call that knows its Claude session_id.
  *
- * Also attaches the Claude session (id + transcript path) to the AXME session
- * so the auditor can later read the transcript.
+ * Stale-mapping detection: if a mapping file already exists but the AXME
+ * session it points at is **stale** (already audited, or owned by a dead
+ * Claude Code process), we create a fresh AXME session and overwrite the
+ * mapping. Otherwise we would keep writing filesChanged/attachments to a
+ * session that is already closed — so the next audit cycle sees nothing and
+ * the user's work goes untracked.
  *
- * Returns the AXME session UUID.
+ * This scenario happens in practice when:
+ *   - Claude Code is killed with SIGKILL mid-cleanup: the old MCP server's
+ *     cleanupAndExit ran `markAudited` but was terminated before reaching
+ *     `clearClaudeSessionMapping`, leaving a stale mapping on disk.
+ *   - Claude Code restarts the same session (/compact, crash recovery, VS
+ *     Code reload): same Claude session_id, new process pid, old AXME
+ *     session already wrapped up.
+ *
+ * Returns the (possibly fresh) AXME session UUID.
  */
 export function ensureAxmeSessionForClaude(
   projectPath: string,
@@ -389,13 +400,27 @@ export function ensureAxmeSessionForClaude(
 ): string {
   const existing = readClaudeSessionMapping(projectPath, claudeSessionId);
   if (existing) {
-    // Ensure the transcript is attached (idempotent).
-    attachClaudeSession(projectPath, existing, {
-      id: claudeSessionId,
-      transcriptPath,
-      role: "main",
-    });
-    return existing;
+    const existingSession = loadSession(projectPath, existing);
+    const isStale =
+      !existingSession ||
+      existingSession.auditedAt != null ||
+      (existingSession.pid != null && !isPidAlive(existingSession.pid));
+    if (!isStale) {
+      // Live mapping — attach transcript and reuse.
+      attachClaudeSession(projectPath, existing, {
+        id: claudeSessionId,
+        transcriptPath,
+        role: "main",
+      });
+      return existing;
+    }
+    // Stale mapping: log once and fall through to create a fresh session,
+    // which will overwrite the mapping file below.
+    process.stderr.write(
+      `AXME: stale mapping for Claude session ${claudeSessionId} → ` +
+        `AXME ${existing} (audited=${existingSession?.auditedAt ?? "no"}, ` +
+        `pid=${existingSession?.pid ?? "?"}). Creating fresh AXME session.\n`,
+    );
   }
   const axmeSession = createSession(projectPath);
   writeClaudeSessionMapping(projectPath, claudeSessionId, axmeSession.id);
