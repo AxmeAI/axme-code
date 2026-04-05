@@ -64,6 +64,13 @@ async function handleSessionEnd(workspacePath: string, input: SessionEndInput): 
 export async function runSessionEndHook(workspacePath?: string): Promise<void> {
   if (!workspacePath) return;
 
+  // Skip entirely when running inside a subclaude audit worker (see
+  // session-auditor env: { ...process.env, AXME_SKIP_HOOKS: "1" }). Without
+  // this, a subclaude that exits mid-audit could trigger SessionEnd against
+  // an ephemeral Claude session id and recursively invoke runSessionCleanup
+  // on a ghost AXME session (Bug F from PR#6 E2E).
+  if (process.env.AXME_SKIP_HOOKS === "1") return;
+
   try {
     const chunks: Buffer[] = [];
     for await (const chunk of process.stdin) chunks.push(chunk);

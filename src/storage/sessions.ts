@@ -25,9 +25,69 @@ import { AXME_CODE_DIR } from "../types.js";
 
 const SESSIONS_DIR = "sessions";
 const ACTIVE_SESSIONS_DIR = "active-sessions";
-const PENDING_AUDITS_DIR = "pending-audits";
 const AUDIT_LOGS_DIR = "audit-logs";
 const LEGACY_ACTIVE_SESSION_FILE = "active-session";
+const LEGACY_PENDING_AUDITS_DIR = "pending-audits";
+
+/**
+ * Stale timeout for "pending" audit status. If a session has been marked as
+ * auditStatus=pending for longer than this, we assume the auditor process
+ * crashed without releasing the status and allow a new audit to proceed.
+ *
+ * This is the cross-process recovery mechanism that replaces the old
+ * pending-audits/ marker files + auditorPid probe. No file locks needed:
+ * saveScopedMemories/Decisions already dedup by slug, so even the (rare)
+ * micro race window between two audits starting simultaneously can only
+ * waste LLM cost on duplicate extraction — it cannot corrupt stored data.
+ */
+export const AUDIT_STALE_TIMEOUT_MS = 15 * 60 * 1000;
+
+/**
+ * Find the real Claude Code process ID that owns this hook/MCP invocation.
+ *
+ * Claude Code wraps hook commands in `sh -c 'axme-code hook ...'`, which
+ * means `process.ppid` in a hook subprocess equals the (usually already-
+ * dead) sh wrapper PID, not the Claude Code PID. Using that wrong PID for
+ * ownership tracking caused live sessions to be marked "orphaned" and
+ * prematurely closed in PR#6's E2E verification (Bug A).
+ *
+ * We walk one step up the process tree by reading `/proc/<ppid>/stat`:
+ *
+ *   pid (comm) state ppid pgrp session ...
+ *                     ^^^^
+ *                     grandparent = real Claude Code PID
+ *
+ * `comm` can contain spaces and parens, so we find the LAST ")" and parse
+ * fields after it. `parts[1]` is the ppid of our parent = our grandparent.
+ *
+ * On non-Linux systems /proc does not exist; we fall back to `process.ppid`
+ * (broken on macOS under sh wrapping, acceptable for now — primary target
+ * is Linux where Claude Code wraps hooks via sh).
+ *
+ * The MCP server itself is spawned directly by Claude Code without an sh
+ * wrapper, so its `process.ppid` is already the real Claude Code PID —
+ * this helper is mainly needed in hook subprocesses. Calling it from the
+ * MCP server is still safe: the /proc walk would return Claude Code's own
+ * parent (VS Code / the terminal), which we never use; the function is
+ * called only from hook contexts (writeClaudeSessionMapping, createSession
+ * via ensureAxmeSessionForClaude).
+ */
+export function getClaudeCodePid(): number {
+  try {
+    const stat = readFileSync(`/proc/${process.ppid}/stat`, "utf-8");
+    const closeParen = stat.lastIndexOf(")");
+    if (closeParen > 0) {
+      // Fields after "(comm) " are space-separated: state ppid pgrp ...
+      const parts = stat.slice(closeParen + 2).split(" ");
+      const grandparent = parseInt(parts[1], 10);
+      if (Number.isFinite(grandparent) && grandparent > 1) return grandparent;
+    }
+  } catch {
+    // /proc missing (macOS, Windows), or parent died before we could read
+    // its stat file. Fall through to fallback.
+  }
+  return process.ppid;
+}
 
 function sessionsRoot(projectPath: string): string {
   return join(projectPath, AXME_CODE_DIR, SESSIONS_DIR);
@@ -45,12 +105,8 @@ function legacyActiveSessionPath(projectPath: string): string {
   return join(projectPath, AXME_CODE_DIR, LEGACY_ACTIVE_SESSION_FILE);
 }
 
-function pendingAuditsDir(projectPath: string): string {
-  return join(projectPath, AXME_CODE_DIR, PENDING_AUDITS_DIR);
-}
-
-function pendingAuditPath(projectPath: string, axmeSessionId: string): string {
-  return join(pendingAuditsDir(projectPath), `${axmeSessionId}.json`);
+function legacyPendingAuditsDir(projectPath: string): string {
+  return join(projectPath, AXME_CODE_DIR, LEGACY_PENDING_AUDITS_DIR);
 }
 
 function auditLogsDir(projectPath: string): string {
@@ -128,91 +184,61 @@ export function updateAuditLog(path: string, updates: Partial<AuditLog>): void {
   } catch {}
 }
 
-// --- Pending audits (markers for long-running audits) ---
+// --- Pending-audits legacy cleanup ---
+//
+// Previous versions wrote per-session marker files to .axme-code/pending-audits/
+// to flag in-progress audits. Those files were fragile (auditor crashes could
+// leave stale markers behind, and a separate directory added coordination cost)
+// and have been replaced by the `auditStatus` field on SessionMeta. The helper
+// below removes any leftover directory so stale markers don't confuse operators.
+// Safe to call repeatedly.
 
-export interface PendingAudit {
-  sessionId: string;
-  startedAt: string;
-  auditorPid: number;
-  phase: "running" | "chunking" | "saving";
-  chunks?: number;
-  currentChunk?: number;
-}
-
-/**
- * Mark an audit as in-progress. Called at the start of runSessionCleanup.
- * The marker file lets a new session detect that a previous audit is still
- * running and warn the user before proceeding with potentially stale context.
- */
-export function writePendingAudit(projectPath: string, marker: PendingAudit): void {
-  ensureDir(pendingAuditsDir(projectPath));
-  atomicWrite(pendingAuditPath(projectPath, marker.sessionId), JSON.stringify(marker));
-}
-
-/**
- * Update an existing pending audit marker (e.g. to report chunk progress).
- * No-op if the marker no longer exists.
- */
-export function updatePendingAudit(
-  projectPath: string,
-  sessionId: string,
-  updates: Partial<PendingAudit>,
-): void {
-  const current = readPendingAudit(projectPath, sessionId);
-  if (!current) return;
-  const merged = { ...current, ...updates };
-  atomicWrite(pendingAuditPath(projectPath, sessionId), JSON.stringify(merged));
-}
-
-/**
- * Read a single pending audit marker by session id. Returns null if missing.
- */
-export function readPendingAudit(projectPath: string, sessionId: string): PendingAudit | null {
-  const raw = readSafe(pendingAuditPath(projectPath, sessionId));
-  if (!raw) return null;
-  try {
-    return JSON.parse(raw) as PendingAudit;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Remove the pending audit marker once the audit is done (success or fail).
- */
-export function clearPendingAudit(projectPath: string, sessionId: string): void {
-  removeFile(pendingAuditPath(projectPath, sessionId));
-}
-
-/**
- * List all pending audit markers in the workspace. Used by axme_context
- * to warn the user that a previous session's audit may still be running
- * and the returned knowledge base may be incomplete.
- *
- * Also filters out "stale" markers whose auditor PID is no longer alive.
- * Those represent crashed audits — they are removed as a side effect so
- * future calls give a clean list.
- */
-export function listPendingAudits(projectPath: string): PendingAudit[] {
-  const dir = pendingAuditsDir(projectPath);
-  if (!pathExists(dir)) return [];
-  const result: PendingAudit[] = [];
+export function clearLegacyPendingAuditsDir(projectPath: string): void {
+  const dir = legacyPendingAuditsDir(projectPath);
+  if (!pathExists(dir)) return;
   try {
     for (const entry of readdirSync(dir)) {
-      if (!entry.endsWith(".json")) continue;
-      const sessionId = entry.slice(0, -5);
-      const marker = readPendingAudit(projectPath, sessionId);
-      if (!marker) continue;
-      // Probe the auditor PID. If it's dead, the audit crashed — clean up
-      // the marker and do not report it to the caller.
-      if (marker.auditorPid && !isPidAlive(marker.auditorPid)) {
-        try { clearPendingAudit(projectPath, sessionId); } catch {}
-        continue;
-      }
-      result.push(marker);
+      removeFile(join(dir, entry));
     }
   } catch {}
-  return result;
+  // Best-effort rmdir via removeFile (no-op if not empty, which is fine).
+  try { removeFile(dir); } catch {}
+}
+
+/**
+ * Find sessions whose audit is currently running (auditStatus === "pending")
+ * and has not yet exceeded the stale timeout. Returned entries represent
+ * audits that a concurrently-starting new session should wait for or warn
+ * about before trusting the knowledge base.
+ *
+ * This replaces the old pending-audits/ directory scan. All state now lives
+ * on SessionMeta, so a single listSessions() call gives us everything.
+ */
+export interface PendingAuditEntry {
+  sessionId: string;
+  startedAt: string;
+  phase: "running";
+  /** Raw SessionMeta so callers can show turn counts, etc. if desired. */
+  session: SessionMeta;
+}
+
+export function listPendingAudits(projectPath: string): PendingAuditEntry[] {
+  const now = Date.now();
+  const out: PendingAuditEntry[] = [];
+  for (const session of listSessions(projectPath)) {
+    if (session.auditStatus !== "pending") continue;
+    if (!session.auditStartedAt) continue;
+    const startedMs = Date.parse(session.auditStartedAt);
+    if (!Number.isFinite(startedMs)) continue;
+    if (now - startedMs > AUDIT_STALE_TIMEOUT_MS) continue; // stale — caller ignores
+    out.push({
+      sessionId: session.id,
+      startedAt: session.auditStartedAt,
+      phase: "running",
+      session,
+    });
+  }
+  return out;
 }
 
 /**
@@ -230,8 +256,13 @@ interface MappingFileContent {
 /**
  * Write the Claude-session → AXME-session mapping file.
  * Called by hooks when they first see a Claude session_id.
- * The hook's parent process id is stored so the MCP server can find its
- * own mappings at disconnect time.
+ *
+ * `ownerPpid` must equal the Claude Code PID that spawned both this hook
+ * subprocess AND the MCP server in the same window, so the MCP server's
+ * disconnect handler can identify its own mappings by PID equality.
+ * Claude Code wraps hooks via `sh -c 'axme-code hook ...'`, so a raw
+ * `process.ppid` would give us the (usually dead) sh wrapper PID — we walk
+ * one step up via getClaudeCodePid() to reach the real Claude Code PID.
  */
 export function writeClaudeSessionMapping(
   projectPath: string,
@@ -241,7 +272,7 @@ export function writeClaudeSessionMapping(
   ensureDir(activeSessionsDir(projectPath));
   const payload: MappingFileContent = {
     axmeSessionId,
-    ownerPpid: process.ppid,
+    ownerPpid: getClaudeCodePid(),
   };
   atomicWrite(activeMappingPath(projectPath, claudeSessionId), JSON.stringify(payload));
 }
@@ -408,15 +439,15 @@ export function initSessionStore(projectPath: string): void {
 /**
  * Create a new AXME session.
  *
- * `pid` is set to `process.ppid` (parent process id). When this function is
- * called from:
- *   - a hook subprocess: parent is the Claude Code instance
- *   - the MCP server process: parent is also the Claude Code instance
- *     (MCP servers are spawned by Claude Code)
+ * `pid` is set to the Claude Code PID that owns this work. This function is
+ * called only from `ensureAxmeSessionForClaude`, which itself runs inside
+ * hook subprocesses — those subprocesses are wrapped in `sh -c '...'` by
+ * Claude Code, so their direct `process.ppid` is the sh wrapper (usually
+ * already exited) rather than the Claude Code process. We walk one step up
+ * via getClaudeCodePid() to record the real Claude Code PID.
  *
- * So pid in meta.json always identifies the Claude Code process that owns
- * this session. When Claude Code dies, the session becomes an orphan and
- * findOrphanSessions picks it up.
+ * When Claude Code dies, the session becomes an orphan and findOrphanSessions
+ * picks it up via isPidAlive(pid) returning false.
  */
 export function createSession(projectPath: string): SessionMeta {
   initSessionStore(projectPath);
@@ -426,7 +457,7 @@ export function createSession(projectPath: string): SessionMeta {
     closedAt: null,
     turns: 0,
     filesChanged: [],
-    pid: process.ppid,
+    pid: getClaudeCodePid(),
   };
   writeSession(projectPath, session);
   return session;
@@ -450,14 +481,20 @@ export function closeSession(projectPath: string, id: string): void {
 }
 
 /**
- * Mark a session as audited by the LLM session auditor.
- * Used by both auto-audit (transport close) and startup fallback
- * to prevent duplicate audits on the same session.
+ * Mark a session as successfully audited by the LLM session auditor.
+ * Used by both auto-audit (transport close) and startup fallback to prevent
+ * duplicate audits on the same session. Also finalizes the audit lifecycle
+ * flags: auditStatus=done, auditFinishedAt, and clears any stale lastAuditError
+ * from a prior failed attempt.
  */
 export function markAudited(projectPath: string, id: string): void {
   const session = loadSession(projectPath, id);
   if (!session) return;
-  session.auditedAt = new Date().toISOString();
+  const now = new Date().toISOString();
+  session.auditedAt = now;
+  session.auditStatus = "done";
+  session.auditFinishedAt = now;
+  session.lastAuditError = undefined;
   writeSession(projectPath, session);
 }
 

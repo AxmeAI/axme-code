@@ -23,6 +23,7 @@ import {
   listClaudeSessionMappings,
   clearClaudeSessionMapping,
   clearLegacyActiveSession,
+  clearLegacyPendingAuditsDir,
   readClaudeSessionMapping,
 } from "./storage/sessions.js";
 import { logEvent } from "./storage/worklog.js";
@@ -50,6 +51,9 @@ const OWN_PPID = process.ppid;
 // older versions. It is stale by definition after the switch to per-Claude
 // mapping files.
 clearLegacyActiveSession(defaultProjectPath);
+// Same for the legacy .axme-code/pending-audits/ directory: that state now
+// lives on SessionMeta.auditStatus, so the directory is dead weight.
+clearLegacyPendingAuditsDir(defaultProjectPath);
 
 // Turn counter: incremented on each MCP tool call (debounced 10s).
 // We can only bump the current session's turns if we know which session

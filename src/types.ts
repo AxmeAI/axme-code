@@ -172,13 +172,28 @@ export interface ClaudeSessionRef {
   role?: string;
 }
 
+/**
+ * Status of the LLM audit lifecycle on this session. Used to prevent parallel
+ * auditors racing on the same session without file locks.
+ *
+ * Lifecycle:
+ *   undefined → "pending" (audit starts, auditStartedAt set)
+ *   "pending" → "done"    (audit succeeded, auditFinishedAt + auditedAt set)
+ *   "pending" → "failed"  (audit threw, lastAuditError set)
+ *
+ * A "pending" status older than 15 minutes is considered stale (crashed
+ * auditor) and can be retried — this is the simple cross-process recovery
+ * that replaces the old pending-audits/ marker files + file lock approach.
+ */
+export type AuditStatus = "pending" | "done" | "failed";
+
 export interface SessionMeta {
   id: string;
   createdAt: string;
   closedAt: string | null;
   turns: number;
   filesChanged: string[];
-  /** PID of MCP server process. Used to detect orphaned sessions after crashes. Optional for backward compat. */
+  /** PID of the Claude Code process that owns this session. Used by orphan cleanup. Optional for backward compat. */
   pid?: number;
   /** ISO timestamp when LLM session audit completed. Used to dedupe auto-audit vs startup fallback. */
   auditedAt?: string;
@@ -188,6 +203,12 @@ export interface SessionMeta {
   auditAttempts?: number;
   /** Error message from the most recent failed audit attempt, if any. Cleared on successful audit. */
   lastAuditError?: string;
+  /** Audit lifecycle flag. Replaces the old pending-audits/ marker files. */
+  auditStatus?: AuditStatus;
+  /** ISO timestamp when the current audit attempt started (only meaningful when auditStatus === "pending"). */
+  auditStartedAt?: string;
+  /** ISO timestamp when the most recent audit attempt finished (success or failure). */
+  auditFinishedAt?: string;
 }
 
 // --- Config ---

@@ -104,8 +104,10 @@ export function getFullContext(projectPath: string, workspacePath?: string): str
 
   // Pending audits warning: check BOTH the current project AND the workspace
   // root (if different), so the agent sees audits running at either level.
-  // Returned markers already exclude stale (dead-PID) entries thanks to
-  // listPendingAudits's internal pid check.
+  // listPendingAudits derives state from SessionMeta.auditStatus and already
+  // filters out stale "pending" entries older than AUDIT_STALE_TIMEOUT_MS
+  // (crashed auditors), so the returned list represents genuinely in-flight
+  // audits only.
   const pendingProject = listPendingAudits(projectPath);
   const pendingWorkspace = workspacePath && workspacePath !== projectPath
     ? listPendingAudits(workspacePath)
@@ -123,8 +125,7 @@ export function getFullContext(projectPath: string, workspacePath?: string): str
       "Pending:",
       ...allPending.map(p => {
         const startedAgo = Math.round((Date.now() - new Date(p.startedAt).getTime()) / 1000);
-        const phase = p.currentChunk && p.chunks ? `${p.phase} chunk ${p.currentChunk}/${p.chunks}` : p.phase;
-        return `- session ${p.sessionId.slice(0, 8)} at ${p.location} level, started ${startedAgo}s ago, phase=${phase}`;
+        return `- session ${p.sessionId.slice(0, 8)} at ${p.location} level, started ${startedAgo}s ago, phase=${p.phase}`;
       }),
       "",
       "**Agent action required**: tell the user about the pending audit(s) and offer two options:",

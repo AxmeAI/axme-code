@@ -56,6 +56,12 @@ function handlePostToolUse(workspacePath: string, event: HookInput): void {
 export async function runPostToolUseHook(workspacePath?: string): Promise<void> {
   if (!workspacePath) return; // No workspace = nothing to do
 
+  // Skip entirely when we are running inside a subclaude audit worker
+  // (see session-auditor env: { ...process.env, AXME_SKIP_HOOKS: "1" }).
+  // Without this early exit, every tool call the auditor makes would spawn
+  // a ghost AXME session via ensureAxmeSessionForClaude (Bug F from PR#6).
+  if (process.env.AXME_SKIP_HOOKS === "1") return;
+
   try {
     const chunks: Buffer[] = [];
     for await (const chunk of process.stdin) chunks.push(chunk);

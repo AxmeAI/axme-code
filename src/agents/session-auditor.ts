@@ -246,7 +246,9 @@ SAFETY rules: same scoping logic. bash_deny or git_protected_branch for a specif
 
 ==== OUTPUT LANGUAGE ====
 
-All output fields (title, description, keywords, body, reasoning, handoff fields) MUST be in English. Even if the transcript is in another language (Russian, etc.), write the extraction in English. Non-English user quotes may be embedded inline as evidence with quotation marks, but the surrounding explanation must be English. This is a hard requirement.
+All output fields (title, description, keywords, slug, body, reasoning, handoff fields) MUST be in English. If the transcript is in another language, TRANSLATE the concept into natural English and build the extraction from the translation — do NOT romanize or transliterate the foreign words. Non-English user quotes may be embedded inline in the body field as short evidence inside quotation marks, but the surrounding explanation, the slug, and the keywords must be English. This is a hard requirement.
+
+If you cannot find a good English rendering for a concept, make the slug more generic (e.g. "user-preference-on-X") rather than keeping foreign roots. Transliteration is never acceptable.
 
 ==== OUTPUT FORMAT ====
 
@@ -581,6 +583,14 @@ async function runSingleAuditCall(opts: {
       "Write", "Edit", "NotebookEdit", "Agent", "Skill", "TodoWrite",
       "WebFetch", "WebSearch", "Bash", "ToolSearch",
     ],
+    // Pass AXME_SKIP_HOOKS=1 to the subclaude auditor's environment so that
+    // any axme-code PreToolUse/PostToolUse/SessionEnd hooks fired inside the
+    // sub-agent return immediately instead of creating "ghost" AXME sessions
+    // (Bug F from PR#6 E2E). settingSources=[] already prevents the SDK from
+    // auto-loading the project's .claude/settings.json, but users or CI may
+    // register hooks via environment or other means, so the belt-and-braces
+    // env check in every hook handler is what actually stops the recursion.
+    env: { ...process.env, AXME_SKIP_HOOKS: "1" },
   };
 
   const isMultiChunk = opts.totalChunks > 1;
