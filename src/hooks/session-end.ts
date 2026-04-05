@@ -1,27 +1,23 @@
 /**
- * SessionEnd hook - runs when Claude session closes.
+ * SessionEnd hook — runs when Claude Code fires the SessionEnd lifecycle event.
  *
- * Full session audit:
- * 1. Reads session worklog + filesChanged
- * 2. Runs session-auditor LLM (Sonnet, ~$0.30) - extracts ALL:
- *    memories, decisions, safety rules, oracle change detection
- * 3. Saves everything to storage modules
- * 4. If oracle needs re-scan: runs full Oracle Scanner
- * 5. Closes session
+ * In practice this hook fires rarely and unreliably (especially in the VS Code
+ * extension, where the MCP server is killed without the extension first running
+ * SessionEnd — see anthropics/claude-code#1935 and #14760). The authoritative
+ * cleanup path is the MCP server's own transport.onclose handler, which calls
+ * the same `runSessionCleanup` function this hook does.
+ *
+ * The `auditedAt` dedup field ensures that whichever path runs first wins, and
+ * the others become no-ops.
  *
  * Workspace path: passed via --workspace flag (hardcoded at setup time).
- * Session ID: read from .axme-code/active-session.
+ * Session ID: read from .axme-code/active-session (if present).
  */
 
-import { readWorklog, logSessionEnd } from "../storage/worklog.js";
-import { saveMemories } from "../storage/memory.js";
-import { addDecision, listDecisions } from "../storage/decisions.js";
-import { updateSafetyRule } from "../storage/safety.js";
-import { writeOracleFiles, oracleContext } from "../storage/oracle.js";
-import { writeHandoff } from "../storage/plans.js";
-import { closeSession, loadSession, readActiveSession, clearActiveSession } from "../storage/sessions.js";
-import { pathExists } from "../storage/engine.js";
 import { join } from "node:path";
+import { readActiveSession } from "../storage/sessions.js";
+import { runSessionCleanup } from "../session-cleanup.js";
+import { pathExists } from "../storage/engine.js";
 import { AXME_CODE_DIR } from "../types.js";
 
 async function handleSessionEnd(workspacePath: string): Promise<void> {
@@ -30,65 +26,11 @@ async function handleSessionEnd(workspacePath: string): Promise<void> {
   const sessionId = readActiveSession(workspacePath);
   if (!sessionId) return;
 
-  const session = loadSession(workspacePath, sessionId);
-  const filesChanged = session?.filesChanged ?? [];
-  const events = readWorklog(workspacePath, { limit: 200 });
-  const sessionEvents = events
-    .filter(e => e.sessionId === sessionId)
-    .reverse()
-    .map(e => `[${e.timestamp}] ${e.type}: ${JSON.stringify(e.data)}`)
-    .join("\n");
-
-  if (sessionEvents.length > 50) {
-    try {
-      const { runSessionAudit } = await import("../agents/session-auditor.js");
-
-      const oracleSummary = oracleContext(workspacePath).slice(0, 500);
-      const decisionsCount = listDecisions(workspacePath).length;
-
-      const audit = await runSessionAudit({
-        sessionId,
-        sessionEvents,
-        filesChanged,
-        projectPath: workspacePath,
-        oracleSummary,
-        decisionsCount,
-      });
-
-      if (audit.memories.length > 0) saveMemories(workspacePath, audit.memories);
-
-      for (const d of audit.decisions) addDecision(workspacePath, d);
-
-      for (const r of audit.safetyRules) {
-        const validTypes = ["bash_deny", "bash_allow", "fs_deny", "git_protected_branch"] as const;
-        if (validTypes.includes(r.ruleType as any)) {
-          updateSafetyRule(workspacePath, r.ruleType as any, r.value);
-        }
-      }
-
-      if (audit.handoff) writeHandoff(workspacePath, audit.handoff);
-
-      if (audit.oracleNeedsRescan && filesChanged.length > 0) {
-        try {
-          const { runOracleScan } = await import("../agents/scanners/oracle.js");
-          const oracleResult = await runOracleScan({ projectPath: workspacePath });
-          writeOracleFiles(workspacePath, oracleResult.files);
-        } catch {}
-      }
-    } catch {}
-  }
-
-  logSessionEnd(workspacePath, sessionId, {
-    turns: session?.turns ?? 0,
-    filesChanged,
-  });
-
-  closeSession(workspacePath, sessionId);
-  clearActiveSession(workspacePath);
+  await runSessionCleanup(workspacePath, sessionId, { clearActive: true });
 }
 
 /**
- * CLI entry point - reads JSON from stdin.
+ * CLI entry point — reads JSON from stdin.
  * @param workspacePath - from --workspace CLI flag
  */
 export async function runSessionEndHook(workspacePath?: string): Promise<void> {
