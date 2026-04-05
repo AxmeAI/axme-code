@@ -12,9 +12,9 @@
 
 import { join } from "node:path";
 import { readWorklog, logSessionEnd } from "./storage/worklog.js";
-import { saveMemories } from "./storage/memory.js";
-import { addDecision } from "./storage/decisions.js";
-import { updateSafetyRule } from "./storage/safety.js";
+import { saveScopedMemories } from "./storage/memory.js";
+import { saveScopedDecisions } from "./storage/decisions.js";
+import { saveScopedSafetyRule, type SafetyRuleType } from "./storage/safety.js";
 import { writeOracleFiles } from "./storage/oracle.js";
 import { writeHandoff } from "./storage/plans.js";
 import {
@@ -26,6 +26,7 @@ import {
 } from "./storage/sessions.js";
 import { pathExists } from "./storage/engine.js";
 import { parseAndRenderTranscripts } from "./transcript-parser.js";
+import { detectWorkspace } from "./utils/workspace-detector.js";
 import { AXME_CODE_DIR } from "./types.js";
 
 export interface SessionCleanupResult {
@@ -120,6 +121,12 @@ export async function runSessionCleanup(
   const activityLength = (sessionTranscript ?? sessionEvents ?? "").length;
   const hasActivity = activityLength > 50;
 
+  // Detect whether the session was opened at a workspace root or a single repo.
+  // This determines scope routing (per-repo vs workspace-level) for all writes.
+  const workspaceInfo = detectWorkspace(workspacePath);
+  const isWorkspaceSession = workspaceInfo.type !== "single";
+  const workspaceRoot = isWorkspaceSession ? workspacePath : undefined;
+
   // Run LLM audit only if there's meaningful activity to analyze
   if (hasActivity) {
     try {
@@ -127,22 +134,43 @@ export async function runSessionCleanup(
 
       const audit = await runSessionAudit({
         sessionId,
+        sessionOrigin: workspacePath,
+        workspaceInfo: isWorkspaceSession ? workspaceInfo : undefined,
         sessionTranscript,
         sessionEvents,
         filesChanged,
-        projectPath: workspacePath,
       });
 
-      if (audit.memories.length > 0) saveMemories(workspacePath, audit.memories);
-      for (const d of audit.decisions) addDecision(workspacePath, d);
+      // Route memories by scope: workspace-level ("all") vs specific repo vs
+      // fallback to session origin. saveScopedMemories handles the routing.
+      if (audit.memories.length > 0) {
+        saveScopedMemories(audit.memories, workspacePath, workspaceRoot);
+      }
 
+      // Same scope routing for decisions. saveScopedDecisions accepts
+      // Omit<Decision, "id"> and generates a fresh id per target path.
+      if (audit.decisions.length > 0) {
+        saveScopedDecisions(audit.decisions, workspacePath, workspaceRoot);
+      }
+
+      // Safety rules: scope routing per rule.
       for (const r of audit.safetyRules) {
-        const validTypes = ["bash_deny", "bash_allow", "fs_deny", "git_protected_branch"] as const;
-        if (validTypes.includes(r.ruleType as any)) {
-          updateSafetyRule(workspacePath, r.ruleType as any, r.value);
+        const validTypes: SafetyRuleType[] = ["bash_deny", "bash_allow", "fs_deny", "git_protected_branch", "fs_readonly"];
+        if (validTypes.includes(r.ruleType as SafetyRuleType)) {
+          saveScopedSafetyRule(
+            r.ruleType as SafetyRuleType,
+            r.value,
+            r.scope,
+            workspacePath,
+            workspaceRoot,
+          );
         }
       }
 
+      // Handoff: always written to the session origin (workspacePath).
+      // One handoff per AXME session — if the session was opened in a
+      // workspace, handoff goes to workspace/.axme-code/plans/; if in a
+      // single repo, it goes to that repo's .axme-code/plans/.
       if (audit.handoff) {
         writeHandoff(workspacePath, audit.handoff);
         result.handoffSaved = true;

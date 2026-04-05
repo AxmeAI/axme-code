@@ -34,6 +34,16 @@ export function saveMemories(projectPath: string, memories: Memory[]): void {
   for (const m of memories) saveMemory(projectPath, m);
 }
 
+/**
+ * Save memories with scope-based routing.
+ *
+ * Routing:
+ * - No scope / empty / ["all"] → session origin (projectPath). In a workspace
+ *   session this is the workspace root (universal rule discoverable by every
+ *   repo via merged context).
+ * - [repoName] / [repoName, ...] → each listed repo's .axme-code/memory/ only.
+ *   Does NOT also write to workspace root — the memory is repo-specific.
+ */
 export function saveScopedMemories(
   memories: Memory[], projectPath: string, workspacePath?: string,
 ): { saved: number; crossProject: number } {
@@ -41,20 +51,31 @@ export function saveScopedMemories(
   const projectName = projectPath.split("/").pop() ?? "";
 
   for (const m of memories) {
-    if (!m.scope || m.scope.length === 0 || (m.scope.length === 1 && m.scope[0] === projectName)) {
+    const scope = m.scope;
+    const isAllScope = !scope || scope.length === 0 || (scope.length === 1 && scope[0] === "all");
+    const isSelfScope = scope && scope.length === 1 && scope[0] === projectName;
+
+    if (isAllScope) {
+      saveMemory(projectPath, m);
+      saved++;
+    } else if (isSelfScope) {
       saveMemory(projectPath, m);
       saved++;
     } else if (workspacePath) {
-      saveMemory(workspacePath, m);
-      crossProject++;
-      for (const target of m.scope) {
+      let writtenToRepo = false;
+      for (const target of scope!) {
         if (target === "all") continue;
         const targetPath = resolve(workspacePath, target);
         if (pathExists(join(targetPath, ".axme-code")) || pathExists(join(targetPath, ".git"))) {
           initMemoryStore(targetPath);
           saveMemory(targetPath, m);
+          writtenToRepo = true;
+          crossProject++;
         }
       }
+      // Fallback: if none of the listed repos exist, write to workspace root
+      // so the memory isn't silently dropped.
+      if (!writtenToRepo) saveMemory(workspacePath, m);
       saved++;
     } else {
       saveMemory(projectPath, m);
