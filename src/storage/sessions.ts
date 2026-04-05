@@ -26,6 +26,7 @@ import { AXME_CODE_DIR } from "../types.js";
 const SESSIONS_DIR = "sessions";
 const ACTIVE_SESSIONS_DIR = "active-sessions";
 const AUDIT_LOGS_DIR = "audit-logs";
+const AUDITED_OFFSETS_DIR = "audited-offsets";
 const LEGACY_ACTIVE_SESSION_FILE = "active-session";
 const LEGACY_PENDING_AUDITS_DIR = "pending-audits";
 
@@ -107,6 +108,61 @@ function legacyActiveSessionPath(projectPath: string): string {
 
 function legacyPendingAuditsDir(projectPath: string): string {
   return join(projectPath, AXME_CODE_DIR, LEGACY_PENDING_AUDITS_DIR);
+}
+
+function auditedOffsetsDir(projectPath: string): string {
+  return join(projectPath, AXME_CODE_DIR, AUDITED_OFFSETS_DIR);
+}
+
+function auditedOffsetPath(projectPath: string, claudeSessionId: string): string {
+  return join(auditedOffsetsDir(projectPath), `${claudeSessionId}.txt`);
+}
+
+/**
+ * Read the byte offset up to which the transcript for this Claude session
+ * has already been audited. Returns 0 if never audited (or file is missing
+ * or corrupt) — caller treats 0 as "parse from beginning".
+ *
+ * Resume-audit optimization: when the same Claude session is audited more
+ * than once (user reopens a closed session, SIGKILL + respawn recovery),
+ * the next audit starts reading the jsonl transcript from this offset, so
+ * already-audited turns do not get re-processed and the LLM does not burn
+ * tokens on work that has already been captured in storage.
+ */
+export function readAuditedOffset(projectPath: string, claudeSessionId: string): number {
+  const raw = readSafe(auditedOffsetPath(projectPath, claudeSessionId)).trim();
+  if (!raw) return 0;
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) && n >= 0 ? n : 0;
+}
+
+/**
+ * Persist the byte offset reached at the end of a successful audit. The
+ * offset MUST be a line boundary in the transcript jsonl file — the
+ * transcript parser guarantees this by returning the full file length at
+ * the point where it finished consuming complete lines.
+ *
+ * Only called on audit success. On failure the old offset is left intact,
+ * so a retry re-reads the same turns rather than skipping them.
+ */
+export function writeAuditedOffset(
+  projectPath: string,
+  claudeSessionId: string,
+  offset: number,
+): void {
+  if (!Number.isFinite(offset) || offset < 0) return;
+  ensureDir(auditedOffsetsDir(projectPath));
+  atomicWrite(auditedOffsetPath(projectPath, claudeSessionId), String(offset));
+}
+
+/**
+ * Remove the stored offset for a Claude session. Not used by the main
+ * audit flow (offsets are written monotonically), but exposed for manual
+ * re-audit scenarios where an operator wants the next audit to re-process
+ * the full transcript from scratch.
+ */
+export function clearAuditedOffset(projectPath: string, claudeSessionId: string): void {
+  removeFile(auditedOffsetPath(projectPath, claudeSessionId));
 }
 
 function auditLogsDir(projectPath: string): string {

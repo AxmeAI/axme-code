@@ -24,6 +24,8 @@ import {
   writeSession,
   writeAuditLog,
   updateAuditLog,
+  readAuditedOffset,
+  writeAuditedOffset,
   AUDIT_STALE_TIMEOUT_MS,
   MAX_AUDIT_ATTEMPTS,
   type AuditLog,
@@ -202,10 +204,37 @@ export async function runSessionCleanup(
   // pre-rendered string) is only used as a display fallback.
   const claudeSessions = session.claudeSessions ?? [];
   let sessionTurns: import("./transcript-parser.js").ConversationTurn[] | undefined;
+  // Resume-audit optimization: for each attached Claude session, look up the
+  // byte offset that the previous audit reached. The parser then reads the
+  // transcript jsonl starting at that offset, and downstream the auditor
+  // only sees turns that were NOT yet captured in the knowledge base. After
+  // a successful audit we persist the new end offsets via writeAuditedOffset
+  // so the next resume continues where this one left off.
+  const startOffsets: Record<string, number> = {};
+  for (const ref of claudeSessions) {
+    startOffsets[ref.id] = readAuditedOffset(workspacePath, ref.id);
+  }
+  let newEndOffsets: Record<string, number> = {};
+  let bytesReadPerRef: Record<string, number> = {};
   if (claudeSessions.length > 0) {
-    const parsed = parseAndRenderTranscripts(claudeSessions);
+    const parsed = parseAndRenderTranscripts(claudeSessions, startOffsets);
+    newEndOffsets = parsed.endOffsets;
+    bytesReadPerRef = parsed.bytesRead;
     if (parsed.allTurns.length > 0) {
       sessionTurns = parsed.allTurns;
+    }
+    // Observability: log how many bytes were skipped because they were
+    // already audited. Useful to confirm the resume optimization is
+    // actually firing when expected.
+    for (const ref of claudeSessions) {
+      const from = startOffsets[ref.id] ?? 0;
+      const to = newEndOffsets[ref.id] ?? from;
+      if (from > 0) {
+        process.stderr.write(
+          `AXME audit ${sessionId}: resume from offset ${from} for Claude ${ref.id.slice(0, 8)} ` +
+            `(${bytesReadPerRef[ref.id] ?? 0} new bytes, end=${to})\n`,
+        );
+      }
     }
   }
 
@@ -429,6 +458,24 @@ export async function runSessionCleanup(
       result.safetyRules = audit.safetyRules.length;
       result.costUsd = audit.cost?.costUsd ?? 0;
       auditSucceeded = true;
+
+      // Resume-audit checkpoint: persist per-Claude-session end offsets so
+      // the next audit of the same transcript (session reopen, restart
+      // recovery) starts from here instead of re-reading the full file.
+      // Only do this on success — on failure the old offset stays so a
+      // retry re-processes the same turns.
+      for (const ref of claudeSessions) {
+        const endOffset = newEndOffsets[ref.id];
+        if (endOffset != null && endOffset > (startOffsets[ref.id] ?? 0)) {
+          try {
+            writeAuditedOffset(workspacePath, ref.id, endOffset);
+          } catch {
+            // Non-fatal: worst case the next audit re-reads already-audited
+            // turns and relies on the in-prompt dedup check to avoid double
+            // extraction. Logged elsewhere.
+          }
+        }
+      }
 
       // Finalize audit log with full extraction breakdown and totals.
       if (auditLogPath) {
