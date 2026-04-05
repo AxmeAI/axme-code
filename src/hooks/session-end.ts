@@ -15,16 +15,35 @@
  */
 
 import { join } from "node:path";
-import { readActiveSession } from "../storage/sessions.js";
+import { readActiveSession, attachClaudeSession } from "../storage/sessions.js";
 import { runSessionCleanup } from "../session-cleanup.js";
 import { pathExists } from "../storage/engine.js";
 import { AXME_CODE_DIR } from "../types.js";
 
-async function handleSessionEnd(workspacePath: string): Promise<void> {
+interface SessionEndInput {
+  session_id?: string;
+  transcript_path?: string;
+  source?: string;
+}
+
+async function handleSessionEnd(workspacePath: string, input: SessionEndInput): Promise<void> {
   if (!pathExists(join(workspacePath, AXME_CODE_DIR))) return;
 
   const sessionId = readActiveSession(workspacePath);
   if (!sessionId) return;
+
+  // If Claude Code passes session_id + transcript_path in the SessionEnd
+  // event, make sure it is attached before the audit runs. PreToolUse
+  // should already have done this during the session, but a session that
+  // only had read-only MCP tool calls (no Edit/Write, no PreToolUse-matched
+  // tools) might not have been attached yet.
+  if (input.session_id && input.transcript_path) {
+    attachClaudeSession(workspacePath, sessionId, {
+      id: input.session_id,
+      transcriptPath: input.transcript_path,
+      role: "main",
+    });
+  }
 
   await runSessionCleanup(workspacePath, sessionId, { clearActive: true });
 }
@@ -37,10 +56,15 @@ export async function runSessionEndHook(workspacePath?: string): Promise<void> {
   if (!workspacePath) return;
 
   try {
-    // Still consume stdin (Claude Code sends it), but we don't need its content
     const chunks: Buffer[] = [];
     for await (const chunk of process.stdin) chunks.push(chunk);
-    await handleSessionEnd(workspacePath);
+    let input: SessionEndInput = {};
+    try {
+      input = JSON.parse(Buffer.concat(chunks).toString("utf-8")) as SessionEndInput;
+    } catch {
+      // Empty/invalid stdin is fine — we'll proceed without transcript attachment
+    }
+    await handleSessionEnd(workspacePath, input);
   } catch {
     // Hook failures must be silent
   }

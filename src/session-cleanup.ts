@@ -13,9 +13,9 @@
 import { join } from "node:path";
 import { readWorklog, logSessionEnd } from "./storage/worklog.js";
 import { saveMemories } from "./storage/memory.js";
-import { addDecision, listDecisions } from "./storage/decisions.js";
+import { addDecision } from "./storage/decisions.js";
 import { updateSafetyRule } from "./storage/safety.js";
-import { writeOracleFiles, oracleContext } from "./storage/oracle.js";
+import { writeOracleFiles } from "./storage/oracle.js";
 import { writeHandoff } from "./storage/plans.js";
 import {
   closeSession,
@@ -25,6 +25,7 @@ import {
   readActiveSession,
 } from "./storage/sessions.js";
 import { pathExists } from "./storage/engine.js";
+import { parseAndRenderTranscripts } from "./transcript-parser.js";
 import { AXME_CODE_DIR } from "./types.js";
 
 export interface SessionCleanupResult {
@@ -89,32 +90,47 @@ export async function runSessionCleanup(
 
   const filesChanged = session.filesChanged ?? [];
 
-  const events = readWorklog(workspacePath, { limit: 500 });
-  const sessionEvents = events
-    .filter(e => e.sessionId === sessionId)
-    .reverse()
-    .map(e => `[${e.timestamp}] ${e.type}: ${JSON.stringify(e.data)}`)
-    .join("\n");
+  // Prefer the Claude Code transcript (filtered conversation) over the worklog
+  // when available. Transcripts contain the actual user/assistant dialog with
+  // reasoning, corrections, and agreements — exactly what the auditor needs.
+  // The worklog only has sparse structural events (session_start, memory_saved, etc).
+  const claudeSessions = session.claudeSessions ?? [];
+  let sessionTranscript: string | undefined;
+  if (claudeSessions.length > 0) {
+    const parsed = parseAndRenderTranscripts(claudeSessions);
+    if (parsed.rendered.length > 0) {
+      sessionTranscript = parsed.rendered;
+    }
+  }
+
+  // Fallback: if no transcript is attached (pre-transcript-audit sessions, or
+  // a session that ended before any hook fired), use the worklog events.
+  let sessionEvents: string | undefined;
+  if (!sessionTranscript) {
+    const events = readWorklog(workspacePath, { limit: 500 });
+    sessionEvents = events
+      .filter(e => e.sessionId === sessionId)
+      .reverse()
+      .map(e => `[${e.timestamp}] ${e.type}: ${JSON.stringify(e.data)}`)
+      .join("\n");
+  }
 
   const result: SessionCleanupResult = { ...base };
   let auditSucceeded = false;
-  const hasActivity = sessionEvents.length > 50;
+  const activityLength = (sessionTranscript ?? sessionEvents ?? "").length;
+  const hasActivity = activityLength > 50;
 
   // Run LLM audit only if there's meaningful activity to analyze
   if (hasActivity) {
     try {
       const { runSessionAudit } = await import("./agents/session-auditor.js");
 
-      const oracleSummary = oracleContext(workspacePath).slice(0, 500);
-      const decisionsCount = listDecisions(workspacePath).length;
-
       const audit = await runSessionAudit({
         sessionId,
+        sessionTranscript,
         sessionEvents,
         filesChanged,
         projectPath: workspacePath,
-        oracleSummary,
-        decisionsCount,
       });
 
       if (audit.memories.length > 0) saveMemories(workspacePath, audit.memories);
