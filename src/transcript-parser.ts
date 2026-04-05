@@ -152,17 +152,43 @@ export function parseTranscript(path: string): ConversationTurn[] {
 }
 
 /**
- * Render filtered conversation turns into a compact text format for the LLM.
- * Consecutive tool_use blocks from the assistant are coalesced into one line.
+ * Escape XML special characters in content that will go inside a tag.
+ * We keep this minimal — only the characters that would break parsing
+ * if they appeared literally in the transcript text.
+ */
+function escapeXml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+/**
+ * Render filtered conversation turns as XML-wrapped structured data.
+ *
+ * We DO NOT use [USER] / [ASSISTANT] chat-style markers because that
+ * triggers the model's chat-continuation pattern-matching and makes the
+ * auditor behave as a participant in the conversation instead of an
+ * observer extracting from historical data. XML tags are the Anthropic-
+ * recommended way to pass structured data in prompts — the model treats
+ * them as document markup, not as a chat template.
+ *
+ * Format:
+ *   <session_transcript>
+ *     <user_message>...</user_message>
+ *     <assistant_thinking>...</assistant_thinking>
+ *     <assistant_message>...</assistant_message>
+ *     <assistant_tool_calls>[Name: args] [Name: args] ...</assistant_tool_calls>
+ *     ...
+ *   </session_transcript>
  */
 export function renderConversation(turns: ConversationTurn[]): string {
-  const lines: string[] = [];
-  let currentRole: string | null = null;
+  const lines: string[] = ["<session_transcript>"];
   let toolBuffer: string[] = [];
 
   const flushToolBuffer = () => {
     if (toolBuffer.length > 0) {
-      lines.push(`  tools: ${toolBuffer.join(" ")}`);
+      lines.push(`  <assistant_tool_calls>${escapeXml(toolBuffer.join(" "))}</assistant_tool_calls>`);
       toolBuffer = [];
     }
   };
@@ -174,19 +200,15 @@ export function renderConversation(turns: ConversationTurn[]): string {
     }
     flushToolBuffer();
 
-    if (turn.role !== currentRole) {
-      lines.push("");
-      currentRole = turn.role;
-    }
-
     if (turn.kind === "thinking") {
-      lines.push(`[ASSISTANT thinking] ${turn.content}`);
+      lines.push(`  <assistant_thinking>${escapeXml(turn.content)}</assistant_thinking>`);
     } else if (turn.kind === "text") {
-      const tag = turn.role === "user" ? "USER" : "ASSISTANT";
-      lines.push(`[${tag}] ${turn.content}`);
+      const tag = turn.role === "user" ? "user_message" : "assistant_message";
+      lines.push(`  <${tag}>${escapeXml(turn.content)}</${tag}>`);
     }
   }
   flushToolBuffer();
+  lines.push("</session_transcript>");
 
   return lines.join("\n");
 }
