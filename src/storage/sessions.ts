@@ -189,6 +189,23 @@ export interface AuditLogExtraction {
   reason?: string; // for deduped/dropped
 }
 
+/**
+ * Resume-audit telemetry for a single Claude session transcript. Persisted
+ * in the audit log so operators can confirm the offset optimization kicked
+ * in, how much of the transcript was skipped, and where this audit stopped.
+ */
+export interface AuditLogResumeInfo {
+  claudeSessionId: string;
+  /** Byte offset loaded from audited-offsets/<id>.txt at start. 0 = first audit. */
+  startOffset: number;
+  /** Byte offset recorded at end of this audit, saved back to audited-offsets/. */
+  endOffset: number;
+  /** Bytes actually read on this call (endOffset - startOffset, modulo truncation). */
+  bytesRead: number;
+  /** True if this audit skipped an already-audited prefix. */
+  resumed: boolean;
+}
+
 export interface AuditLog {
   axmeSessionId: string;
   claudeSessionIds: string[];
@@ -203,6 +220,8 @@ export interface AuditLog {
   filesChangedCount?: number;
   extractions?: AuditLogExtraction[];
   error?: string;
+  /** Per-Claude-session resume-audit telemetry — one entry per attached transcript. */
+  resume?: AuditLogResumeInfo[];
   // Counters rolled up from extractions
   totals?: {
     memoriesExtracted: number;

@@ -30,6 +30,7 @@ import {
   MAX_AUDIT_ATTEMPTS,
   type AuditLog,
   type AuditLogExtraction,
+  type AuditLogResumeInfo,
 } from "./storage/sessions.js";
 import { pathExists } from "./storage/engine.js";
 import { parseAndRenderTranscripts } from "./transcript-parser.js";
@@ -477,7 +478,22 @@ export async function runSessionCleanup(
         }
       }
 
-      // Finalize audit log with full extraction breakdown and totals.
+      // Build resume-audit telemetry: one entry per attached Claude session,
+      // showing where this audit started reading, where it stopped, and
+      // whether the resume optimization kicked in (non-zero startOffset).
+      const resumeInfo: AuditLogResumeInfo[] = claudeSessions.map(ref => {
+        const startOffset = startOffsets[ref.id] ?? 0;
+        const endOffset = newEndOffsets[ref.id] ?? startOffset;
+        return {
+          claudeSessionId: ref.id,
+          startOffset,
+          endOffset,
+          bytesRead: bytesReadPerRef[ref.id] ?? 0,
+          resumed: startOffset > 0,
+        };
+      });
+
+      // Finalize audit log with full extraction breakdown, totals, and resume info.
       if (auditLogPath) {
         const mSaved = extractions.filter(e => e.type === "memory" && e.status === "saved").length;
         const mDeduped = extractions.filter(e => e.type === "memory" && e.status === "deduped").length;
@@ -493,6 +509,7 @@ export async function runSessionCleanup(
           promptTokens: audit.promptTokens,
           costUsd: audit.cost?.costUsd ?? 0,
           extractions,
+          resume: resumeInfo,
           totals: {
             memoriesExtracted: audit.memories.length,
             memoriesSaved: mSaved,
