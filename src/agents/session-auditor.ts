@@ -310,13 +310,16 @@ export async function runSessionAudit(opts: {
   sessionTranscript?: string;
   sessionEvents?: string;
   filesChanged: string[];
+  /** Optional model override. Defaults to claude-opus-4-6 (chosen for strict
+   *  rule-following on the "default-is-nothing" extraction prompt). */
+  model?: string;
 }): Promise<SessionAuditResult> {
   const sdk = await import("@anthropic-ai/claude-agent-sdk");
   const startTime = Date.now();
 
   const queryOpts = {
     cwd: opts.sessionOrigin,
-    model: "claude-opus-4-6",
+    model: opts.model ?? "claude-opus-4-6",
     // Custom system prompt. Critical: do NOT use the claude_code preset here —
     // that preset instructs the model to behave as Claude Code main agent,
     // which caused the auditor to think it was continuing the user's work
