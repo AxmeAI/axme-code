@@ -213,11 +213,35 @@ export function checkBash(rules: SafetyRules, command: string): SafetyVerdict {
 
 /**
  * Check if a git operation is safe.
+ *
+ * Force-push detection uses word-boundary matching to avoid false positives
+ * on branch names that contain `-f` as a substring (e.g. `feat/my-fixes`
+ * or any ref with "-file" in it). `--force`, `-f`, `-force-with-lease`,
+ * and the `+refspec` form (`git push origin +main`) are all recognized;
+ * `-fixes` and similar substrings are not.
  */
 export function checkGit(rules: SafetyRules, command: string): SafetyVerdict {
   const stripped = stripQuoted(command.trim());
-  if (!rules.git.allowForcePush && (stripped.includes("--force") || stripped.includes("-f"))) {
-    if (stripped.startsWith("git push")) return { allowed: false, reason: "Force push is not allowed" };
+  if (!rules.git.allowForcePush && stripped.startsWith("git push")) {
+    // Split the push command into argv-ish tokens and inspect them as whole
+    // words rather than scanning for substrings. This avoids the bug where
+    // `git push origin feat/audit-reliability-fixes-20260405` triggered on
+    // the `-f` inside `-fixes`.
+    const tokens = stripped.split(/\s+/);
+    const hasForceFlag = tokens.some(t =>
+      t === "-f" ||
+      t === "--force" ||
+      t === "--force-with-lease" ||
+      t.startsWith("--force=") ||
+      t.startsWith("--force-with-lease=")
+    );
+    // Also catch `git push origin +branch` (the `+` refspec prefix is
+    // semantically equivalent to --force for that ref). The `+` must be
+    // on a bare refspec token, not inside another argument.
+    const hasPlusRefspec = tokens.some(t => /^\+[^-].*/.test(t));
+    if (hasForceFlag || hasPlusRefspec) {
+      return { allowed: false, reason: "Force push is not allowed" };
+    }
   }
   if (!rules.git.allowDirectPushToMain) {
     for (const branch of rules.git.protectedBranches) {

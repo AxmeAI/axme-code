@@ -80,19 +80,64 @@ function shortenToolInput(name: string, input: any): string {
 }
 
 /**
- * Parse a Claude Code transcript jsonl file into filtered conversation turns.
- * Returns empty turns array if the file does not exist or cannot be read.
+ * Result of parsing a transcript slice. endOffset is the byte position in
+ * the file where we stopped — store this so a subsequent audit can resume
+ * from it and avoid burning LLM tokens on already-audited turns.
  */
-export function parseTranscript(path: string): ConversationTurn[] {
-  if (!existsSync(path)) return [];
+export interface ParsedTranscriptSlice {
+  turns: ConversationTurn[];
+  /** Absolute byte offset at the end of the parsed portion. Always a line boundary. */
+  endOffset: number;
+  /** Bytes consumed on this call. 0 when the file has not grown since last audit. */
+  bytesRead: number;
+  /** Total file size in bytes at read time (for logging). */
+  fileSize: number;
+}
 
-  let content: string;
-  try {
-    content = readFileSync(path, "utf-8");
-  } catch {
-    return [];
+/**
+ * Parse a Claude Code transcript jsonl file into filtered conversation turns,
+ * optionally starting from a byte offset (for resume-audit optimization).
+ *
+ * Works on Buffer (bytes), not String (UTF-16 code units), so offsets are
+ * true byte positions safe for multibyte characters. The caller is expected
+ * to always pass line-aligned offsets — in practice this is guaranteed
+ * because we only ever write endOffset values that we recorded at the end
+ * of parsing (which is always a line boundary since Claude Code writes full
+ * lines atomically).
+ *
+ * Returns empty turns and endOffset=startOffset if the file does not exist,
+ * cannot be read, or the offset is beyond file size (treated as "file was
+ * rotated / shortened", safe no-op).
+ */
+export function parseTranscriptFromOffset(path: string, startOffset: number = 0): ParsedTranscriptSlice {
+  if (!existsSync(path)) {
+    return { turns: [], endOffset: startOffset, bytesRead: 0, fileSize: 0 };
   }
 
+  let buffer: Buffer;
+  try {
+    buffer = readFileSync(path);
+  } catch {
+    return { turns: [], endOffset: startOffset, bytesRead: 0, fileSize: 0 };
+  }
+
+  const fileSize = buffer.length;
+
+  // Guard: if the stored offset is beyond current file size, the file was
+  // rotated or truncated by Claude Code. Reset to 0 and parse from scratch.
+  // (In practice Claude Code appends monotonically, but this handles edge
+  // cases like manual deletes or "resume from older point".)
+  const safeStart = startOffset > fileSize ? 0 : Math.max(0, startOffset);
+
+  // Extract only the un-parsed slice — LLM token budget is not wasted on
+  // bytes we have already consumed. Disk read is the full file, which is
+  // cheap; LLM context is what we are protecting.
+  const slice = buffer.subarray(safeStart);
+  if (slice.length === 0) {
+    return { turns: [], endOffset: safeStart, bytesRead: 0, fileSize };
+  }
+
+  const content = slice.toString("utf-8");
   const turns: ConversationTurn[] = [];
   const lines = content.split("\n").filter(Boolean);
 
@@ -155,7 +200,21 @@ export function parseTranscript(path: string): ConversationTurn[] {
     }
   }
 
-  return turns;
+  return {
+    turns,
+    endOffset: fileSize,
+    bytesRead: fileSize - safeStart,
+    fileSize,
+  };
+}
+
+/**
+ * Backward-compatible wrapper: parse the whole transcript from offset 0
+ * and return only the turns. Used by legacy callers that do not care about
+ * resume-audit offsets (e.g. scope-dryrun, single-transcript audit stats).
+ */
+export function parseTranscript(path: string): ConversationTurn[] {
+  return parseTranscriptFromOffset(path, 0).turns;
 }
 
 /**
@@ -308,24 +367,22 @@ export function splitTurnsIntoChunks(
 
 /**
  * Parse a transcript file, filter it, render it, and return stats.
- * Convenience wrapper used by the session auditor.
+ * Convenience wrapper used by the session auditor. Parses from offset 0
+ * (whole file) — used by dry-run and single-audit fallback paths.
  */
 export function parseAndRenderTranscript(path: string): ParsedTranscript {
-  const turns = parseTranscript(path);
-  const rendered = renderConversation(turns);
-
-  let rawSize = 0;
-  try { rawSize = readFileSync(path, "utf-8").length; } catch {}
+  const slice = parseTranscriptFromOffset(path, 0);
+  const rendered = renderConversation(slice.turns);
 
   return {
-    turns,
+    turns: slice.turns,
     rendered,
-    rawSize,
+    rawSize: slice.fileSize,
     filteredSize: rendered.length,
-    userTurns: turns.filter(t => t.role === "user" && t.kind === "text").length,
-    assistantTurns: turns.filter(t => t.role === "assistant" && t.kind === "text").length,
-    thinkingTurns: turns.filter(t => t.kind === "thinking").length,
-    toolUseTurns: turns.filter(t => t.kind === "tool_use").length,
+    userTurns: slice.turns.filter(t => t.role === "user" && t.kind === "text").length,
+    assistantTurns: slice.turns.filter(t => t.role === "assistant" && t.kind === "text").length,
+    thinkingTurns: slice.turns.filter(t => t.kind === "thinking").length,
+    toolUseTurns: slice.turns.filter(t => t.kind === "tool_use").length,
   };
 }
 
@@ -333,24 +390,47 @@ export function parseAndRenderTranscript(path: string): ParsedTranscript {
  * Parse and render multiple transcripts (for multi-agent sessions), joining
  * them with role labels so the auditor can distinguish which agent said what.
  * Also returns the combined turns list for downstream chunking.
+ *
+ * Resume-audit optimization: if startOffsets is provided, each ref is parsed
+ * starting from its stored byte offset (the position reached on the previous
+ * audit of the same Claude session). Returns per-ref end offsets so the
+ * caller can persist them after a successful audit. Refs without an entry
+ * in startOffsets are parsed from offset 0.
  */
 export function parseAndRenderTranscripts(
   refs: Array<{ id: string; transcriptPath: string; role?: string }>,
+  startOffsets?: Record<string, number>,
 ): {
   rendered: string;
   totalRaw: number;
   totalFiltered: number;
   /** Combined turns across all refs, for chunking in the auditor. */
   allTurns: ConversationTurn[];
+  /** Per-ref end offset after this parse — caller persists these on audit success. */
+  endOffsets: Record<string, number>;
+  /** Per-ref bytes consumed on this call (for observability). */
+  bytesRead: Record<string, number>;
 } {
-  if (refs.length === 0) return { rendered: "", totalRaw: 0, totalFiltered: 0, allTurns: [] };
+  const endOffsets: Record<string, number> = {};
+  const bytesRead: Record<string, number> = {};
+  if (refs.length === 0) {
+    return { rendered: "", totalRaw: 0, totalFiltered: 0, allTurns: [], endOffsets, bytesRead };
+  }
+
   if (refs.length === 1) {
-    const parsed = parseAndRenderTranscript(refs[0].transcriptPath);
+    const ref = refs[0];
+    const start = startOffsets?.[ref.id] ?? 0;
+    const slice = parseTranscriptFromOffset(ref.transcriptPath, start);
+    const rendered = renderConversation(slice.turns);
+    endOffsets[ref.id] = slice.endOffset;
+    bytesRead[ref.id] = slice.bytesRead;
     return {
-      rendered: parsed.rendered,
-      totalRaw: parsed.rawSize,
-      totalFiltered: parsed.filteredSize,
-      allTurns: parsed.turns,
+      rendered,
+      totalRaw: slice.fileSize,
+      totalFiltered: rendered.length,
+      allTurns: slice.turns,
+      endOffsets,
+      bytesRead,
     };
   }
 
@@ -359,14 +439,28 @@ export function parseAndRenderTranscripts(
   let totalFiltered = 0;
   const allTurns: ConversationTurn[] = [];
   for (const ref of refs) {
-    const parsed = parseAndRenderTranscript(ref.transcriptPath);
-    if (parsed.rendered.length === 0) continue;
+    const start = startOffsets?.[ref.id] ?? 0;
+    const slice = parseTranscriptFromOffset(ref.transcriptPath, start);
+    endOffsets[ref.id] = slice.endOffset;
+    bytesRead[ref.id] = slice.bytesRead;
+    if (slice.turns.length === 0) {
+      totalRaw += slice.fileSize;
+      continue;
+    }
+    const rendered = renderConversation(slice.turns);
     parts.push(`==== AGENT: ${ref.role ?? "main"} (session ${ref.id}) ====`);
-    parts.push(parsed.rendered);
+    parts.push(rendered);
     parts.push("");
-    totalRaw += parsed.rawSize;
-    totalFiltered += parsed.filteredSize;
-    allTurns.push(...parsed.turns);
+    totalRaw += slice.fileSize;
+    totalFiltered += rendered.length;
+    allTurns.push(...slice.turns);
   }
-  return { rendered: parts.join("\n"), totalRaw, totalFiltered, allTurns };
+  return {
+    rendered: parts.join("\n"),
+    totalRaw,
+    totalFiltered,
+    allTurns,
+    endOffsets,
+    bytesRead,
+  };
 }

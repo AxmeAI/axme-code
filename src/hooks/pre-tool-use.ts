@@ -193,6 +193,15 @@ function handlePreToolUse(sessionOrigin: string, event: HookInput): void {
 export async function runPreToolUseHook(workspacePath?: string): Promise<void> {
   if (!workspacePath) return;
 
+  // Subclaude audit workers run inside session-auditor with
+  // AXME_SKIP_HOOKS=1 in their environment. Their tool calls trigger any
+  // PreToolUse hooks that may still be registered (via .claude/settings.json
+  // or other means) — each such fire would call ensureAxmeSessionForClaude
+  // and create a short-lived "ghost" AXME session for the subclaude. Early-
+  // exit here breaks that recursion and leaves the main session's AXME
+  // bookkeeping intact.
+  if (process.env.AXME_SKIP_HOOKS === "1") return;
+
   try {
     const chunks: Buffer[] = [];
     for await (const chunk of process.stdin) chunks.push(chunk);

@@ -22,12 +22,15 @@ import {
   loadSession,
   markAudited,
   writeSession,
-  writePendingAudit,
-  clearPendingAudit,
   writeAuditLog,
   updateAuditLog,
+  readAuditedOffset,
+  writeAuditedOffset,
+  AUDIT_STALE_TIMEOUT_MS,
+  MAX_AUDIT_ATTEMPTS,
   type AuditLog,
   type AuditLogExtraction,
+  type AuditLogResumeInfo,
 } from "./storage/sessions.js";
 import { pathExists } from "./storage/engine.js";
 import { parseAndRenderTranscripts } from "./transcript-parser.js";
@@ -78,8 +81,13 @@ function snapshotExistingSlugs(paths: string[]): {
 }
 
 /**
- * Record an audit failure on the session: bump auditAttempts, save lastAuditError,
- * log to worklog, write to stderr. Silent swallow is an anti-pattern.
+ * Record an audit failure on the session: set auditStatus=failed, save
+ * lastAuditError, log to worklog, write to stderr. Silent swallow is an
+ * anti-pattern.
+ *
+ * Note: auditAttempts is bumped earlier (in the pre-audit check-and-set step)
+ * rather than here, so a crashed auditor counts against the retry cap even
+ * if this failure handler never runs.
  */
 function recordAuditFailure(
   workspacePath: string,
@@ -92,8 +100,9 @@ function recordAuditFailure(
   try {
     const s = loadSession(workspacePath, sessionId);
     if (s) {
-      s.auditAttempts = (s.auditAttempts ?? 0) + 1;
       s.lastAuditError = `[${phase}] ${errMsg}`;
+      s.auditStatus = "failed";
+      s.auditFinishedAt = new Date().toISOString();
       writeSession(workspacePath, s);
     }
   } catch {
@@ -114,7 +123,7 @@ export interface SessionCleanupResult {
   handoffSaved: boolean;
   oracleRescanned: boolean;
   costUsd: number;
-  skipped?: "already-audited" | "not-found" | "no-storage";
+  skipped?: "already-audited" | "not-found" | "no-storage" | "concurrent-audit" | "retry-cap";
 }
 
 /**
@@ -153,10 +162,45 @@ export async function runSessionCleanup(
     return { ...base, skipped: "not-found" };
   }
 
-  // Dedup: if audit already ran, don't repeat. Just ensure session is closed.
+  // Dedup 1: if audit already ran, don't repeat. Just ensure session is closed.
   if (session.auditedAt) {
     if (!session.closedAt) closeSession(workspacePath, sessionId);
     return { ...base, skipped: "already-audited" };
+  }
+
+  // Dedup 2: concurrent-audit protection. If another auditor is mid-run on
+  // this session (auditStatus=pending within the stale timeout), skip — the
+  // other auditor will handle it. saveScopedMemories/saveScopedDecisions
+  // already dedup by slug, so the worst case even if both audits completed
+  // in parallel would be wasted LLM cost, not data corruption. Stale
+  // "pending" state (older than AUDIT_STALE_TIMEOUT_MS) is ignored: it
+  // indicates a crashed / SIGKILLed auditor and we allow a retry to proceed.
+  let currentAttempts = session.auditAttempts ?? 0;
+  if (session.auditStatus === "pending" && session.auditStartedAt) {
+    const startedMs = Date.parse(session.auditStartedAt);
+    const ageMs = Date.now() - startedMs;
+    if (Number.isFinite(startedMs) && ageMs < AUDIT_STALE_TIMEOUT_MS) {
+      return { ...base, skipped: "concurrent-audit" };
+    }
+    // Stale pending → previous attempt was killed (SIGKILL on VS Code window
+    // close, OOM, reboot, crash). That is NOT a deterministic failure, so
+    // the retry cap below must not apply — reset auditAttempts in memory so
+    // the fresh attempt can proceed. The retry cap still protects against
+    // real repeated failures (where auditStatus would be "failed", not
+    // "pending" + stale).
+    process.stderr.write(
+      `AXME audit: stale pending for ${sessionId} (age=${Math.round(ageMs / 60000)} min), resetting auditAttempts to allow retry\n`,
+    );
+    currentAttempts = 0;
+    session.auditAttempts = 0;
+  }
+
+  // Dedup 3: retry cap. If the session already used up its audit attempts
+  // and still has no auditedAt, do NOT retry — it either hit a deterministic
+  // failure (too-large prompt, parser rejection) or a bug that needs manual
+  // inspection. Silent endless retries hide real problems.
+  if (currentAttempts >= MAX_AUDIT_ATTEMPTS) {
+    return { ...base, skipped: "retry-cap" };
   }
 
   const filesChanged = session.filesChanged ?? [];
@@ -171,10 +215,37 @@ export async function runSessionCleanup(
   // pre-rendered string) is only used as a display fallback.
   const claudeSessions = session.claudeSessions ?? [];
   let sessionTurns: import("./transcript-parser.js").ConversationTurn[] | undefined;
+  // Resume-audit optimization: for each attached Claude session, look up the
+  // byte offset that the previous audit reached. The parser then reads the
+  // transcript jsonl starting at that offset, and downstream the auditor
+  // only sees turns that were NOT yet captured in the knowledge base. After
+  // a successful audit we persist the new end offsets via writeAuditedOffset
+  // so the next resume continues where this one left off.
+  const startOffsets: Record<string, number> = {};
+  for (const ref of claudeSessions) {
+    startOffsets[ref.id] = readAuditedOffset(workspacePath, ref.id);
+  }
+  let newEndOffsets: Record<string, number> = {};
+  let bytesReadPerRef: Record<string, number> = {};
   if (claudeSessions.length > 0) {
-    const parsed = parseAndRenderTranscripts(claudeSessions);
+    const parsed = parseAndRenderTranscripts(claudeSessions, startOffsets);
+    newEndOffsets = parsed.endOffsets;
+    bytesReadPerRef = parsed.bytesRead;
     if (parsed.allTurns.length > 0) {
       sessionTurns = parsed.allTurns;
+    }
+    // Observability: log how many bytes were skipped because they were
+    // already audited. Useful to confirm the resume optimization is
+    // actually firing when expected.
+    for (const ref of claudeSessions) {
+      const from = startOffsets[ref.id] ?? 0;
+      const to = newEndOffsets[ref.id] ?? from;
+      if (from > 0) {
+        process.stderr.write(
+          `AXME audit ${sessionId}: resume from offset ${from} for Claude ${ref.id.slice(0, 8)} ` +
+            `(${bytesReadPerRef[ref.id] ?? 0} new bytes, end=${to})\n`,
+        );
+      }
     }
   }
 
@@ -212,18 +283,26 @@ export async function runSessionCleanup(
     const auditStartIso = new Date().toISOString();
     const auditStartMs = Date.now();
 
-    // Write a pending-audit marker so a concurrently-starting new session can
-    // see that this session's audit is in progress. `axme_context` reads these
-    // markers and warns the agent + user that the knowledge base may be stale.
+    // Claim the audit for this process by setting auditStatus=pending in a
+    // single writeSession call. This is not an atomic lock — two processes
+    // could both read auditStatus!=pending and both enter here — but that
+    // race is accepted: saveScopedMemories/saveScopedDecisions dedup by slug,
+    // so parallel audits waste money rather than corrupt data. Reading
+    // axme_context via listPendingAudits will still show the most recent
+    // auditor (the one whose write landed last).
+    //
+    // auditAttempts is incremented here (before the LLM call) rather than in
+    // recordAuditFailure: a crashed auditor must still count against the
+    // retry cap even if the finally block never runs.
+    session.auditStatus = "pending";
+    session.auditStartedAt = auditStartIso;
+    session.auditAttempts = currentAttempts + 1;
     try {
-      writePendingAudit(workspacePath, {
-        sessionId,
-        startedAt: auditStartIso,
-        auditorPid: process.pid,
-        phase: "running",
-      });
+      writeSession(workspacePath, session);
     } catch {
-      // Marker failure is non-fatal — we still run the audit.
+      // Writing the pending state is non-fatal — we still run the audit.
+      // The next caller will just see auditStatus undefined and may race
+      // with us, which is an acceptable degradation.
     }
 
     // Write the initial audit log entry. This file will be updated as the
@@ -391,7 +470,40 @@ export async function runSessionCleanup(
       result.costUsd = audit.cost?.costUsd ?? 0;
       auditSucceeded = true;
 
-      // Finalize audit log with full extraction breakdown and totals.
+      // Resume-audit checkpoint: persist per-Claude-session end offsets so
+      // the next audit of the same transcript (session reopen, restart
+      // recovery) starts from here instead of re-reading the full file.
+      // Only do this on success — on failure the old offset stays so a
+      // retry re-processes the same turns.
+      for (const ref of claudeSessions) {
+        const endOffset = newEndOffsets[ref.id];
+        if (endOffset != null && endOffset > (startOffsets[ref.id] ?? 0)) {
+          try {
+            writeAuditedOffset(workspacePath, ref.id, endOffset);
+          } catch {
+            // Non-fatal: worst case the next audit re-reads already-audited
+            // turns and relies on the in-prompt dedup check to avoid double
+            // extraction. Logged elsewhere.
+          }
+        }
+      }
+
+      // Build resume-audit telemetry: one entry per attached Claude session,
+      // showing where this audit started reading, where it stopped, and
+      // whether the resume optimization kicked in (non-zero startOffset).
+      const resumeInfo: AuditLogResumeInfo[] = claudeSessions.map(ref => {
+        const startOffset = startOffsets[ref.id] ?? 0;
+        const endOffset = newEndOffsets[ref.id] ?? startOffset;
+        return {
+          claudeSessionId: ref.id,
+          startOffset,
+          endOffset,
+          bytesRead: bytesReadPerRef[ref.id] ?? 0,
+          resumed: startOffset > 0,
+        };
+      });
+
+      // Finalize audit log with full extraction breakdown, totals, and resume info.
       if (auditLogPath) {
         const mSaved = extractions.filter(e => e.type === "memory" && e.status === "saved").length;
         const mDeduped = extractions.filter(e => e.type === "memory" && e.status === "deduped").length;
@@ -407,6 +519,7 @@ export async function runSessionCleanup(
           promptTokens: audit.promptTokens,
           costUsd: audit.cost?.costUsd ?? 0,
           extractions,
+          resume: resumeInfo,
           totals: {
             memoriesExtracted: audit.memories.length,
             memoriesSaved: mSaved,
@@ -423,7 +536,8 @@ export async function runSessionCleanup(
     } catch (err) {
       // Audit failure is non-fatal for the caller (we still close the session),
       // but it MUST be logged. Silent swallowing is an anti-pattern. The retry
-      // cap in findOrphanSessions prevents infinite re-runs.
+      // cap (MAX_AUDIT_ATTEMPTS) prevents infinite re-runs. recordAuditFailure
+      // sets auditStatus=failed + auditFinishedAt + lastAuditError on the meta.
       recordAuditFailure(workspacePath, sessionId, err, "runSessionAudit");
       if (auditLogPath) {
         updateAuditLog(auditLogPath, {
@@ -433,11 +547,6 @@ export async function runSessionCleanup(
           error: err instanceof Error ? err.message : String(err),
         });
       }
-    } finally {
-      // Always clear the pending-audit marker whether the audit succeeded or
-      // failed. listPendingAudits() drops markers whose auditorPid is dead
-      // anyway, but explicit cleanup keeps the directory tidy.
-      try { clearPendingAudit(workspacePath, sessionId); } catch {}
     }
   }
 

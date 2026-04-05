@@ -20,7 +20,7 @@ import {
   readClaudeSessionMapping,
   clearClaudeSessionMapping,
 } from "../storage/sessions.js";
-import { runSessionCleanup } from "../session-cleanup.js";
+import { spawnDetachedAuditWorker } from "../audit-spawner.js";
 import { pathExists } from "../storage/engine.js";
 import { AXME_CODE_DIR } from "../types.js";
 
@@ -30,7 +30,7 @@ interface SessionEndInput {
   source?: string;
 }
 
-async function handleSessionEnd(workspacePath: string, input: SessionEndInput): Promise<void> {
+function handleSessionEnd(workspacePath: string, input: SessionEndInput): void {
   if (!pathExists(join(workspacePath, AXME_CODE_DIR))) return;
 
   // SessionEnd must know which Claude session is ending. If it does not,
@@ -52,7 +52,12 @@ async function handleSessionEnd(workspacePath: string, input: SessionEndInput): 
   }
   if (!axmeSessionId) return;
 
-  await runSessionCleanup(workspacePath, axmeSessionId);
+  // Spawn a detached audit worker and return immediately. The worker lives
+  // in its own process group and survives SIGKILL to Claude Code / the hook
+  // subprocess. We do NOT await runSessionCleanup here — the hook's 120s
+  // timeout and Claude Code's shutdown clock together make synchronous
+  // auditing unreliable in practice.
+  spawnDetachedAuditWorker(workspacePath, axmeSessionId);
   // Clear this Claude session's mapping file — the session is over.
   clearClaudeSessionMapping(workspacePath, input.session_id);
 }
@@ -64,6 +69,13 @@ async function handleSessionEnd(workspacePath: string, input: SessionEndInput): 
 export async function runSessionEndHook(workspacePath?: string): Promise<void> {
   if (!workspacePath) return;
 
+  // Skip entirely when running inside a subclaude audit worker (see
+  // session-auditor env: { ...process.env, AXME_SKIP_HOOKS: "1" }). Without
+  // this, a subclaude that exits mid-audit could trigger SessionEnd against
+  // an ephemeral Claude session id and recursively invoke runSessionCleanup
+  // on a ghost AXME session (Bug F from PR#6 E2E).
+  if (process.env.AXME_SKIP_HOOKS === "1") return;
+
   try {
     const chunks: Buffer[] = [];
     for await (const chunk of process.stdin) chunks.push(chunk);
@@ -73,7 +85,7 @@ export async function runSessionEndHook(workspacePath?: string): Promise<void> {
     } catch {
       // Empty/invalid stdin is fine — we'll proceed without transcript attachment
     }
-    await handleSessionEnd(workspacePath, input);
+    handleSessionEnd(workspacePath, input);
   } catch {
     // Hook failures must be silent
   }

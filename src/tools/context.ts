@@ -16,6 +16,42 @@ import { mergeDecisions, mergeMemories, mergeSafetyRules } from "../storage/work
 import { testPlanContext } from "../storage/test-plan.js";
 import { plansContext } from "../storage/plans.js";
 import { listPendingAudits } from "../storage/sessions.js";
+import { detectWorkspace } from "../utils/workspace-detector.js";
+
+/**
+ * Build the authoritative "Storage root" header that is prepended to every
+ * axme_context output. This is the single source of truth for agents on
+ * where the .axme-code/ files for the current session physically live.
+ *
+ * Why this exists: in a multi-repo workspace, the workspace root has its
+ * own .axme-code/ and each child repo also has its own .axme-code/. Agents
+ * that do `ls .axme-code/sessions/` relative to their cwd get different
+ * answers depending on which subdirectory they cd'd into, and silently
+ * read the wrong dataset. Surfacing the absolute path at the top of the
+ * context output (and instructing the agent to use it for ALL direct
+ * .axme-code/ inspection) closes that ambiguity.
+ */
+function buildStorageRootHeader(projectPath: string, workspacePath?: string): string {
+  const ws = detectWorkspace(projectPath);
+  const isWorkspace = ws.type !== "single" || (workspacePath != null && workspacePath !== projectPath);
+  const sessionType = isWorkspace ? "workspace (multi-repo)" : "single-repo";
+  const storageRoot = join(projectPath, AXME_CODE_DIR);
+  const lines = [
+    "# AXME Storage Root",
+    "",
+    `- Session origin: ${projectPath}`,
+    `- Session type: ${sessionType}`,
+    `- Storage root: ${storageRoot}`,
+    `- Sessions dir: ${storageRoot}/sessions`,
+    `- Audit logs dir: ${storageRoot}/audit-logs`,
+    `- Audit worker logs: ${storageRoot}/audit-worker-logs`,
+    "",
+    "**CRITICAL**: For any direct inspection of .axme-code/ files via Bash (ls, cat, grep, find, etc.), use ABSOLUTE paths rooted at the Storage root above. Do NOT use relative paths from your cwd — in a multi-repo workspace, your cwd may point into a child repo that has its own separate .axme-code/ storage, and you will silently read the wrong dataset. The Storage root above is the only path that corresponds to this session's live data.",
+    "",
+    "**If you need to verify where an older session came from**: every session's `meta.json` now contains an `origin` field with the absolute path of the directory where the MCP server was running when the session was created. Read that field — it tells you which .axme-code/ storage that specific session belongs to. Use this whenever you pick up a session file directly instead of going through axme_context, or when cross-checking sessions from past runs.",
+  ];
+  return lines.join("\n");
+}
 
 /**
  * Get full project context (oracle + decisions + safety + memory + test plan + plans).
@@ -23,6 +59,10 @@ import { listPendingAudits } from "../storage/sessions.js";
  */
 export function getFullContext(projectPath: string, workspacePath?: string): string {
   const parts: string[] = [];
+
+  // Storage root header — always first so the agent sees it before anything
+  // else. Tells the agent the absolute path to use for direct file inspection.
+  parts.push(buildStorageRootHeader(projectPath, workspacePath));
 
   // Oracle
   const oracle = oracleContext(projectPath);
@@ -87,8 +127,11 @@ export function getFullContext(projectPath: string, workspacePath?: string): str
   const plans = plansContext(projectPath);
   if (plans) parts.push(plans);
 
-  if (parts.length === 0) {
-    return "Project not initialized. Ask the user to run 'axme-code setup' in terminal.";
+  // "parts" always has at least the Storage root header — so detect
+  // "not initialized" by checking absence of any real content modules.
+  const storageDirExists = pathExists(join(projectPath, AXME_CODE_DIR));
+  if (!storageDirExists) {
+    return parts[0] + "\n\nProject not initialized. Ask the user to run 'axme-code setup' in terminal.";
   }
 
   // Check if LLM init was done (LLM-scanned oracle has rich content, deterministic has minimal)
@@ -104,8 +147,10 @@ export function getFullContext(projectPath: string, workspacePath?: string): str
 
   // Pending audits warning: check BOTH the current project AND the workspace
   // root (if different), so the agent sees audits running at either level.
-  // Returned markers already exclude stale (dead-PID) entries thanks to
-  // listPendingAudits's internal pid check.
+  // listPendingAudits derives state from SessionMeta.auditStatus and already
+  // filters out stale "pending" entries older than AUDIT_STALE_TIMEOUT_MS
+  // (crashed auditors), so the returned list represents genuinely in-flight
+  // audits only.
   const pendingProject = listPendingAudits(projectPath);
   const pendingWorkspace = workspacePath && workspacePath !== projectPath
     ? listPendingAudits(workspacePath)
@@ -123,8 +168,7 @@ export function getFullContext(projectPath: string, workspacePath?: string): str
       "Pending:",
       ...allPending.map(p => {
         const startedAgo = Math.round((Date.now() - new Date(p.startedAt).getTime()) / 1000);
-        const phase = p.currentChunk && p.chunks ? `${p.phase} chunk ${p.currentChunk}/${p.chunks}` : p.phase;
-        return `- session ${p.sessionId.slice(0, 8)} at ${p.location} level, started ${startedAgo}s ago, phase=${phase}`;
+        return `- session ${p.sessionId.slice(0, 8)} at ${p.location} level, started ${startedAgo}s ago, phase=${p.phase}`;
       }),
       "",
       "**Agent action required**: tell the user about the pending audit(s) and offer two options:",

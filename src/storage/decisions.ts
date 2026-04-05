@@ -6,7 +6,7 @@
  *   .axme-code/decisions/D-001-<slug>.md   individual records
  */
 
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { atomicWrite, ensureDir, pathExists } from "./engine.js";
 import type { Decision } from "../types.js";
@@ -33,18 +33,63 @@ export function saveDecisions(projectPath: string, decisions: Decision[]): void 
   rebuildIndex(projectPath);
 }
 
+/**
+ * Add a new decision to the project's decision log.
+ *
+ * Two guarantees against duplication and data corruption under parallel writes:
+ *
+ * 1. Title-based dedup. Before allocating a new id we check if a decision with
+ *    a semantically equivalent title (via normalizeTitle) already exists. If
+ *    yes, we return that existing decision unchanged. This prevents the
+ *    "auditor re-extracted the same rule on a resumed session" scenario from
+ *    polluting storage, and is the fix for the silent bypass of the
+ *    deduplicateDecisions helper that lived in this file but was never wired
+ *    into the saveScopedDecisions → addDecision write path.
+ *
+ * 2. Atomic id allocation via O_EXCL. Two parallel addDecision calls (two
+ *    audit workers, two windows closing simultaneously) would otherwise both
+ *    read the same "max id" and both write D-NNN with the same number but
+ *    different slug suffixes. We use writeFileSync with `flag: "wx"` which
+ *    maps to O_CREAT|O_EXCL at the POSIX level — the first writer wins, the
+ *    second gets EEXIST and bumps the number. Bounded retry loop (50 attempts)
+ *    is far more than any realistic race window.
+ */
 export function addDecision(projectPath: string, input: Omit<Decision, "id">): Decision {
+  const dir = decisionsDir(projectPath);
+  ensureDir(dir);
+
+  // (1) Title-based dedup. If an existing decision has an equivalent title,
+  // return it as-is. saveScopedDecisions callers treat this as success.
   const existing = listDecisions(projectPath);
-  const nextNum = existing.length > 0
+  const normTarget = normalizeTitle(input.title);
+  if (normTarget) {
+    const match = existing.find(d => normalizeTitle(d.title) === normTarget);
+    if (match) return match;
+  }
+
+  // (2) Atomic id allocation with O_EXCL retry. Start at max(existing)+1 and
+  // bump on each EEXIST collision.
+  let nextNum = existing.length > 0
     ? Math.max(...existing.map(d => parseInt(d.id.replace("D-", ""), 10))) + 1
     : 1;
-  const id = `D-${String(nextNum).padStart(3, "0")}`;
-  const decision: Decision = { id, ...input };
 
-  ensureDir(decisionsDir(projectPath));
-  atomicWrite(join(decisionsDir(projectPath), `${id}-${decision.slug}.md`), formatDecisionFile(decision));
-  rebuildIndex(projectPath);
-  return decision;
+  for (let attempt = 0; attempt < 50; attempt++) {
+    const id = `D-${String(nextNum).padStart(3, "0")}`;
+    const filePath = join(dir, `${id}-${input.slug}.md`);
+    const decision: Decision = { id, ...input };
+    try {
+      // flag: "wx" = O_CREAT | O_EXCL — atomic, fails if file already exists.
+      writeFileSync(filePath, formatDecisionFile(decision), { flag: "wx", encoding: "utf-8" });
+      rebuildIndex(projectPath);
+      return decision;
+    } catch (err: any) {
+      if (err?.code !== "EEXIST") throw err;
+      // Another process allocated this id between our listDecisions() and
+      // our write. Try the next number.
+      nextNum++;
+    }
+  }
+  throw new Error(`addDecision: could not allocate D-NNN id after 50 attempts for "${input.title}"`);
 }
 
 export function listDecisions(projectPath: string): Decision[] {
