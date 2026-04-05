@@ -174,21 +174,31 @@ export async function runSessionCleanup(
   // already dedup by slug, so the worst case even if both audits completed
   // in parallel would be wasted LLM cost, not data corruption. Stale
   // "pending" state (older than AUDIT_STALE_TIMEOUT_MS) is ignored: it
-  // indicates a crashed auditor and we allow a retry to proceed.
+  // indicates a crashed / SIGKILLed auditor and we allow a retry to proceed.
+  let currentAttempts = session.auditAttempts ?? 0;
   if (session.auditStatus === "pending" && session.auditStartedAt) {
     const startedMs = Date.parse(session.auditStartedAt);
     const ageMs = Date.now() - startedMs;
     if (Number.isFinite(startedMs) && ageMs < AUDIT_STALE_TIMEOUT_MS) {
       return { ...base, skipped: "concurrent-audit" };
     }
-    // Stale pending → fall through and retry.
+    // Stale pending → previous attempt was killed (SIGKILL on VS Code window
+    // close, OOM, reboot, crash). That is NOT a deterministic failure, so
+    // the retry cap below must not apply — reset auditAttempts in memory so
+    // the fresh attempt can proceed. The retry cap still protects against
+    // real repeated failures (where auditStatus would be "failed", not
+    // "pending" + stale).
+    process.stderr.write(
+      `AXME audit: stale pending for ${sessionId} (age=${Math.round(ageMs / 60000)} min), resetting auditAttempts to allow retry\n`,
+    );
+    currentAttempts = 0;
+    session.auditAttempts = 0;
   }
 
   // Dedup 3: retry cap. If the session already used up its audit attempts
   // and still has no auditedAt, do NOT retry — it either hit a deterministic
   // failure (too-large prompt, parser rejection) or a bug that needs manual
   // inspection. Silent endless retries hide real problems.
-  const currentAttempts = session.auditAttempts ?? 0;
   if (currentAttempts >= MAX_AUDIT_ATTEMPTS) {
     return { ...base, skipped: "retry-cap" };
   }
