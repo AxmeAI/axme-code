@@ -106,15 +106,65 @@ When in doubt: REJECT. A missed extraction is recoverable next session; a wrong 
 
 HANDOFF section is EXEMPT from this rule — handoff describes factual session state (what was done, where we stopped), not accepted knowledge. Handoff does not require user confirmation.
 
-==== YOUR VALIDATION WORKFLOW ====
+==== MANDATORY DEDUP CHECK (tool calls REQUIRED before any extraction) ====
 
-For EVERY candidate you consider extracting, run this check against .axme-code/ storage only:
+Before you emit ANY memory, decision, or safety rule in your output, you MUST
+physically verify with Grep tool calls that it is not already stored. This is
+non-negotiable. Your response format REQUIRES a ###DEDUP_CHECK### section at
+the start listing the Grep calls you made. An empty DEDUP_CHECK section
+means you emit no extractions — period.
 
-1. MEMORY candidate (feedback/pattern): Grep .axme-code/memory/ for the key phrase in BOTH the workspace root .axme-code/ AND the relevant repo's .axme-code/memory/. If a similar memory exists at either level, REJECT.
-2. DECISION candidate: Grep .axme-code/decisions/ for the key term in both workspace root and relevant repo. If already recorded at either level, REJECT. Also verify the decision is a policy/principle/constraint that cannot be inferred by reading the diff that would result from this session (you do NOT need to read the actual diff — just ask yourself: "if someone reads the PR diff, can they recover this principle from the code alone?").
-3. SAFETY candidate: Grep .axme-code/safety/ in workspace and relevant repo to confirm it is new.
+WORKFLOW:
 
-Budget: read up to 15 files total. Reject fast. DO NOT read src/ or other repo code to verify candidates — that tells you what the repo looks like TODAY, not what was decided in this session. Trust the transcript for session events, use .axme-code/ only for dedup.
+1. Draft candidates in your thinking: read the transcript, note what you
+   would extract. Do NOT emit anything yet.
+
+2. For EACH candidate, before it can appear in the final output, make at
+   least one Grep call against the relevant storage path:
+   - Memory candidate → Grep "<key concept>" in the target repo's
+     .axme-code/memory/ directory (both feedback/ and patterns/).
+   - Decision candidate → Grep "<key concept>" in
+     .axme-code/decisions/ of the target repo.
+   - Safety candidate → Grep the literal value (or its core substring)
+     in .axme-code/safety/rules.yaml at the target location.
+   Use 1-3 different phrasings per candidate if the first Grep returns
+   nothing (a concept may be recorded under different wording).
+
+3. If Grep returns a matching file, Read it and compare semantically.
+   Same idea with different wording = DUPLICATE. REJECT the candidate.
+   Do NOT emit it.
+
+4. If Grep returns nothing after 2-3 phrasing attempts, the candidate is
+   genuinely new → emit it in the output.
+
+5. Record every Grep call you made in the ###DEDUP_CHECK### section at
+   the START of your output. Format: one line per Grep: "grep <pattern> in
+   <path> → <match|no match>".
+
+EXAMPLES of duplicate rejection:
+  - existing file: never-git-reset-hard-uncommitted.md
+    candidate title: "Don't use git reset --hard on dirty branches"
+    → REJECT (same rule, reworded)
+  - existing file: use-git-c-instead-of-cd.md
+    candidate title: "Prefer git -C <path> over cd && git"
+    → REJECT (same rule, reworded)
+  - existing file: never-push-to-main.md
+    candidate title: "CI must reject PRs that fail lint"
+    → KEEP (different rule — push protection vs CI gate)
+
+Additional rules per category:
+
+- DECISION candidate: also verify it is a policy/principle/constraint that
+  cannot be inferred by reading the diff this session produced (ask yourself:
+  "if someone reads the PR diff, can they recover this rule from the code
+  alone?"). If yes, REJECT — the code is self-documenting.
+- SAFETY candidate: verify rule_type+value combination is not already in
+  rules.yaml (same rule_type, same value or an existing superset).
+
+Tool budget: up to 20 tool calls total. Most audits should use 3-10 Grep
+calls. ZERO Grep calls is a failure — it means you skipped the dedup check
+and your output will be logged with phase=failed. DO NOT read src/ or other
+repo code — only .axme-code/ directories are relevant here.
 
 HANDOFF SECTION NOTE: the handoff must describe the state AT THE END OF THE SESSION (based on the transcript), not the CURRENT state of the repo. Never read working tree or git status to fill handoff — those reflect later sessions, not this one.
 
@@ -200,7 +250,14 @@ All output fields (title, description, keywords, body, reasoning, handoff fields
 
 ==== OUTPUT FORMAT ====
 
-Use these exact markers. Empty sections MUST still include the header with nothing between markers.
+Use these exact markers. Empty sections MUST still include the header with nothing between markers. The FIRST section is ###DEDUP_CHECK### which lists the Grep/Read calls you made. If this section is empty, the whole audit result is considered failed — you MUST run at least one dedup Grep before emitting any extraction.
+
+###DEDUP_CHECK###
+(one line per tool call, format: grep "<pattern>" in <path> → <match|no match>)
+- grep "git reset" in /home/georgeb/axme-workspace/.axme-code/memory/feedback/ → no match
+- grep "git -C" in /home/georgeb/axme-workspace/.axme-code/memory/feedback/ → no match
+- grep "active-session" in /home/georgeb/axme-workspace/axme-code/.axme-code/decisions/ → no match
+###END###
 
 ###MEMORIES###
 slug: <kebab-case, max 60 chars>
@@ -244,17 +301,15 @@ dirty_branches: <English>
 REMEMBER: Use your tools to verify every candidate before extracting. Empty is correct. All output English.`;
 
 /**
- * Build the "existing knowledge" context block that prevents duplicate extractions.
- * When workspacePath is provided (multi-repo workspace session), load existing
- * decisions/memories from BOTH the workspace root AND every repo in the workspace.
- * The auditor sees everything that already exists anywhere in the project so it
- * does not re-extract what's already recorded at another level.
+ * Build the "storage locations" context block. We DO NOT give the auditor an
+ * inventory of existing decisions/memories in the prompt — earlier experiments
+ * showed that Opus treats such a list as sufficient and skips the actual
+ * storage check. Instead, we give it ONLY the paths it needs to Grep/Read
+ * for dedup. The mandatory dedup check in the prompt requires at least one
+ * Grep call per candidate before emitting anything.
  */
 function buildExistingContext(sessionOrigin: string, workspaceInfo?: WorkspaceInfo): string {
-  const parts: string[] = [];
-
-  // Collect paths to scan: always the session origin, plus each per-repo path
-  // if this is a workspace session. De-dup by absolute path.
+  // Collect storage paths the auditor should Grep before emitting extractions.
   const paths: Array<{ label: string; path: string }> = [
     { label: workspaceInfo && workspaceInfo.root === sessionOrigin ? "workspace" : basename(sessionOrigin), path: sessionOrigin },
   ];
@@ -268,32 +323,24 @@ function buildExistingContext(sessionOrigin: string, workspaceInfo?: WorkspaceIn
     }
   }
 
-  const allDecisions: string[] = [];
-  const allMemories: string[] = [];
-
+  // Build a compact path list the auditor can Grep. For each path also report
+  // how many existing entries are there, so the auditor knows whether the
+  // location is worth checking.
+  const lines: string[] = [
+    "## Storage locations to Grep/Read for dedup",
+    "",
+    "Before emitting ANY memory/decision/safety candidate, you MUST Grep the relevant storage directory below and verify the candidate is not already stored (by concept, not just by slug). Do NOT skip this step even if you are confident — Grep is cheap, polluting storage is expensive.",
+    "",
+  ];
   for (const { label, path } of paths) {
     try {
-      const decisions = listDecisions(path);
-      for (const d of decisions) {
-        allDecisions.push(`- [${label}] ${d.title}: ${d.decision.slice(0, 120)}`);
-      }
-    } catch {}
-    try {
-      const memories = listMemories(path);
-      for (const m of memories) {
-        allMemories.push(`- [${label}/${m.type}] ${m.title}: ${m.description}`);
-      }
+      const decCount = listDecisions(path).length;
+      const memCount = listMemories(path).length;
+      if (decCount === 0 && memCount === 0) continue;
+      lines.push(`- [${label}] ${path}/.axme-code/   (${decCount} decisions, ${memCount} memories, plus safety/rules.yaml)`);
     } catch {}
   }
-
-  if (allDecisions.length > 0) {
-    parts.push("## Existing decisions (DO NOT re-extract these)\n" + allDecisions.join("\n"));
-  }
-  if (allMemories.length > 0) {
-    parts.push("## Existing memories (DO NOT re-extract these)\n" + allMemories.join("\n"));
-  }
-
-  return parts.join("\n\n");
+  return lines.join("\n");
 }
 
 /**

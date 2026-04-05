@@ -15,6 +15,7 @@ import { allMemoryContext, listMemories } from "../storage/memory.js";
 import { mergeDecisions, mergeMemories, mergeSafetyRules } from "../storage/workspace-merge.js";
 import { testPlanContext } from "../storage/test-plan.js";
 import { plansContext } from "../storage/plans.js";
+import { listPendingAudits } from "../storage/sessions.js";
 
 /**
  * Get full project context (oracle + decisions + safety + memory + test plan + plans).
@@ -99,6 +100,39 @@ export function getFullContext(projectPath: string, workspacePath?: string): str
     if (oracleIsMinimal) {
       parts.push("\n---\n**WARNING:** This project was initialized with deterministic scan only (no LLM). Oracle and decisions may be incomplete. Ask the user to run `axme-code setup " + projectPath + "` in terminal for deep LLM scan.");
     }
+  }
+
+  // Pending audits warning: check BOTH the current project AND the workspace
+  // root (if different), so the agent sees audits running at either level.
+  // Returned markers already exclude stale (dead-PID) entries thanks to
+  // listPendingAudits's internal pid check.
+  const pendingProject = listPendingAudits(projectPath);
+  const pendingWorkspace = workspacePath && workspacePath !== projectPath
+    ? listPendingAudits(workspacePath)
+    : [];
+  const allPending = [
+    ...pendingProject.map(p => ({ ...p, location: "project" as const })),
+    ...pendingWorkspace.map(p => ({ ...p, location: "workspace" as const })),
+  ];
+  if (allPending.length > 0) {
+    const lines = [
+      "## ⚠️ Pending audits (knowledge base may be incomplete)",
+      "",
+      `${allPending.length} previous session audit(s) are still running. Their extracted memories, decisions, and handoff notes are NOT yet reflected in the knowledge base above.`,
+      "",
+      "Pending:",
+      ...allPending.map(p => {
+        const startedAgo = Math.round((Date.now() - new Date(p.startedAt).getTime()) / 1000);
+        const phase = p.currentChunk && p.chunks ? `${p.phase} chunk ${p.currentChunk}/${p.chunks}` : p.phase;
+        return `- session ${p.sessionId.slice(0, 8)} at ${p.location} level, started ${startedAgo}s ago, phase=${phase}`;
+      }),
+      "",
+      "**Agent action required**: tell the user about the pending audit(s) and offer two options:",
+      "  1. Wait a few minutes and re-run `axme_context` to pick up the fresh knowledge before proceeding.",
+      "  2. Add a TODO to check back in N minutes and continue in parallel until then, re-checking `axme_context` periodically until the pending list is empty.",
+      "Keep the TODO open until all pending audits are gone.",
+    ];
+    parts.push(lines.join("\n"));
   }
 
   return parts.join("\n\n");

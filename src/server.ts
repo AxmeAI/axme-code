@@ -139,6 +139,12 @@ function buildInstructions(): string {
     parts.push("Call axme_context at session start to load project knowledge base.");
   }
   parts.push("Save memories, decisions, and safety rules immediately when discovered during work.");
+  parts.push(
+    "IMPORTANT: if axme_context output contains a '## ⚠️ Pending audits' section, " +
+      "a previous session's audit is still running and the knowledge base is incomplete. " +
+      "You MUST tell the user, offer to either wait and re-run axme_context or track with a TODO, " +
+      "and re-check axme_context periodically until the pending list is empty before relying on the knowledge base.",
+  );
   return parts.join(" ");
 }
 

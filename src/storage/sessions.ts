@@ -25,6 +25,8 @@ import { AXME_CODE_DIR } from "../types.js";
 
 const SESSIONS_DIR = "sessions";
 const ACTIVE_SESSIONS_DIR = "active-sessions";
+const PENDING_AUDITS_DIR = "pending-audits";
+const AUDIT_LOGS_DIR = "audit-logs";
 const LEGACY_ACTIVE_SESSION_FILE = "active-session";
 
 function sessionsRoot(projectPath: string): string {
@@ -41,6 +43,176 @@ function activeMappingPath(projectPath: string, claudeSessionId: string): string
 
 function legacyActiveSessionPath(projectPath: string): string {
   return join(projectPath, AXME_CODE_DIR, LEGACY_ACTIVE_SESSION_FILE);
+}
+
+function pendingAuditsDir(projectPath: string): string {
+  return join(projectPath, AXME_CODE_DIR, PENDING_AUDITS_DIR);
+}
+
+function pendingAuditPath(projectPath: string, axmeSessionId: string): string {
+  return join(pendingAuditsDir(projectPath), `${axmeSessionId}.json`);
+}
+
+function auditLogsDir(projectPath: string): string {
+  return join(projectPath, AXME_CODE_DIR, AUDIT_LOGS_DIR);
+}
+
+function auditLogPath(projectPath: string, axmeSessionId: string, startedAt: string): string {
+  // Filename: <iso-date>_<short-axme-id>.json  (sortable, human-scannable)
+  const datePart = startedAt.replace(/[:.]/g, "-").slice(0, 19);
+  return join(auditLogsDir(projectPath), `${datePart}_${axmeSessionId.slice(0, 8)}.json`);
+}
+
+// --- Audit logs (permanent per-audit record) ---
+
+export interface AuditLogExtraction {
+  type: "memory" | "decision" | "safety";
+  slug?: string;
+  title?: string;
+  ruleType?: string;
+  value?: string;
+  scope?: string[];
+  proposedRoutes: string[]; // e.g. ["workspace/.axme-code/memory/"]
+  status: "saved" | "deduped" | "dropped";
+  reason?: string; // for deduped/dropped
+}
+
+export interface AuditLog {
+  axmeSessionId: string;
+  claudeSessionIds: string[];
+  startedAt: string;
+  finishedAt?: string;
+  durationMs?: number;
+  phase: "started" | "chunking" | "saving" | "finished" | "failed";
+  model?: string;
+  chunks?: number;
+  promptTokens?: number;
+  costUsd?: number;
+  filesChangedCount?: number;
+  extractions?: AuditLogExtraction[];
+  error?: string;
+  // Counters rolled up from extractions
+  totals?: {
+    memoriesExtracted: number;
+    memoriesSaved: number;
+    memoriesDeduped: number;
+    decisionsExtracted: number;
+    decisionsSaved: number;
+    decisionsDeduped: number;
+    safetyExtracted: number;
+    safetySaved: number;
+    safetyDeduped: number;
+  };
+}
+
+/**
+ * Write a new audit log file at the start of an audit. Returns the file path
+ * so callers can update it later with appendAuditLog (same filename).
+ */
+export function writeAuditLog(projectPath: string, log: AuditLog): string {
+  ensureDir(auditLogsDir(projectPath));
+  const path = auditLogPath(projectPath, log.axmeSessionId, log.startedAt);
+  atomicWrite(path, JSON.stringify(log, null, 2));
+  return path;
+}
+
+/**
+ * Merge updates into an existing audit log file. No-op if the file is missing.
+ */
+export function updateAuditLog(path: string, updates: Partial<AuditLog>): void {
+  try {
+    const existing = readJson<AuditLog>(path);
+    if (!existing) return;
+    const merged: AuditLog = { ...existing, ...updates };
+    atomicWrite(path, JSON.stringify(merged, null, 2));
+  } catch {}
+}
+
+// --- Pending audits (markers for long-running audits) ---
+
+export interface PendingAudit {
+  sessionId: string;
+  startedAt: string;
+  auditorPid: number;
+  phase: "running" | "chunking" | "saving";
+  chunks?: number;
+  currentChunk?: number;
+}
+
+/**
+ * Mark an audit as in-progress. Called at the start of runSessionCleanup.
+ * The marker file lets a new session detect that a previous audit is still
+ * running and warn the user before proceeding with potentially stale context.
+ */
+export function writePendingAudit(projectPath: string, marker: PendingAudit): void {
+  ensureDir(pendingAuditsDir(projectPath));
+  atomicWrite(pendingAuditPath(projectPath, marker.sessionId), JSON.stringify(marker));
+}
+
+/**
+ * Update an existing pending audit marker (e.g. to report chunk progress).
+ * No-op if the marker no longer exists.
+ */
+export function updatePendingAudit(
+  projectPath: string,
+  sessionId: string,
+  updates: Partial<PendingAudit>,
+): void {
+  const current = readPendingAudit(projectPath, sessionId);
+  if (!current) return;
+  const merged = { ...current, ...updates };
+  atomicWrite(pendingAuditPath(projectPath, sessionId), JSON.stringify(merged));
+}
+
+/**
+ * Read a single pending audit marker by session id. Returns null if missing.
+ */
+export function readPendingAudit(projectPath: string, sessionId: string): PendingAudit | null {
+  const raw = readSafe(pendingAuditPath(projectPath, sessionId));
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as PendingAudit;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Remove the pending audit marker once the audit is done (success or fail).
+ */
+export function clearPendingAudit(projectPath: string, sessionId: string): void {
+  removeFile(pendingAuditPath(projectPath, sessionId));
+}
+
+/**
+ * List all pending audit markers in the workspace. Used by axme_context
+ * to warn the user that a previous session's audit may still be running
+ * and the returned knowledge base may be incomplete.
+ *
+ * Also filters out "stale" markers whose auditor PID is no longer alive.
+ * Those represent crashed audits — they are removed as a side effect so
+ * future calls give a clean list.
+ */
+export function listPendingAudits(projectPath: string): PendingAudit[] {
+  const dir = pendingAuditsDir(projectPath);
+  if (!pathExists(dir)) return [];
+  const result: PendingAudit[] = [];
+  try {
+    for (const entry of readdirSync(dir)) {
+      if (!entry.endsWith(".json")) continue;
+      const sessionId = entry.slice(0, -5);
+      const marker = readPendingAudit(projectPath, sessionId);
+      if (!marker) continue;
+      // Probe the auditor PID. If it's dead, the audit crashed — clean up
+      // the marker and do not report it to the caller.
+      if (marker.auditorPid && !isPidAlive(marker.auditorPid)) {
+        try { clearPendingAudit(projectPath, sessionId); } catch {}
+        continue;
+      }
+      result.push(marker);
+    }
+  } catch {}
+  return result;
 }
 
 /**
