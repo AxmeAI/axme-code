@@ -117,17 +117,15 @@ Write in markdown as a definition list. Include terms from README, source code, 
 export async function runOracleScan(opts: {
   projectPath: string;
   model?: string;
-  budgetUsd?: number;
   workspaceMode?: boolean;
   customPaths?: string[];
 }): Promise<OracleScanResult> {
   const sdk = await import("@anthropic-ai/claude-agent-sdk");
   const startTime = Date.now();
   const model = opts.model ?? "claude-sonnet-4-6";
-  const budgetUsd = opts.budgetUsd ?? 1;
 
   const queryOpts = buildAgentQueryOptions(
-    { cwd: opts.projectPath, model, budgetUsd },
+    { cwd: opts.projectPath, model },
     "scanner",
   );
 

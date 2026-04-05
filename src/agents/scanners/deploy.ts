@@ -85,15 +85,13 @@ Rules:
 export async function runDeployScan(opts: {
   projectPath: string;
   model?: string;
-  budgetUsd?: number;
 }): Promise<DeployScanResult> {
   const sdk = await import("@anthropic-ai/claude-agent-sdk");
   const startTime = Date.now();
   const model = opts.model ?? "claude-haiku-4-5";
-  const budgetUsd = opts.budgetUsd ?? 0.5;
 
   const queryOpts = buildAgentQueryOptions(
-    { cwd: opts.projectPath, model, budgetUsd },
+    { cwd: opts.projectPath, model },
     "scanner",
   );
 

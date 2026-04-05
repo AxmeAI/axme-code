@@ -155,6 +155,22 @@ export interface WorklogEvent {
 
 // --- Session ---
 
+/**
+ * A Claude Code (or future multi-agent) session attached to an AXME session.
+ * One AXME session can have multiple attached Claude Code sessions when
+ * tester/reviewer sub-agents join in later phases.
+ */
+export interface ClaudeSessionRef {
+  /** Claude Code's own session_id (from hook event input) */
+  id: string;
+  /** Absolute path to the Claude Code transcript jsonl file */
+  transcriptPath: string;
+  /** ISO timestamp when this Claude session was first seen in a hook event */
+  firstSeen: string;
+  /** Role in the AXME session. Defaults to "main". Reserved for future multi-agent. */
+  role?: string;
+}
+
 export interface SessionMeta {
   id: string;
   createdAt: string;
@@ -165,6 +181,8 @@ export interface SessionMeta {
   pid?: number;
   /** ISO timestamp when LLM session audit completed. Used to dedupe auto-audit vs startup fallback. */
   auditedAt?: string;
+  /** Claude Code sessions attached to this AXME session (populated by hooks). */
+  claudeSessions?: ClaudeSessionRef[];
 }
 
 // --- Config ---

@@ -63,17 +63,14 @@ export async function runMemoryExtraction(opts: {
   sessionEvents: string;
   projectPath: string;
   model?: string;
-  budgetUsd?: number;
 }): Promise<MemoryExtractionResult> {
   const sdk = await import("@anthropic-ai/claude-agent-sdk");
   const startTime = Date.now();
   const model = opts.model ?? "claude-haiku-4-5";
-  const budgetUsd = opts.budgetUsd ?? 0.5;
 
   const queryOpts = {
     cwd: opts.projectPath,
     model,
-    maxBudgetUsd: budgetUsd,
     permissionMode: "bypassPermissions" as const,
     allowDangerouslySkipPermissions: true,
     allowedTools: [] as string[],

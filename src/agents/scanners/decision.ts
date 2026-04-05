@@ -96,15 +96,13 @@ Do NOT include:
 export async function runDecisionScan(opts: {
   projectPath: string;
   model?: string;
-  budgetUsd?: number;
 }): Promise<DecisionScanResult> {
   const sdk = await import("@anthropic-ai/claude-agent-sdk");
   const startTime = Date.now();
   const model = opts.model ?? "claude-sonnet-4-6";
-  const budgetUsd = opts.budgetUsd ?? 1;
 
   const queryOpts = buildAgentQueryOptions(
-    { cwd: opts.projectPath, model, budgetUsd },
+    { cwd: opts.projectPath, model },
     "scanner",
   );
 

@@ -12,6 +12,7 @@
 
 import { loadSafetyRules, checkBash, checkGit, checkFilePath } from "../storage/safety.js";
 import { pathExists } from "../storage/engine.js";
+import { attachClaudeSession, readActiveSession } from "../storage/sessions.js";
 import { join } from "node:path";
 import { AXME_CODE_DIR } from "../types.js";
 import type { SafetyVerdict } from "../storage/safety.js";
@@ -19,6 +20,8 @@ import type { SafetyVerdict } from "../storage/safety.js";
 interface HookInput {
   tool_name: string;
   tool_input: Record<string, any>;
+  session_id?: string;
+  transcript_path?: string;
 }
 
 /**
@@ -72,6 +75,22 @@ function handlePreToolUse(workspacePath: string, event: HookInput): void {
   const { tool_name, tool_input } = event;
 
   if (!pathExists(join(workspacePath, AXME_CODE_DIR))) return;
+
+  // Attach Claude Code session (id + transcript path) to the current AXME
+  // session on every tool call. Dedup'd by id inside the storage helper, so
+  // repeated calls are cheap. We do this in PreToolUse (rather than only in
+  // PostToolUse) so the attachment happens before any safety denial — we
+  // want the audit trail even for blocked tools.
+  if (event.session_id && event.transcript_path) {
+    const axmeSessionId = readActiveSession(workspacePath);
+    if (axmeSessionId) {
+      attachClaudeSession(workspacePath, axmeSessionId, {
+        id: event.session_id,
+        transcriptPath: event.transcript_path,
+        role: "main",
+      });
+    }
+  }
 
   const rules = loadSafetyRules(workspacePath);
   let verdict: SafetyVerdict = { allowed: true };

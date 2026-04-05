@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { readdirSync, readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { ensureDir, writeJson, readJson, pathExists, atomicWrite, removeFile, readSafe } from "./engine.js";
-import type { SessionMeta } from "../types.js";
+import type { SessionMeta, ClaudeSessionRef } from "../types.js";
 import { AXME_CODE_DIR } from "../types.js";
 
 const SESSIONS_DIR = "sessions";
@@ -178,6 +178,39 @@ export function trackFileChanged(projectPath: string, sessionId: string, filePat
     session.filesChanged.push(filePath);
     writeSession(projectPath, session);
   }
+}
+
+/**
+ * Attach a Claude Code session (from a hook event) to an AXME session.
+ *
+ * Called from hooks on every tool call. The first call records the Claude
+ * Code session_id and transcript path; subsequent calls are dedup'd by id.
+ *
+ * The session auditor uses this list to locate transcript files for the
+ * audit. Multi-agent scenarios (tester, reviewer) will attach additional
+ * Claude sessions to the same AXME session via the same mechanism.
+ *
+ * Silent no-op if the session cannot be read — the MCP server may be mid-
+ * shutdown or the meta file may be under concurrent write.
+ */
+export function attachClaudeSession(
+  projectPath: string,
+  axmeSessionId: string,
+  ref: { id: string; transcriptPath: string; role?: string },
+): void {
+  if (!ref.id || !ref.transcriptPath) return;
+  const session = loadSession(projectPath, axmeSessionId);
+  if (!session) return;
+  if (!session.claudeSessions) session.claudeSessions = [];
+  if (session.claudeSessions.some(c => c.id === ref.id)) return;
+  const entry: ClaudeSessionRef = {
+    id: ref.id,
+    transcriptPath: ref.transcriptPath,
+    firstSeen: new Date().toISOString(),
+    ...(ref.role ? { role: ref.role } : {}),
+  };
+  session.claudeSessions.push(entry);
+  writeSession(projectPath, session);
 }
 
 export function incrementTurns(projectPath: string, sessionId: string): void {

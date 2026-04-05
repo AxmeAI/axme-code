@@ -32,7 +32,6 @@ const ROLE_TOOLS: Record<AgentRole, { allowed: string[]; disallowed: string[] }>
 export function buildAgentQueryOptions(base: {
   cwd: string;
   model: string;
-  budgetUsd?: number;
   maxTurns?: number;
   agentPrompt?: string;
 }, role: AgentRole): Options {
@@ -45,7 +44,6 @@ export function buildAgentQueryOptions(base: {
       ? { type: "preset" as const, preset: "claude_code" as const, append: base.agentPrompt }
       : { type: "preset" as const, preset: "claude_code" as const },
     settingSources: ["project"],
-    ...(base.budgetUsd !== undefined ? { maxBudgetUsd: base.budgetUsd } : {}),
     ...(base.maxTurns !== undefined ? { maxTurns: base.maxTurns } : {}),
     permissionMode: "bypassPermissions",
     allowDangerouslySkipPermissions: true,
