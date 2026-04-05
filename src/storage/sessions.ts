@@ -648,11 +648,30 @@ export const MAX_AUDIT_ATTEMPTS = 1;
  */
 export function findOrphanSessions(projectPath: string): SessionMeta[] {
   const orphans: SessionMeta[] = [];
+  const now = Date.now();
   for (const session of listSessions(projectPath)) {
     if (session.auditedAt) continue;
     if (session.pid == null) continue;
     if (isPidAlive(session.pid)) continue;
-    if ((session.auditAttempts ?? 0) >= MAX_AUDIT_ATTEMPTS) continue;
+
+    // Retry-cap check. A session that used up its attempts is normally
+    // skipped — except if the last attempt was killed mid-run (auditStatus
+    // still "pending" and the start timestamp is older than the stale
+    // timeout). That scenario is NOT a deterministic failure; it is a
+    // SIGKILL from VS Code / crash / reboot, and we should retry it.
+    // runSessionCleanup has the matching in-memory reset inside itself
+    // (Fix B), but findOrphanSessions also needs to let such sessions
+    // through so they reach runSessionCleanup in the first place.
+    if ((session.auditAttempts ?? 0) >= MAX_AUDIT_ATTEMPTS) {
+      const isStalePending =
+        session.auditStatus === "pending" &&
+        session.auditStartedAt != null &&
+        Number.isFinite(Date.parse(session.auditStartedAt)) &&
+        now - Date.parse(session.auditStartedAt) > AUDIT_STALE_TIMEOUT_MS;
+      if (!isStalePending) continue;
+      // Fall through: stale-pending session with maxed attempts is a
+      // killed-mid-run case, treat it as an orphan to retry.
+    }
     orphans.push(session);
   }
   return orphans;
