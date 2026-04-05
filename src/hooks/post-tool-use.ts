@@ -12,8 +12,7 @@
  * NOT from Claude Code's session_id (which is a different ID).
  */
 
-import { trackFileChanged, attachClaudeSession } from "../storage/sessions.js";
-import { readActiveSession } from "../storage/sessions.js";
+import { trackFileChanged, ensureAxmeSessionForClaude } from "../storage/sessions.js";
 import { pathExists } from "../storage/engine.js";
 import { join } from "node:path";
 import { AXME_CODE_DIR } from "../types.js";
@@ -30,20 +29,15 @@ function handlePostToolUse(workspacePath: string, event: HookInput): void {
 
   if (!pathExists(join(workspacePath, AXME_CODE_DIR))) return;
 
-  const axmeSessionId = readActiveSession(workspacePath);
-  if (!axmeSessionId) return;
+  // Ensure the AXME session exists for this Claude session_id (lazy creation).
+  // Without session_id we cannot route this hook call — silently skip.
+  if (!event.session_id || !event.transcript_path) return;
 
-  // Attach Claude session on every tool call (dedup'd by id inside the
-  // storage helper). We do this on every call and not only on Edit/Write
-  // because the very first hook event of the session may be a different
-  // tool type.
-  if (event.session_id && event.transcript_path) {
-    attachClaudeSession(workspacePath, axmeSessionId, {
-      id: event.session_id,
-      transcriptPath: event.transcript_path,
-      role: "main",
-    });
-  }
+  const axmeSessionId = ensureAxmeSessionForClaude(
+    workspacePath,
+    event.session_id,
+    event.transcript_path,
+  );
 
   // filesChanged tracking only for mutation tools
   if (!["Edit", "Write", "NotebookEdit"].includes(tool_name)) return;

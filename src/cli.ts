@@ -24,13 +24,37 @@ const command = args[0];
 
 // --- CLAUDE.md templates ---
 
+const PENDING_AUDITS_GUIDANCE = `
+### Pending Audits Check (MANDATORY at session start)
+When you call axme_context at session start, its output may contain a section
+titled "## ⚠️ Pending audits (knowledge base may be incomplete)". This means
+a previous session's LLM audit is still running in the background, and the
+knowledge base you just loaded does not yet include its extracted memories,
+decisions, or handoff.
+
+When you see this section, you MUST:
+1. Tell the user there is a pending audit, quote how many sessions and how
+   long they have been running.
+2. Offer the user two options:
+   a) Wait a few minutes, then you will re-run axme_context before starting
+      work so the knowledge base is fresh.
+   b) Add a TODO to check back in N minutes, continue with other work in
+      parallel, and re-run axme_context periodically until the pending
+      audits section disappears.
+3. Keep the TODO open until all pending audits are gone. Do NOT silently
+   remove it — only mark it done after the pending section is empty.
+
+This prevents you from missing freshly-extracted rules from the previous
+session that might contradict what you are about to do.
+`;
+
 const SINGLE_REPO_CLAUDE_MD = `## AXME Code
 
 ### Session Start (MANDATORY)
 Call axme_context tool with this project's path at the start of every session.
 This loads: oracle, decisions, safety rules, memories, test plan, active plans.
 Do NOT skip - without context you will miss critical project rules.
-
+${PENDING_AUDITS_GUIDANCE}
 ### During Work
 - Error pattern or successful approach discovered -> call axme_save_memory immediately
 - Architectural decision made or discovered -> call axme_save_decision immediately
@@ -52,7 +76,7 @@ Every repo has its own .axme-code/ storage (oracle, decisions, memory, safety) c
 BEFORE reading code, making changes, or running tests in any repo:
   call axme_context with that repo's path to load repo-specific context.
 Each repo has unique decisions and safety rules. Workspace context alone is NOT enough.
-
+${PENDING_AUDITS_GUIDANCE}
 ### During Work
 - Save memories/decisions/safety rules immediately when discovered
 - For cross-project findings: include scope parameter (e.g. scope: ["all"])

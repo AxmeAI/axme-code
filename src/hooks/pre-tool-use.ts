@@ -12,7 +12,7 @@
 
 import { loadMergedSafetyRules, checkBash, checkGit, checkFilePath } from "../storage/safety.js";
 import { pathExists } from "../storage/engine.js";
-import { attachClaudeSession, readActiveSession } from "../storage/sessions.js";
+import { ensureAxmeSessionForClaude } from "../storage/sessions.js";
 import { detectWorkspace } from "../utils/workspace-detector.js";
 import { dirname, join, resolve } from "node:path";
 import { existsSync } from "node:fs";
@@ -107,20 +107,18 @@ function handlePreToolUse(sessionOrigin: string, event: HookInput): void {
 
   if (!pathExists(join(sessionOrigin, AXME_CODE_DIR))) return;
 
-  // Attach Claude Code session (id + transcript path) to the current AXME
-  // session on every tool call. Dedup'd by id inside the storage helper, so
-  // repeated calls are cheap. We do this in PreToolUse (rather than only in
-  // PostToolUse) so the attachment happens before any safety denial — we
-  // want the audit trail even for blocked tools.
+  // Ensure an AXME session exists for this Claude session (lazy creation).
+  // The first hook call with a given Claude session_id creates the AXME
+  // session and writes the mapping file. Subsequent calls for the same
+  // Claude session reuse the mapping. This is how multi-window isolation
+  // works: each VS Code window has its own Claude session_id → its own
+  // AXME session → no last-writer-wins on a shared pointer file.
+  //
+  // We do this in PreToolUse (not only PostToolUse) so the AXME session
+  // exists before any safety denial — we want the audit trail even for
+  // blocked tool calls.
   if (event.session_id && event.transcript_path) {
-    const axmeSessionId = readActiveSession(sessionOrigin);
-    if (axmeSessionId) {
-      attachClaudeSession(sessionOrigin, axmeSessionId, {
-        id: event.session_id,
-        transcriptPath: event.transcript_path,
-        role: "main",
-      });
-    }
+    ensureAxmeSessionForClaude(sessionOrigin, event.session_id, event.transcript_path);
   }
 
   // Determine if the session origin is a workspace (multi-repo) or a single repo.

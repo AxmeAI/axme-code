@@ -184,6 +184,10 @@ export interface SessionMeta {
   auditedAt?: string;
   /** Claude Code sessions attached to this AXME session (populated by hooks). */
   claudeSessions?: ClaudeSessionRef[];
+  /** Number of times the auditor has been invoked on this session. Capped by MAX_AUDIT_ATTEMPTS. */
+  auditAttempts?: number;
+  /** Error message from the most recent failed audit attempt, if any. Cleared on successful audit. */
+  lastAuditError?: string;
 }
 
 // --- Config ---
