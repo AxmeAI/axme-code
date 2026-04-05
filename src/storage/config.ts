@@ -35,8 +35,12 @@ function formatConfig(config: ProjectConfig): string {
   return [
     "# AXME Code configuration",
     "",
-    "# Default model for agent sessions",
+    "# Default model for agent sessions (architect, engineer, reviewer, tester)",
     `model: ${config.model}`,
+    "",
+    "# Model for the session auditor (runs at session end to extract memories,",
+    "# decisions, safety rules, and handoff from the session transcript)",
+    `auditor_model: ${config.auditorModel}`,
     "",
     "# Run reviewer agent after engineer (true/false)",
     `review_enabled: ${config.reviewEnabled}`,
@@ -54,6 +58,7 @@ function parseConfig(content: string): ProjectConfig {
 
   return {
     model: String(doc.model ?? DEFAULT_PROJECT_CONFIG.model),
+    auditorModel: String(doc.auditor_model ?? DEFAULT_PROJECT_CONFIG.auditorModel),
     reviewEnabled: doc.review_enabled !== false,
     presets: Array.isArray(doc.presets) ? doc.presets.map(String) : DEFAULT_PROJECT_CONFIG.presets,
   };

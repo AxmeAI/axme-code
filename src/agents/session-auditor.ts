@@ -19,6 +19,7 @@
 
 import { basename, relative } from "node:path";
 import type { Memory, Decision, SessionHandoff, WorkspaceInfo } from "../types.js";
+import { DEFAULT_AUDITOR_MODEL } from "../types.js";
 import { extractCostFromResult, zeroCost, type CostInfo } from "../utils/cost-extractor.js";
 import { toMemorySlug } from "../storage/memory.js";
 import { toSlug, listDecisions } from "../storage/decisions.js";
@@ -312,8 +313,10 @@ export async function runSessionAudit(opts: {
   sessionTranscript?: string;
   sessionEvents?: string;
   filesChanged: string[];
-  /** Optional model override. Defaults to claude-sonnet-4-6 which is enough
-   *  for the (short) audit task once the transcript is wrapped in XML. */
+  /** Optional model override. If not passed, callers typically read the
+   *  auditor_model field from .axme-code/config.yaml via readConfig(). The
+   *  hard default (DEFAULT_AUDITOR_MODEL) is Sonnet 4.6 — enough for the
+   *  short audit task once the transcript is wrapped in XML. */
   model?: string;
 }): Promise<SessionAuditResult> {
   const sdk = await import("@anthropic-ai/claude-agent-sdk");
@@ -321,7 +324,7 @@ export async function runSessionAudit(opts: {
 
   const queryOpts = {
     cwd: opts.sessionOrigin,
-    model: opts.model ?? "claude-sonnet-4-6",
+    model: opts.model ?? DEFAULT_AUDITOR_MODEL,
     // Custom system prompt. Critical: do NOT use the claude_code preset here —
     // that preset instructs the model to behave as Claude Code main agent,
     // which caused the auditor to think it was continuing the user's work

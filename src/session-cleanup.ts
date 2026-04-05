@@ -27,6 +27,7 @@ import {
 import { pathExists } from "./storage/engine.js";
 import { parseAndRenderTranscripts } from "./transcript-parser.js";
 import { detectWorkspace } from "./utils/workspace-detector.js";
+import { readConfig } from "./storage/config.js";
 import { AXME_CODE_DIR } from "./types.js";
 
 export interface SessionCleanupResult {
@@ -127,6 +128,10 @@ export async function runSessionCleanup(
   const isWorkspaceSession = workspaceInfo.type !== "single";
   const workspaceRoot = isWorkspaceSession ? workspacePath : undefined;
 
+  // Read audit model from config (falls back to DEFAULT_AUDITOR_MODEL if config
+  // file is missing or the auditor_model field is not set).
+  const config = readConfig(workspacePath);
+
   // Run LLM audit only if there's meaningful activity to analyze
   if (hasActivity) {
     try {
@@ -139,6 +144,7 @@ export async function runSessionCleanup(
         sessionTranscript,
         sessionEvents,
         filesChanged,
+        model: config.auditorModel,
       });
 
       // Route memories by scope: workspace-level ("all") vs specific repo vs

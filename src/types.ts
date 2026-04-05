@@ -6,6 +6,7 @@
 
 export const AXME_CODE_DIR = ".axme-code";
 export const DEFAULT_MODEL = "claude-sonnet-4-6";
+export const DEFAULT_AUDITOR_MODEL = "claude-sonnet-4-6";
 
 // --- Workspace ---
 
@@ -188,13 +189,17 @@ export interface SessionMeta {
 // --- Config ---
 
 export interface ProjectConfig {
+  /** Default model for agent sessions (architect, engineer, reviewer, tester) */
   model: string;
+  /** Model for the session auditor (extracts memories/decisions/safety at session end) */
+  auditorModel: string;
   reviewEnabled: boolean;
   presets: string[];
 }
 
 export const DEFAULT_PROJECT_CONFIG: ProjectConfig = {
   model: DEFAULT_MODEL,
+  auditorModel: DEFAULT_AUDITOR_MODEL,
   reviewEnabled: true,
   presets: ["essential-safety", "ai-agent-guardrails"],
 };
