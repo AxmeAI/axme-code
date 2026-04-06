@@ -11,9 +11,9 @@
  * or turned into open questions for user review.
  */
 
-import { Claude } from "@anthropic-ai/claude-agent-sdk";
-import type { Decision, Memory, WorkspaceInfo } from "../types.js";
+import type { Decision, Memory } from "../types.js";
 import { DEFAULT_AUDITOR_MODEL } from "../types.js";
+import { extractCostFromResult, type CostInfo } from "../utils/cost-extractor.js";
 
 export interface KbAuditFinding {
   type: "conflict" | "stale" | "consolidate" | "question";
@@ -146,32 +146,56 @@ export async function runKbAudit(opts: {
     `</oracle_evidence>`,
   ].join("\n");
 
-  // Run LLM
-  const claude = new Claude({ model });
+  // Run LLM via Claude Agent SDK (same pattern as session-auditor)
+  const sdk = await import("@anthropic-ai/claude-agent-sdk");
   let output = "";
   let promptTokens = 0;
   let costUsd = 0;
 
-  try {
-    const conversation = claude.start({ systemPrompt: KB_AUDIT_PROMPT });
-    const response = await conversation.sendMessage(userPrompt);
+  const fullPrompt = KB_AUDIT_PROMPT + "\n\n" + userPrompt;
+  process.stderr.write(
+    `AXME kb-audit: prompt=${fullPrompt.length.toLocaleString()} chars (~${Math.round(fullPrompt.length / 4).toLocaleString()} tokens)\n`,
+  );
 
-    for await (const event of response) {
-      if (event.type === "assistant" && typeof event.message === "string") {
-        output += event.message;
+  try {
+    const q = sdk.query({
+      prompt: fullPrompt,
+      options: {
+        model,
+        systemPrompt: "You are a knowledge base auditor. Output ONLY the structured JSON between ###FINDINGS### and ###END### markers.",
+        settingSources: [],
+        mcpServers: {},
+        permissionMode: "bypassPermissions" as const,
+        allowDangerouslySkipPermissions: true,
+        allowedTools: [],
+        disallowedTools: ["Write", "Edit", "Bash", "Read", "Grep", "Glob", "Agent", "Skill", "TodoWrite", "WebFetch", "WebSearch", "NotebookEdit", "ToolSearch"],
+        env: { ...process.env, AXME_SKIP_HOOKS: "1" },
+      },
+    });
+
+    let cost: CostInfo | undefined;
+    for await (const msg of q) {
+      if (msg.type === "assistant") {
+        const content = (msg as any).message?.content;
+        if (Array.isArray(content)) {
+          for (const block of content) {
+            if (block.type === "text" && block.text) output += block.text;
+          }
+        }
+      }
+      if (msg.type === "result") {
+        cost = extractCostFromResult(msg);
+        if ((msg as any).subtype === "success" && (msg as any).result) {
+          output = (msg as any).result;
+        }
       }
     }
-
-    // Extract cost from conversation if available
-    try {
-      const usage = (conversation as any)._lastUsage;
-      if (usage) {
-        promptTokens = usage.input_tokens ?? 0;
-        costUsd = (promptTokens / 1_000_000) * 15 + ((usage.output_tokens ?? 0) / 1_000_000) * 75;
-      }
-    } catch {}
+    if (cost) {
+      promptTokens = cost.inputTokens ?? 0;
+      costUsd = cost.costUsd ?? 0;
+    }
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`AXME kb-audit LLM error: ${err instanceof Error ? err.message : err}\n`);
     return {
       findings: [],
       totalDecisions: opts.decisions.length,
