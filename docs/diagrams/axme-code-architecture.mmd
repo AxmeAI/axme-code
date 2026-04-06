@@ -1,0 +1,71 @@
+graph TD
+    subgraph VS["Claude Code (VS Code)"]
+        Agent["Agent (LLM)"]
+    end
+
+    subgraph HOOKS["Hooks (fresh process, every tool call)"]
+        Pre["pre-tool-use\nHard safety enforcement\n100% reliable, not prompt-based"]
+        Post["post-tool-use\nTrack filesChanged"]
+    end
+
+    subgraph MCP["MCP Server (stdio, persistent)"]
+        Context["axme_context\nLoad full KB"]
+        Save["axme_save_memory\naxme_save_decision\naxme_update_safety"]
+        Begin["axme_begin_close\nReturn checklist"]
+        Finalize["axme_finalize_close\nWrite handoff + worklog\n+ extractions atomically"]
+        SessMgr["Session Manager\nownerPpid refresh\nstale adoption"]
+    end
+
+    subgraph AUDIT["Detached Auditor (background, survives VS Code close)"]
+        Full["Full Extraction\nagentClosed = false\ncrash / orphan"]
+        Verify["Verify-Only\nagentClosed = true\ncatch missed"]
+    end
+
+    subgraph STORE[".axme-code/ Storage (workspace + per-repo)"]
+        Oracle["oracle/\nstack, structure\npatterns, glossary"]
+        Dec["decisions/\nD-001 .. D-NNN\nadd / supersede / revoke"]
+        Mem["memory/\nfeedback/ + patterns/"]
+        Safe["safety/\nrules.yaml\ngit + bash + fs"]
+        Hand["plans/\nhandoff.md\nSource: agent"]
+        WLog["worklog.jsonl\nworklog.md"]
+        Sess["sessions/\nmeta.json\nagentClosed flag"]
+    end
+
+    Agent -->|"tool calls"| Context
+    Agent -->|"save during work"| Save
+    Agent -->|"1. close session"| Begin
+    Begin -->|"checklist + scope rules"| Agent
+    Agent -->|"2. prepare all data"| Finalize
+
+    Pre -->|"DENY blocked command"| Agent
+    Pre -->|"reads"| Safe
+    Pre -->|"create / refresh"| SessMgr
+    Post -->|"filesChanged"| Sess
+
+    Context -->|"reads all"| STORE
+    Save -->|"atomicWrite"| Dec
+    Save -->|"atomicWrite"| Mem
+    Save -->|"write"| Safe
+    Finalize -->|"atomicWrite"| Hand
+    Finalize -->|"append"| WLog
+    Finalize -->|"add/remove/supersede"| Dec
+    Finalize -->|"add/remove/supersede"| Mem
+    Finalize -->|"agentClosed = true"| Sess
+
+    Full -->|"extract missed"| Dec
+    Full -->|"extract missed"| Mem
+    Full -->|"fallback handoff"| Hand
+    Verify -->|"catch missed only"| Dec
+    Verify -.->|"skip agent handoff"| Hand
+
+    classDef hook fill:#ffe0f0,stroke:#c06,stroke-width:2px,color:#000
+    classDef store fill:#e0e8ff,stroke:#44c,stroke-width:1px,color:#000
+    classDef agent fill:#d0f0d0,stroke:#4a4,stroke-width:2px,color:#000
+    classDef audit fill:#ffe0e0,stroke:#c44,stroke-width:1px,color:#000
+    classDef mcp fill:#e0ffd0,stroke:#4a4,stroke-width:1px,color:#000
+
+    class Pre,Post hook
+    class Oracle,Dec,Mem,Safe,Hand,WLog,Sess store
+    class Agent agent
+    class Full,Verify audit
+    class Context,Save,Begin,Finalize,SessMgr mcp

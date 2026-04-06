@@ -1,0 +1,93 @@
+digraph axme_code_architecture {
+    rankdir=TB;
+    fontname="Helvetica";
+    node [fontname="Helvetica", shape=box, style="rounded,filled"];
+    edge [fontname="Helvetica", fontsize=10];
+    compound=true;
+
+    // Claude Code
+    subgraph cluster_claude {
+        label="Claude Code (VS Code)";
+        style="dashed";
+        color="#333333";
+        fontcolor="#333333";
+        Agent [label="Agent (LLM)", fillcolor="#bfb"];
+        HC [label="Hook Controller", fillcolor="#ddd"];
+    }
+
+    // MCP Server
+    subgraph cluster_mcp {
+        label="MCP Server (stdio, persistent)";
+        style="filled";
+        color="#333333";
+        fillcolor="#f0f0f0";
+        fontcolor="#333333";
+        Tools [label="Tool Handlers\naxme_context, axme_save_*\naxme_begin_close\naxme_finalize_close", fillcolor="#bfb"];
+        SessionMgr [label="Session Manager\nownerPpid mapping\nstale adoption", fillcolor="#dfd"];
+    }
+
+    // Hooks
+    subgraph cluster_hooks {
+        label="Hooks (fresh process per call)";
+        style="dashed";
+        color="#333333";
+        fontcolor="#333333";
+        PreHook [label="pre-tool-use\nHard safety enforcement\n(100% reliable, not prompt-based)", fillcolor="#f9f"];
+        PostHook [label="post-tool-use\nTrack filesChanged", fillcolor="#f9f"];
+        EndHook [label="session-end\nSpawn audit worker", fillcolor="#f9f"];
+    }
+
+    // Detached Auditor
+    subgraph cluster_auditor {
+        label="Detached Auditor (background)";
+        style="dashed";
+        color="#333333";
+        fontcolor="#333333";
+        AuditFull [label="Full Extraction\n(agentClosed=false)\ncrash/orphan sessions", fillcolor="#fbb"];
+        AuditVerify [label="Verify-Only\n(agentClosed=true)\ncatch missed items", fillcolor="#fdd"];
+    }
+
+    // Storage
+    subgraph cluster_storage {
+        label=".axme-code/ Storage";
+        style="filled";
+        color="#333333";
+        fillcolor="#eef";
+        fontcolor="#333333";
+        Oracle [label="oracle/\nstack, structure\npatterns, glossary", fillcolor="#bbf"];
+        Decisions [label="decisions/\nD-001..D-NNN", fillcolor="#bbf"];
+        Memory [label="memory/\nfeedback/ + patterns/", fillcolor="#bbf"];
+        Safety [label="safety/\nrules.yaml", fillcolor="#bbf"];
+        Sessions [label="sessions/\nmeta.json", fillcolor="#bbf"];
+        Plans [label="plans/\nhandoff.md", fillcolor="#bbf"];
+        Worklog [label="worklog.jsonl\nworklog.md", fillcolor="#bbf"];
+    }
+
+    // Agent -> MCP
+    Agent -> Tools [label="tool calls"];
+    Tools -> Oracle [label="read/write\n(atomicWrite)"];
+    Tools -> Decisions [label="read/write"];
+    Tools -> Memory [label="read/write"];
+    Tools -> Safety [label="read/write"];
+    Tools -> Plans [label="read/write"];
+    Tools -> Worklog [label="append"];
+    Tools -> Sessions [label="agentClosed"];
+
+    // Hooks
+    HC -> PreHook [label="every tool call"];
+    HC -> PostHook [label="Edit/Write"];
+    HC -> EndHook [label="session close"];
+    PreHook -> Agent [label="DENY", color="red", fontcolor="red"];
+    PreHook -> SessionMgr [label="create/refresh"];
+    PreHook -> Safety [style="dashed", label="reads"];
+    PostHook -> Sessions [label="filesChanged"];
+    EndHook -> AuditFull [label="spawn detached"];
+
+    // Auditor
+    AuditFull -> Decisions [label="extract & save"];
+    AuditFull -> Memory [label="extract & save"];
+    AuditVerify -> Decisions [label="catch missed", style="dashed"];
+    AuditVerify -> Memory [label="catch missed", style="dashed"];
+    AuditFull -> Plans [label="write if\nno agent handoff"];
+    AuditVerify -> Plans [style="dashed", label="skip"];
+}

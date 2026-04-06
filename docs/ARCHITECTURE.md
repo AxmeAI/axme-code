@@ -1,4 +1,4 @@
-# AXME Code - Architecture
+1# AXME Code - Architecture
 
 ## Overview
 
@@ -24,11 +24,11 @@ AXME Code is an MCP server plugin for Claude Code. Its purpose is to **accumulat
 
 ## 1. MCP Server (`axme-code serve`)
 
-Launches as a stdio process when VS Code opens. Lives for the entire window lifetime. Provides Claude Code with 11 tools:
+Launches as a stdio process when VS Code opens. Lives for the entire window lifetime. Provides Claude Code with tools:
 
 | Tool | Purpose |
 |------|---------|
-| `axme_context` | Loads everything: oracle (stack, structure, patterns, glossary) + active decisions + safety rules + memory + plans. Called at session start. |
+| `axme_context` | Loads everything: oracle + decisions + safety + memory + plans + handoff. Called at session start. |
 | `axme_decisions` | List active decisions with enforce levels |
 | `axme_save_decision` | Agent saves a new architectural decision (with slug-based dedup) |
 | `axme_save_memory` | Agent saves feedback/pattern (mistakes, approaches) |
@@ -39,19 +39,27 @@ Launches as a stdio process when VS Code opens. Lives for the entire window life
 | `axme_status` | Project status (sessions, decisions count, etc.) |
 | `axme_worklog` | Event log (session starts, audit results) |
 | `axme_workspace` | List all repos in workspace |
+| `axme_begin_close` | Start session close: returns extraction checklist for the agent |
+| `axme_finalize_close` | Finalize close: writes handoff, worklog, extractions, sets agentClosed flag |
+| `axme_ask_question` | Record a question only the user can answer |
+| `axme_list_open_questions` | List open questions from previous sessions |
+| `axme_answer_question` | Record the user's answer to an open question |
 
 **Key principle**: the MCP server is purely deterministic - no LLM inside. It acts as a database with a tool API. The agent asks, the server answers from `.axme-code/` storage. The agent learns something new, the server writes it to storage.
+
+**Storage consistency**: all writes to `.axme-code/` go through MCP server code (atomicWrite, appendFileSync), never directly by the LLM. This guarantees correct file formats, proper append-to-end (not beginning), valid JSON in meta.json, and consistent YAML in rules.yaml. The agent provides data, the MCP server writes it correctly.
 
 ---
 
 ## 2. Hooks (pre/post tool use)
 
-Fired by Claude Code automatically **on every tool call** (Edit, Write, Bash, Read...). Each invocation spawns a fresh `node dist/cli.mjs hook <name>` process.
+Fired by Claude Code automatically **on every tool call** (all tools, including MCP tools - no matcher restriction). Each invocation spawns a fresh `node dist/cli.mjs hook <name>` process.
 
 ### `pre-tool-use` - BEFORE tool execution
 
-- **Safety enforcement**: checks `checkGit` (push to main? force push?), `checkBash` (rm -rf /? npm publish?), `checkFilePath` (/etc/passwd? .env?)
-- If violation detected: returns `"deny"` and Claude Code blocks the tool call
+- **Hard safety enforcement**: checks `checkGit` (push to main? force push?), `checkBash` (rm -rf /? npm publish?), `checkFilePath` (/etc/passwd? .env?)
+- If violation detected: returns `"deny"` and Claude Code **blocks the tool call before execution**
+- This is **not prompt-based** - the hook intercepts the tool call at the Claude Code harness level, before any command runs. The LLM cannot bypass, ignore, or override this block. Even if the agent's prompt is jailbroken or the LLM hallucinates a reason to run a denied command, the hook physically prevents execution. This gives **100% enforcement reliability** for safety rules.
 - If OK: silently passes
 - Also calls `ensureAxmeSessionForClaude` - lazily creates an AXME session on the first hook call of the window
 
@@ -72,24 +80,35 @@ Fired by Claude Code automatically **on every tool call** (Edit, Write, Bash, Re
 
 A **separate process** (`axme-code audit-session --workspace X --session Y`), spawned via `child_process.spawn({ detached: true })` + `child.unref()`. Has its own process group (setsid), so it survives VS Code close, MCP server kill, Claude Code kill.
 
+### Two modes
+
+The auditor operates in one of two modes based on the `agentClosed` flag in session meta:
+
+**Full extraction mode** (`agentClosed=false` - crash/orphan sessions):
+The agent didn't complete the close checklist. The auditor does full extraction using `AUDIT_PROMPT`.
+
+**Verify-only mode** (`agentClosed=true` - agent closed the session):
+The agent already extracted memories/decisions/safety via `axme_begin_close` + `axme_finalize_close`. The auditor uses `VERIFY_ONLY_AUDIT_PROMPT` - a lighter prompt that only catches items the agent missed. Most sections will be empty.
+
 ### What it does
 
 1. Reads the Claude Code session transcript (`.jsonl` file, can be 10-20MB)
 2. Uses resume offset - if part was already audited (after /compact), reads only new bytes
 3. Renders transcript into XML format (not chat markers - otherwise the LLM confuses it with conversation continuation)
-4. Sends to LLM (Sonnet) with a prompt to extract:
+4. Sends to LLM with extraction prompt (full or verify-only):
    - **Memories** (feedback, patterns) - what the agent learned, what went wrong
    - **Decisions** - architectural decisions that were made
    - **Safety rules** - new restrictions (if discussed)
-   - **Handoff** - where work stopped, what's next, blockers
+   - **Handoff** - where work stopped, what's next, blockers (skipped in verify-only if agent wrote it)
    - **Oracle changes** - whether stack/structure rescan is needed
+   - **Session summary** - narrative for worklog.md (always generated)
 5. For each extraction, performs **Grep dedup** - checks if it already exists in storage
 6. Saves new/updated items to `.axme-code/` via scope routing (workspace-level or per-repo)
-7. Writes audit log with full telemetry (cost, tokens, resume offsets, extractions)
-8. Updates handoff.md (for the next session)
+7. Does NOT overwrite agent handoff (if `source=agent` exists, auditor skips handoff write)
+8. Writes audit log with full telemetry (cost, tokens, resume offsets, extractions)
 9. Sets `auditStatus=done` on session meta
 
-**Cost**: ~$0.05-0.15 per session (Sonnet), depends on transcript length.
+**Cost**: ~$0.05-0.15 per session (full mode), significantly less in verify-only mode.
 
 ---
 
@@ -130,27 +149,49 @@ Three levels of instruction reach the agent:
    - `axme_save_decision` - "Save a new architectural decision. Use enforce='required' for rules that must be followed..."
    - `axme_save_memory` - "Save a feedback or pattern memory. Use 'feedback' for learned mistakes..."
 
+### Session Close Flow (agent-driven)
+
+When the user asks to close the session:
+
+```
+1. Agent calls axme_begin_close
+   +-- MCP returns extraction checklist (what to extract, scope rules, dedup instructions)
+
+2. Agent reviews the session
+   +-- Compares candidates against axme_context data (already loaded)
+   +-- For each item: checks for duplicates, contradictions, outdated entries
+   +-- Saves memories/decisions/safety via existing tools (axme_save_*)
+   +-- Prepares handoff, worklog entry, startup text
+
+3. Agent calls axme_finalize_close (single call with everything)
+   +-- MCP writes: handoff.md (atomicWrite), worklog.md (append), meta.json (agentClosed=true)
+   +-- MCP executes: add/remove/supersede for memories, decisions, safety rules
+   +-- MCP returns: storage summary (what was saved where)
+
+4. Agent outputs to user: storage summary, then startup text
+```
+
 ### Two-tier safety net
 
 ```
-During session:                After session:
+During session:                At session close:              After close (background):
 
-  Agent works                   Auditor (LLM) reads transcript
-       |                              |
-  Learns something important   Finds things agent discussed
-       |                        but did NOT save
-       v                              |
-  Calls axme_save_*                   v
-       |                        Saves via the same
-       v                        storage modules
-  MCP server writes                   |
-  to .axme-code/                      v
-                                .axme-code/ supplemented
+  Agent works                   Agent calls begin_close       Auditor (LLM) reads transcript
+       |                              |                              |
+  Learns something              Gets checklist + dedup        Verify-only mode (agentClosed=true)
+       |                              |                        or full extraction (crash/orphan)
+       v                              v                              |
+  Calls axme_save_*             Reviews session, extracts           v
+       |                        Calls finalize_close          Catches what agent MISSED
+       v                              |                              |
+  MCP server writes                   v                              v
+  to .axme-code/                MCP writes all files          .axme-code/ supplemented
+                                atomically
 ```
 
-In practice, the agent saves **some** items - usually what the user explicitly asks for ("remember this"). The auditor catches **the rest** - decisions made during discussion, error patterns, safety rules implied by context but never formally recorded.
-
-The auditor is a safety net. Without it, the knowledge base depends entirely on how disciplined the agent is about calling save tools.
+The agent has full conversation context and produces higher-quality extractions than the auditor (which only sees the transcript, possibly truncated). The auditor is a safety net for:
+- Crash/orphan sessions where the agent didn't complete the close checklist
+- Items the agent missed even during explicit close
 
 ---
 
@@ -160,32 +201,43 @@ The auditor is a safety net. Without it, the knowledge base depends entirely on 
 1. VS Code window opens
    +-- MCP server starts (axme-code serve)
    +-- Orphan scan: checks old sessions with dead pid -> spawns audit workers
+   +-- Stale mapping adoption: if old mapping has dead ownerPpid, adopt it
 
 2. Agent starts working
    +-- First tool call -> pre-tool-use hook -> ensureAxmeSessionForClaude
        -> creates AXME session in .axme-code/sessions/<id>/meta.json
+       -> refreshes ownerPpid on reuse (handles VS Code reload)
        -> writes session_start to worklog
 
 3. Agent calls axme_context
-   +-- MCP server returns oracle + decisions + safety + memory + plans
+   +-- MCP server returns oracle + decisions + safety + memory + plans + handoff
 
 4. Every tool call
-   +-- pre-tool-use: safety check (block/allow)
+   +-- pre-tool-use: safety check (block/allow) - fires on ALL tools (no matcher)
    +-- post-tool-use: track filesChanged (Edit/Write only)
 
-5. Agent saves a decision/memory
+5. Agent saves a decision/memory during work
    +-- axme_save_decision / axme_save_memory -> written to .axme-code/
 
-6. VS Code window closes
-   +-- session-end hook -> closedAt -> spawn detached worker
+6. User asks to close session
+   +-- Agent calls axme_begin_close -> gets extraction checklist
+   +-- Agent extracts memories/decisions/safety (with dedup against axme_context data)
+   +-- Agent calls axme_finalize_close with all data
+   +-- MCP writes: handoff.md, worklog.md, extractions, agentClosed=true
+   +-- Agent outputs: storage summary + startup text to user
+
+7. VS Code window closes (or stdin EOF)
+   +-- cleanupAndExit -> spawn detached audit worker per owned session
    +-- Worker PID lives independently, VS Code is already dead
 
-7. Detached auditor (20-60 sec)
-   +-- Reads transcript -> LLM extraction -> dedup -> save
-   +-- Writes audit log, updates handoff, saves offset
+8. Detached auditor (20-60 sec)
+   +-- agentClosed=true: verify-only mode (catch missed items only)
+   +-- agentClosed=false: full extraction (crash/orphan)
+   +-- Does NOT overwrite agent handoff (source=agent is authoritative)
+   +-- Writes audit log, saves offset
    +-- auditStatus = done
 
-8. Next session
+9. Next session
    +-- axme_context picks up everything accumulated
 ```
 
@@ -208,9 +260,12 @@ The auditor is a safety net. Without it, the knowledge base depends entirely on 
 |-- audit-logs/          # Per-audit telemetry JSON
 |-- audit-worker-logs/   # Worker stderr output
 |-- plans/
-|   |-- handoff.md       # What to pass to next session
-|   +-- active/          # Current plans
-+-- worklog.jsonl        # Append-only event log
+|   |-- handoff.md       # What to pass to next session (Source: agent or auditor)
+|   |-- handoff-<id>.md  # Versioned handoff per session (last 5 kept)
+|   +-- <id>-<slug>.md   # Active plans with steps
+|-- worklog.jsonl        # Append-only structured event log
+|-- worklog.md           # Narrative session summaries (written by finalize_close + auditor)
++-- config.yaml          # Model settings, presets, review config
 ```
 
 Each repo in a workspace has its own `.axme-code/` with separate decisions, oracle, and safety rules. The workspace-level `.axme-code/` stores cross-repo items and sessions.
