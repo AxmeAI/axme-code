@@ -60,7 +60,8 @@ export function spawnDetachedAuditWorker(workspacePath: string, sessionId: strin
   const fd = openSync(logPath, "a");
 
   try {
-    const cliPath = process.argv[1]; // the axme-code bin that started us
+    const cliPath = process.argv[1];
+    if (!cliPath) throw new Error("audit-spawner: cannot determine CLI path from process.argv[1]");
     const child = spawn(
       process.execPath,
       [cliPath, "audit-session", "--workspace", workspacePath, "--session", sessionId],

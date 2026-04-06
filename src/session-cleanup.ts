@@ -11,7 +11,7 @@
  */
 
 import { join } from "node:path";
-import { readWorklog, logSessionEnd, logError } from "./storage/worklog.js";
+import { readWorklog, logSessionEnd, logError, logCheckResult } from "./storage/worklog.js";
 import { saveScopedMemories, listMemories } from "./storage/memory.js";
 import { saveScopedDecisions, listDecisions } from "./storage/decisions.js";
 import { saveScopedSafetyRule, loadSafetyRules, type SafetyRuleType } from "./storage/safety.js";
@@ -28,6 +28,8 @@ import {
   writeAuditedOffset,
   AUDIT_STALE_TIMEOUT_MS,
   MAX_AUDIT_ATTEMPTS,
+  isRetryableError,
+  RETRYABLE_MAX_ATTEMPTS,
   type AuditLog,
   type AuditLogExtraction,
   type AuditLogResumeInfo,
@@ -97,12 +99,28 @@ function recordAuditFailure(
 ): void {
   const errMsg = err instanceof Error ? err.message : String(err);
   const errStack = err instanceof Error ? err.stack : undefined;
+  const retryable = isRetryableError(errMsg);
+
   try {
     const s = loadSession(workspacePath, sessionId);
     if (s) {
-      s.lastAuditError = `[${phase}] ${errMsg}`;
-      s.auditStatus = "failed";
-      s.auditFinishedAt = new Date().toISOString();
+      const attempts = s.auditAttempts ?? 0;
+      if (retryable && attempts < RETRYABLE_MAX_ATTEMPTS) {
+        // Transient error: leave as stale-pending so orphan scan retries.
+        // Set auditStartedAt far enough in the past to exceed the stale
+        // timeout, so the next findOrphanSessions cycle picks it up.
+        s.auditStatus = "pending";
+        s.auditStartedAt = new Date(Date.now() - AUDIT_STALE_TIMEOUT_MS - 60_000).toISOString();
+        s.lastAuditError = `[${phase}] (retryable ${attempts + 1}/${RETRYABLE_MAX_ATTEMPTS}) ${errMsg}`;
+        process.stderr.write(
+          `AXME audit: retryable error for ${sessionId} (attempt ${attempts + 1}/${RETRYABLE_MAX_ATTEMPTS}): ${errMsg}\n`,
+        );
+      } else {
+        // Deterministic failure or retryable max reached: mark as failed permanently.
+        s.auditStatus = "failed";
+        s.lastAuditError = `[${phase}] ${errMsg}`;
+        s.auditFinishedAt = new Date().toISOString();
+      }
       writeSession(workspacePath, s);
     }
   } catch {
@@ -111,7 +129,9 @@ function recordAuditFailure(
   try {
     logError(workspacePath, sessionId, `audit failed (${phase}): ${errMsg}`);
   } catch {}
-  process.stderr.write(`AXME audit failed (${phase}) for ${sessionId}: ${errStack ?? errMsg}\n`);
+  if (!retryable) {
+    process.stderr.write(`AXME audit failed (${phase}) for ${sessionId}: ${errStack ?? errMsg}\n`);
+  }
 }
 
 export interface SessionCleanupResult {
@@ -162,6 +182,18 @@ export async function runSessionCleanup(
     return { ...base, skipped: "not-found" };
   }
 
+  // Ghost detection: sessions with 0 filesChanged and <2s lifetime are artifacts
+  // from subclaude hook fires (Bug F) or race conditions. Skip LLM audit entirely
+  // and mark as done. Saves LLM cost on empty sessions.
+  const isGhost =
+    session.filesChanged.length === 0 &&
+    session.closedAt && session.createdAt &&
+    (Date.parse(session.closedAt) - Date.parse(session.createdAt)) < 2000;
+  if (isGhost) {
+    markAudited(workspacePath, sessionId);
+    return { ...base, skipped: "ghost" };
+  }
+
   // Dedup 1: if audit already ran, don't repeat. Just ensure session is closed.
   if (session.auditedAt) {
     if (!session.closedAt) closeSession(workspacePath, sessionId);
@@ -203,7 +235,7 @@ export async function runSessionCleanup(
     return { ...base, skipped: "retry-cap" };
   }
 
-  const filesChanged = session.filesChanged ?? [];
+  let filesChanged = session.filesChanged ?? [];
 
   // Prefer the Claude Code transcript (filtered conversation turns) over the
   // worklog when available. Transcripts contain the actual user/assistant
@@ -233,6 +265,31 @@ export async function runSessionCleanup(
     bytesReadPerRef = parsed.bytesRead;
     if (parsed.allTurns.length > 0) {
       sessionTurns = parsed.allTurns;
+    }
+    // Supplement filesChanged with file paths extracted from Bash tool_use
+    // commands in the transcript. PostToolUse hook only tracks Edit/Write/
+    // NotebookEdit — Bash mutations (echo > file, sed -i, cp, mv, rm) are
+    // invisible without this supplementation.
+    if (parsed.allBashCommands.length > 0) {
+      const { extractBashWritePaths } = await import("./utils/bash-file-extract.js");
+      const bashPaths = new Set<string>();
+      for (const cmd of parsed.allBashCommands) {
+        for (const p of extractBashWritePaths(cmd)) bashPaths.add(p);
+      }
+      let added = 0;
+      for (const p of bashPaths) {
+        if (!session.filesChanged.includes(p)) {
+          session.filesChanged.push(p);
+          added++;
+        }
+      }
+      if (added > 0) {
+        filesChanged = session.filesChanged;
+        writeSession(workspacePath, session);
+        process.stderr.write(
+          `AXME audit ${sessionId}: +${added} files from Bash commands\n`,
+        );
+      }
     }
     // Observability: log how many bytes were skipped because they were
     // already audited. Useful to confirm the resume optimization is
@@ -266,7 +323,10 @@ export async function runSessionCleanup(
   const activityLength = sessionTurns
     ? sessionTurns.reduce((s, t) => s + t.content.length, 0)
     : (sessionEvents ?? "").length;
-  const hasActivity = activityLength > 50;
+  // filesChanged > 0 forces audit even without transcript — covers the scenario
+  // where hooks tracked file edits but the session closed before a Claude
+  // transcript was attached (e.g. early SIGKILL, no ensureAxmeSessionForClaude).
+  const hasActivity = activityLength > 50 || filesChanged.length > 0;
 
   // Detect whether the session was opened at a workspace root or a single repo.
   // This determines scope routing (per-repo vs workspace-level) for all writes.
@@ -448,7 +508,26 @@ export async function runSessionCleanup(
         result.handoffSaved = true;
       }
 
-      if (audit.oracleNeedsRescan && filesChanged.length > 0) {
+      // Oracle rescan triggers — two paths:
+      // 1. Deterministic: if filesChanged contains a structural manifest file
+      //    (package.json, pyproject.toml, go.mod, CLAUDE.md, etc.) → always rescan
+      // 2. LLM: if the auditor's ORACLE_CHANGES output said YES → rescan
+      const STRUCTURAL_FILE_PATTERNS = [
+        /\/package\.json$/,
+        /\/pyproject\.toml$/,
+        /\/go\.mod$/,
+        /\/Cargo\.toml$/,
+        /\/pom\.xml$/,
+        /\/build\.gradle(\.kts)?$/,
+        /\/requirements\.txt$/,
+        /\/CLAUDE\.md$/,
+        /\/AGENTS\.md$/,
+      ];
+      const deterministicRescan = filesChanged.some(f =>
+        STRUCTURAL_FILE_PATTERNS.some(p => p.test(f))
+      );
+      const shouldRescan = deterministicRescan || audit.oracleNeedsRescan;
+      if (shouldRescan && filesChanged.length > 0) {
         try {
           const { runOracleScan } = await import("./agents/scanners/oracle.js");
           const oracleResult = await runOracleScan({ projectPath: workspacePath });
@@ -562,10 +641,19 @@ export async function runSessionCleanup(
   closeSession(workspacePath, sessionId);
 
   logSessionEnd(workspacePath, sessionId, {
-    turns: session.turns,
     filesChanged,
     auditRan: result.auditRan,
   });
+
+  // Log audit check result for observability — turns logCheckResult from dead
+  // export into an active call. Writes a `check_result` event with PASS/FAIL.
+  if (result.auditRan) {
+    const summary = `${result.memories} mem, ${result.decisions} dec, ${result.safetyRules} safety`;
+    try {
+      logCheckResult(workspacePath, sessionId, "auditor",
+        auditSucceeded ? "PASS" : "FAIL", summary);
+    } catch {}
+  }
 
   // Note: clearing the per-Claude-session mapping file is the caller's
   // responsibility — they know which Claude session_id to clear. The

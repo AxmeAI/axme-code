@@ -16,10 +16,11 @@
  * deletes it on startup.
  */
 
-import { join } from "node:path";
-import { readdirSync, readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { readdirSync, readFileSync, rmSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { ensureDir, writeJson, readJson, pathExists, atomicWrite, removeFile, readSafe } from "./engine.js";
+import { logSessionStart } from "./worklog.js";
 import type { SessionMeta, ClaudeSessionRef } from "../types.js";
 import { AXME_CODE_DIR } from "../types.js";
 
@@ -42,6 +43,35 @@ const LEGACY_PENDING_AUDITS_DIR = "pending-audits";
  * waste LLM cost on duplicate extraction — it cannot corrupt stored data.
  */
 export const AUDIT_STALE_TIMEOUT_MS = 15 * 60 * 1000;
+
+/**
+ * Error patterns indicating transient failures that should be retried
+ * rather than treated as deterministic bugs. Matched against the error
+ * message string. Anything not matching is considered non-retryable
+ * (prompt too large, parser error, etc.) and stops retry immediately.
+ */
+export const RETRYABLE_ERROR_PATTERNS: RegExp[] = [
+  /429/i,
+  /rate limit/i,
+  /overloaded/i,
+  /ETIMEDOUT/,
+  /ECONNRESET/,
+  /ECONNREFUSED/,
+  /socket hang up/i,
+  /network error/i,
+  /timeout/i,
+];
+
+/**
+ * Maximum retry attempts for transient (retryable) errors. After this many
+ * consecutive retryable failures the session is marked as failed. This is
+ * separate from MAX_AUDIT_ATTEMPTS which caps deterministic failures at 1.
+ */
+export const RETRYABLE_MAX_ATTEMPTS = 5;
+
+export function isRetryableError(errMsg: string): boolean {
+  return RETRYABLE_ERROR_PATTERNS.some(p => p.test(errMsg));
+}
 
 /**
  * Find the real Claude Code process ID that owns this hook/MCP invocation.
@@ -276,8 +306,9 @@ export function clearLegacyPendingAuditsDir(projectPath: string): void {
       removeFile(join(dir, entry));
     }
   } catch {}
-  // Best-effort rmdir via removeFile (no-op if not empty, which is fine).
-  try { removeFile(dir); } catch {}
+  // rmdir the now-empty directory. removeFile uses unlinkSync which fails on
+  // directories (EISDIR), so we use rmSync directly.
+  try { rmSync(dir, { recursive: false }); } catch {}
 }
 
 /**
@@ -498,6 +529,7 @@ export function ensureAxmeSessionForClaude(
     );
   }
   const axmeSession = createSession(projectPath);
+  try { logSessionStart(projectPath, axmeSession.id); } catch {}
   writeClaudeSessionMapping(projectPath, claudeSessionId, axmeSession.id);
   attachClaudeSession(projectPath, axmeSession.id, {
     id: claudeSessionId,
@@ -555,7 +587,6 @@ export function createSession(projectPath: string): SessionMeta {
     id: randomUUID(),
     createdAt: new Date().toISOString(),
     closedAt: null,
-    turns: 0,
     filesChanged: [],
     // `origin` is the absolute path of the session's parent directory — the
     // directory that contains .axme-code/. Stored at creation time and never
@@ -705,15 +736,18 @@ export function getLastSession(projectPath: string): SessionMeta | null {
  * Called from the PostToolUse hook, which runs in a separate process from
  * the MCP server. If the session file cannot be read (transient I/O error
  * or missing), this function silently returns instead of creating a new
- * session — recreating would destroy the real session's turns counter and
- * filesChanged list. Losing a single filesChanged entry is a far better
- * tradeoff than resetting the session to turns=0.
+ * session — recreating would destroy the real session's filesChanged list.
+ * Losing a single filesChanged entry is a far better tradeoff than resetting
+ * the session to an empty filesChanged array.
  */
 export function trackFileChanged(projectPath: string, sessionId: string, filePath: string): void {
   const session = loadSession(projectPath, sessionId);
   if (!session) return;
-  if (!session.filesChanged.includes(filePath)) {
-    session.filesChanged.push(filePath);
+  // Normalize path to avoid duplicates from different representations
+  // (/home/user/./x.ts vs /home/user/x.ts)
+  const normalized = resolve(filePath);
+  if (!session.filesChanged.includes(normalized)) {
+    session.filesChanged.push(normalized);
     writeSession(projectPath, session);
   }
 }
@@ -751,9 +785,3 @@ export function attachClaudeSession(
   writeSession(projectPath, session);
 }
 
-export function incrementTurns(projectPath: string, sessionId: string): void {
-  const session = loadSession(projectPath, sessionId);
-  if (!session) return;
-  session.turns++;
-  writeSession(projectPath, session);
-}

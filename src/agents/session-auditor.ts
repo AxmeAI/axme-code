@@ -289,7 +289,16 @@ scope: <project name, comma-separated list, or "all">
 ###END###
 
 ###ORACLE_CHANGES###
-YES or NO with 1 English sentence if YES
+YES or NO with 1 English sentence if YES.
+Return YES if the session involved any of these:
+- New dependency added/removed in package.json, pyproject.toml, go.mod, Cargo.toml, pom.xml, build.gradle, requirements.txt
+- Major version upgrade of runtime (Node, Python, Go, Rust) in engines field
+- New top-level source directory created (src/, lib/, pkg/, cmd/, etc.)
+- Changes to CLAUDE.md or AGENTS.md architecture sections
+- New build tool or test framework introduced in config files
+- New service/microservice added to docker-compose or CI pipeline
+- Package manager migration (npm to pnpm, pip to poetry, etc.)
+Return NO for regular code edits, bug fixes, test additions, doc updates, refactoring.
 ###END###
 
 ###HANDOFF###

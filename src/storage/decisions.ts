@@ -92,12 +92,69 @@ export function addDecision(projectPath: string, input: Omit<Decision, "id">): D
   throw new Error(`addDecision: could not allocate D-NNN id after 50 attempts for "${input.title}"`);
 }
 
-export function listDecisions(projectPath: string): Decision[] {
+/**
+ * List decisions, defaulting to only active ones.
+ * Pass `{ includeAll: true }` to include superseded/deprecated/revoked.
+ * Decisions without a `status` field are treated as active (backward compat).
+ */
+export function listDecisions(projectPath: string, opts?: { includeAll?: boolean }): Decision[] {
   const dir = decisionsDir(projectPath);
   if (!pathExists(dir)) return [];
 
   const files = listDecisionFiles(dir);
-  return files.map(f => parseDecisionFile(join(dir, f))).filter((d): d is Decision => d !== null);
+  const all = files.map(f => parseDecisionFile(join(dir, f))).filter((d): d is Decision => d !== null);
+  if (opts?.includeAll) return all;
+  return all.filter(d => !d.status || d.status === "active");
+}
+
+/**
+ * Supersede an existing decision with a new one. The old decision gets
+ * status=superseded + supersededBy=newId, and the new decision gets
+ * supersedes=[oldId]. Returns both for caller inspection.
+ */
+export function supersedeDecision(
+  projectPath: string,
+  oldIdOrSlug: string,
+  newInput: Omit<Decision, "id" | "supersedes">,
+): { oldDecision: Decision; newDecision: Decision } {
+  const old = getDecision(projectPath, oldIdOrSlug);
+  if (!old) throw new Error(`Decision ${oldIdOrSlug} not found`);
+
+  // Create the replacement decision
+  const newDecision = addDecision(projectPath, {
+    ...newInput,
+    supersedes: [old.id],
+  });
+
+  // Mark the old one as superseded
+  old.status = "superseded";
+  old.supersededBy = newDecision.id;
+  const dir = decisionsDir(projectPath);
+  atomicWrite(join(dir, `${old.id}-${old.slug}.md`), formatDecisionFile(old));
+  rebuildIndex(projectPath);
+
+  return { oldDecision: old, newDecision };
+}
+
+/**
+ * Revoke a decision without replacement (e.g. rule no longer applies).
+ */
+export function revokeDecision(
+  projectPath: string,
+  idOrSlug: string,
+  reason: string,
+): Decision {
+  const d = getDecision(projectPath, idOrSlug);
+  if (!d) throw new Error(`Decision ${idOrSlug} not found`);
+
+  d.status = "revoked";
+  d.revokedAt = new Date().toISOString();
+  d.revokedReason = reason;
+  const dir = decisionsDir(projectPath);
+  atomicWrite(join(dir, `${d.id}-${d.slug}.md`), formatDecisionFile(d));
+  rebuildIndex(projectPath);
+
+  return d;
 }
 
 export function getDecision(projectPath: string, idOrSlug: string): Decision | null {
@@ -117,8 +174,12 @@ export function decisionsDir(projectPath: string): string {
 export function decisionsContext(projectPath: string): string {
   const decisions = listDecisions(projectPath);
   if (decisions.length === 0) return "";
-  const lines = decisions.map(d => `- **${d.id}: ${d.title}** [${d.enforce ?? "info"}] - ${d.decision}`);
-  return `## Project Decisions\n${lines.join("\n")}`;
+  const lines = decisions.map(d => `- **${d.id}: ${d.title}** [${d.enforce ?? "info"}] (${d.date}) - ${d.decision}`);
+  return [
+    "## Project Decisions",
+    "If two active decisions contradict each other, treat the NEWER one (by date) as authoritative. The older one is a candidate for supersede at next audit.",
+    ...lines,
+  ].join("\n");
 }
 
 export function enforceableDecisionsContext(projectPath: string): string {
@@ -236,6 +297,11 @@ function listDecisionFiles(dir: string): string[] {
 
 function formatDecisionFile(d: Decision): string {
   const scopeLine = d.scope?.length ? `\nscope: ${d.scope.join(", ")}` : "";
+  const statusLine = d.status ? `\nstatus: ${d.status}` : "";
+  const supersededByLine = d.supersededBy ? `\nsupersededBy: ${d.supersededBy}` : "";
+  const supersedesLine = d.supersedes?.length ? `\nsupersedes: ${d.supersedes.join(", ")}` : "";
+  const revokedAtLine = d.revokedAt ? `\nrevokedAt: ${d.revokedAt}` : "";
+  const revokedReasonLine = d.revokedReason ? `\nrevokedReason: ${d.revokedReason}` : "";
   return `---
 id: ${d.id}
 slug: ${d.slug}
@@ -243,7 +309,7 @@ title: ${d.title}
 date: ${d.date}
 source: ${d.source}
 enforce: ${d.enforce ?? ""}
-sessionId: ${d.sessionId ?? ""}${scopeLine}
+sessionId: ${d.sessionId ?? ""}${scopeLine}${statusLine}${supersededByLine}${supersedesLine}${revokedAtLine}${revokedReasonLine}
 ---
 
 # ${d.title}
@@ -279,6 +345,12 @@ function parseDecisionFile(filePath: string): Decision | null {
     const decisionMatch = body.match(/#\s+.*?\n\n([\s\S]*?)(?=\n## Reasoning)/m);
     const reasoningMatch = body.match(/## Reasoning\n\n([\s\S]*)/m);
 
+    const statusRaw = get("status");
+    const supersededByRaw = get("supersededBy");
+    const supersedesRaw = get("supersedes");
+    const revokedAtRaw = get("revokedAt");
+    const revokedReasonRaw = get("revokedReason");
+
     return {
       id,
       slug: get("slug"),
@@ -290,6 +362,12 @@ function parseDecisionFile(filePath: string): Decision | null {
       enforce: enforceRaw === "required" || enforceRaw === "advisory" ? enforceRaw : null,
       sessionId: get("sessionId") || null,
       ...(scopeRaw ? { scope: scopeRaw.split(",").map(s => s.trim()).filter(Boolean) } : {}),
+      ...(statusRaw && ["active", "superseded", "deprecated", "revoked"].includes(statusRaw)
+        ? { status: statusRaw as Decision["status"] } : {}),
+      ...(supersededByRaw ? { supersededBy: supersededByRaw } : {}),
+      ...(supersedesRaw ? { supersedes: supersedesRaw.split(",").map(s => s.trim()).filter(Boolean) } : {}),
+      ...(revokedAtRaw ? { revokedAt: revokedAtRaw } : {}),
+      ...(revokedReasonRaw ? { revokedReason: revokedReasonRaw } : {}),
     };
   } catch {
     return null;

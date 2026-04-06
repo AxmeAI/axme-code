@@ -7,6 +7,7 @@
 
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { homedir } from "node:os";
 import yaml from "js-yaml";
 import { atomicWrite, ensureDir, pathExists } from "./engine.js";
 import type { SafetyRules, GitRules, BashRules, FilesystemRules } from "../types.js";
@@ -188,6 +189,24 @@ function stripQuoted(command: string): string {
 /**
  * Check if a bash command is safe.
  */
+/**
+ * Word-boundary-aware prefix match.
+ *
+ * If the prefix ends with an alphanumeric/underscore character, the character
+ * immediately after in `cmd` must NOT be alphanumeric, underscore, or hyphen.
+ * This prevents `git push origin main` from matching `git push origin main-file-feat`
+ * while still allowing `rm -rf /` to match `rm -rf /foo` (prefix ends with `/`).
+ */
+function isPrefixBoundaryMatch(cmd: string, prefix: string): boolean {
+  if (!cmd.startsWith(prefix)) return false;
+  if (cmd.length === prefix.length) return true;
+  const lastPrefixChar = prefix[prefix.length - 1];
+  if (/[a-zA-Z0-9_]/.test(lastPrefixChar)) {
+    return !/[a-zA-Z0-9_-]/.test(cmd[prefix.length]);
+  }
+  return true;
+}
+
 export function checkBash(rules: SafetyRules, command: string): SafetyVerdict {
   const stripped = stripQuoted(command.trim());
   const firstCmd = stripped.split("|")[0].trim();
@@ -197,14 +216,14 @@ export function checkBash(rules: SafetyRules, command: string): SafetyVerdict {
     if (stripped.includes(denied)) return { allowed: false, reason: `Denied command: ${denied}` };
   }
   for (const prefix of rules.bash.deniedPrefixes) {
-    if (firstCmd.startsWith(prefix)) return { allowed: false, reason: `Denied prefix: ${prefix}` };
+    if (isPrefixBoundaryMatch(firstCmd, prefix)) return { allowed: false, reason: `Denied prefix: ${prefix}` };
     if (prefix.includes("|")) {
-      if (pipeNormalized === prefix || pipeNormalized.startsWith(prefix)) {
+      if (pipeNormalized === prefix || isPrefixBoundaryMatch(pipeNormalized, prefix)) {
         return { allowed: false, reason: `Denied prefix: ${prefix}` };
       }
     } else {
       for (const seg of stripped.split("|").map(s => s.trim())) {
-        if (seg.startsWith(prefix)) return { allowed: false, reason: `Denied prefix: ${prefix}` };
+        if (isPrefixBoundaryMatch(seg, prefix)) return { allowed: false, reason: `Denied prefix: ${prefix}` };
       }
     }
   }
@@ -243,10 +262,21 @@ export function checkGit(rules: SafetyRules, command: string): SafetyVerdict {
       return { allowed: false, reason: "Force push is not allowed" };
     }
   }
-  if (!rules.git.allowDirectPushToMain) {
-    for (const branch of rules.git.protectedBranches) {
-      if (stripped.includes(`push origin ${branch}`) || stripped.includes(`push upstream ${branch}`)) {
-        return { allowed: false, reason: `Direct push to ${branch} is not allowed` };
+  if (!rules.git.allowDirectPushToMain && stripped.startsWith("git push")) {
+    // Token-level match so that `git push origin main-feat-branch` is not
+    // falsely blocked by a substring `push origin main`. A real direct push
+    // to a protected branch has the branch name as its own argv token, or
+    // in colon-form refspec `src:dst` (e.g. `HEAD:main`).
+    const tokens = stripped.split(/\s+/);
+    const hit = rules.git.protectedBranches.find(branch =>
+      tokens.some(t => t === branch || t.endsWith(`:${branch}`))
+    );
+    if (hit) {
+      const hasRemoteToken = tokens.some((t, i) =>
+        (t === "origin" || t === "upstream" || t === "remote") && i >= 2
+      );
+      if (hasRemoteToken) {
+        return { allowed: false, reason: `Direct push to ${hit} is not allowed` };
       }
     }
   }
@@ -261,7 +291,7 @@ export function checkGit(rules: SafetyRules, command: string): SafetyVerdict {
  */
 export function checkFilePath(rules: SafetyRules, filePath: string, operation: "read" | "write"): SafetyVerdict {
   for (const denied of rules.filesystem.deniedPaths) {
-    const pattern = denied.replace("~", process.env.HOME ?? "");
+    const pattern = denied.replace("~", homedir());
     if (matchesPattern(filePath, pattern)) return { allowed: false, reason: `Path denied: ${denied}` };
   }
   if (operation === "write") {

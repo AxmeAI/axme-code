@@ -79,6 +79,7 @@ export interface OracleScanResult {
 // --- Decision Log ---
 
 export type EnforceLevel = "required" | "advisory";
+export type DecisionStatus = "active" | "superseded" | "deprecated" | "revoked";
 
 export interface Decision {
   id: string;
@@ -91,6 +92,16 @@ export interface Decision {
   sessionId: string | null;
   enforce: EnforceLevel | null;
   scope?: string[];
+  /** Lifecycle status. Undefined treated as "active" for backward compat. */
+  status?: DecisionStatus;
+  /** ID of the decision that replaced this one (set when superseded). */
+  supersededBy?: string;
+  /** IDs of decisions this one replaces (set on the newer decision). */
+  supersedes?: string[];
+  /** ISO timestamp when revoked. */
+  revokedAt?: string;
+  /** Reason for revocation. */
+  revokedReason?: string;
 }
 
 // --- Memory ---
@@ -191,7 +202,6 @@ export interface SessionMeta {
   id: string;
   createdAt: string;
   closedAt: string | null;
-  turns: number;
   filesChanged: string[];
   /**
    * Absolute path to the directory where the MCP server was running when
