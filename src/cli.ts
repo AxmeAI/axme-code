@@ -418,9 +418,14 @@ async function main() {
         const result = cleanupLegacyArtifacts(projectPath, { dryRun, onProgress: console.log });
         console.log(`\nSummary: ${result.sessionsDeleted} sessions, ${result.auditLogsDeleted} audit logs, ${result.legacyDirsRemoved.length} legacy dirs`);
         if (result.backupPath) console.log(`Backup: ${result.backupPath}`);
+      } else if (subCommand === "decisions-normalize") {
+        const { normalizeDecisions } = await import("./tools/cleanup.js");
+        console.log(`Normalizing decisions in ${projectPath}${dryRun ? " (dry run)" : ""}...`);
+        const result = normalizeDecisions(projectPath, { dryRun, onProgress: console.log });
+        console.log(`\nSummary: ${result.filesUpdated} updated, ${result.filesSkipped} skipped, ${result.locations} locations`);
       } else {
         console.error(`Unknown cleanup subcommand: ${subCommand}`);
-        console.error("Available: legacy-artifacts");
+        console.error("Available: legacy-artifacts, decisions-normalize");
         process.exit(1);
       }
       break;

@@ -133,6 +133,7 @@ function buildInstructions(): string {
     parts.push("Call axme_context at session start to load project knowledge base.");
   }
   parts.push("Save memories, decisions, and safety rules immediately when discovered during work.");
+  parts.push("DECISION CONFLICT RULE: if two active decisions contradict each other, treat the NEWER one (by date) as authoritative. The older one is a candidate for supersede at next audit.");
   parts.push(
     `STORAGE ROOT: ${defaultProjectPath}/.axme-code — for any direct inspection of .axme-code/ files via Bash (ls, cat, grep, find), use this ABSOLUTE path. Do NOT use relative paths from your cwd; in a multi-repo workspace your cwd may point to a child repo with its own separate .axme-code/ storage. Every session's meta.json also contains an "origin" field with its absolute parent directory — read it to verify which storage a given session belongs to.`,
   );

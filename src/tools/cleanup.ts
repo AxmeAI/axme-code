@@ -121,3 +121,70 @@ export function cleanupLegacyArtifacts(
 
   return result;
 }
+
+/**
+ * Normalize all decisions across workspace: add `status: active` to decisions
+ * that don't have a status field. Idempotent - safe to run multiple times.
+ */
+export function normalizeDecisions(
+  workspacePath: string,
+  opts: { dryRun: boolean; onProgress?: (msg: string) => void },
+): { filesUpdated: number; filesSkipped: number; locations: number } {
+  const log = opts.onProgress ?? (() => {});
+  let filesUpdated = 0;
+  let filesSkipped = 0;
+  let locations = 0;
+
+  // Collect all .axme-code/decisions/ paths: workspace root + per-repo
+  const targets: string[] = [];
+  const wsDecDir = join(workspacePath, AXME_CODE_DIR, "decisions");
+  if (pathExists(wsDecDir)) targets.push(wsDecDir);
+
+  try {
+    for (const entry of readdirSync(workspacePath, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+      const repoDecDir = join(workspacePath, entry.name, AXME_CODE_DIR, "decisions");
+      if (pathExists(repoDecDir)) targets.push(repoDecDir);
+    }
+  } catch {}
+
+  for (const decDir of targets) {
+    locations++;
+    const name = decDir.split("/").slice(-3, -1).join("/");
+    let updated = 0;
+    try {
+      for (const file of readdirSync(decDir).filter(f => f.startsWith("D-") && f.endsWith(".md"))) {
+        const filePath = join(decDir, file);
+        const content = readFileSync(filePath, "utf-8");
+        // Check if status field already exists in frontmatter
+        if (/^status:\s/m.test(content)) {
+          filesSkipped++;
+          continue;
+        }
+        // Add status: active after sessionId line (or after enforce line)
+        const insertAfter = content.match(/^(sessionId:.*$)/m);
+        if (!insertAfter) {
+          filesSkipped++;
+          continue;
+        }
+        if (opts.dryRun) {
+          filesUpdated++;
+          updated++;
+          continue;
+        }
+        const newContent = content.replace(
+          insertAfter[0],
+          insertAfter[0] + "\nstatus: active",
+        );
+        writeFileSync(filePath, newContent, "utf-8");
+        filesUpdated++;
+        updated++;
+      }
+    } catch {}
+    if (updated > 0 || opts.dryRun) {
+      log(`  ${name}: ${updated} decisions ${opts.dryRun ? "would be" : ""} normalized`);
+    }
+  }
+
+  return { filesUpdated, filesSkipped, locations };
+}
