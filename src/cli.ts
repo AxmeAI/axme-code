@@ -515,42 +515,78 @@ async function main() {
         if (oracle) oracleByRepo.push({ repo: repo.name, stack: oracle.stack, structure: oracle.structure });
       }
 
-      console.log(`  Oracle evidence from ${oracleByRepo.length} repos`);
-      console.log(`\nRunning LLM analysis...`);
-
-      // Run LLM KB audit
       const { runKbAudit } = await import("./agents/kb-auditor.js");
-      const auditResult = await runKbAudit({
-        decisions: activeDecisions,
-        memories,
-        oracleByRepo,
+      const { supersedeDecision: supersedeDec, revokeDecision: revokeDec } = await import("./storage/decisions.js");
+      const { askQuestion: askQ } = await import("./storage/questions.js");
+
+      // Build list of targets: workspace + each repo if --all-repos
+      const targets: Array<{ label: string; path: string; decisions: any[]; memories: any[]; oracle: any[] }> = [];
+
+      // Workspace-level always included
+      targets.push({
+        label: "workspace",
+        path: workspacePath,
+        decisions: listDecisions(workspacePath).filter((d: any) => !d.status || d.status === "active"),
+        memories: listMemories(workspacePath),
+        oracle: wsOracle ? [{ repo: "workspace", stack: wsOracle.stack, structure: wsOracle.structure }] : [],
       });
 
-      console.log(`  Duration: ${(auditResult.durationMs / 1000).toFixed(1)}s`);
-      console.log(`  Prompt tokens: ${auditResult.promptTokens}`);
-      console.log(`  Cost: $${auditResult.costUsd.toFixed(2)}`);
-      console.log(`  Findings: ${auditResult.findings.length}`);
+      if (allRepos) {
+        for (const repo of repoDecCounts) {
+          const repoDecs = listDecisions(repo.path).filter((d: any) => !d.status || d.status === "active");
+          if (repoDecs.length === 0) continue; // skip empty repos
+          const repoOracle = loadOracleFiles(repo.path);
+          targets.push({
+            label: repo.name,
+            path: repo.path,
+            decisions: repoDecs,
+            memories: listMemories(repo.path),
+            oracle: repoOracle ? [{ repo: repo.name, stack: repoOracle.stack, structure: repoOracle.structure }] : [],
+          });
+        }
+      }
+
+      console.log(`\nRunning LLM analysis on ${targets.length} target(s)...`);
+
+      const allFindings: Array<KbAuditFinding & { _target: string }> = [];
+      let totalCost = 0;
+      let totalDuration = 0;
+
+      for (const target of targets) {
+        if (target.decisions.length === 0) continue;
+        console.log(`\n  [${target.label}] ${target.decisions.length} decisions, ${target.memories.length} memories...`);
+        const result = await runKbAudit({
+          decisions: target.decisions,
+          memories: target.memories,
+          oracleByRepo: target.oracle,
+        });
+        totalCost += result.costUsd;
+        totalDuration += result.durationMs;
+        console.log(`    ${result.findings.length} findings, $${result.costUsd.toFixed(2)}, ${(result.durationMs / 1000).toFixed(0)}s`);
+        for (const f of result.findings) allFindings.push({ ...f, _target: target.label });
+      }
+
+      console.log(`\nTotal: ${allFindings.length} findings, $${totalCost.toFixed(2)}, ${(totalDuration / 1000).toFixed(0)}s`);
 
       // Build report
       const reportLines = [
         `# KB Audit Report - ${new Date().toISOString().slice(0, 19)}`,
         "",
         `## Summary`,
-        `- Active decisions: ${activeDecisions.length}`,
-        `- Superseded decisions: ${superseded.length}`,
-        `- Memories: ${memories.length}`,
-        `- Oracle evidence: ${oracleByRepo.length} repos`,
+        `- Targets audited: ${targets.length}`,
+        `- Total active decisions: ${activeDecisions.length}`,
+        `- Total findings: ${allFindings.length}`,
+        `- Total cost: $${totalCost.toFixed(2)}`,
         `- Sessions since last audit: ${counter?.count ?? 0}`,
-        `- Cost: $${auditResult.costUsd.toFixed(2)}`,
         "",
       ];
 
-      if (auditResult.findings.length === 0) {
+      if (allFindings.length === 0) {
         reportLines.push("## Findings", "", "No issues found. Knowledge base is clean.");
       } else {
-        reportLines.push(`## Findings (${auditResult.findings.length})`, "");
-        for (const f of auditResult.findings) {
-          reportLines.push(`### [${f.type.toUpperCase()}] ${f.ids.join(", ")} (confidence: ${f.confidence})`);
+        reportLines.push(`## Findings (${allFindings.length})`, "");
+        for (const f of allFindings) {
+          reportLines.push(`### [${f.type.toUpperCase()}] ${f.ids.join(", ")} @ ${f._target} (confidence: ${f.confidence})`);
           reportLines.push(f.description);
           reportLines.push(`**Resolution**: ${f.resolution}`);
           if (f.action) reportLines.push(`**Action**: ${f.action}`);
@@ -559,17 +595,16 @@ async function main() {
       }
 
       // Auto-apply high-confidence findings if --apply
-      if (applyMode && auditResult.findings.length > 0) {
-        const { supersedeDecision, revokeDecision } = await import("./storage/decisions.js");
-        const { askQuestion } = await import("./storage/questions.js");
+      if (applyMode && allFindings.length > 0) {
         let applied = 0;
-
-        for (const f of auditResult.findings) {
+        for (const f of allFindings) {
           if (f.confidence < 0.9 && f.type !== "question") continue;
+          // Determine target path for apply
+          const targetPath = targets.find(t => t.label === f._target)?.path ?? workspacePath;
 
           if (f.action === "supersede" && f.newDecision && f.ids.length > 0) {
             try {
-              supersedeDecision(workspacePath, f.ids[0], {
+              supersedeDec(targetPath, f.ids[0], {
                 slug: f.newDecision.title?.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 50) ?? "kb-fix",
                 title: f.newDecision.title ?? f.description,
                 decision: f.newDecision.decision ?? f.resolution,
@@ -579,26 +614,26 @@ async function main() {
                 sessionId: null,
                 enforce: null,
               });
-              reportLines.push(`**APPLIED**: superseded ${f.ids[0]}`);
+              reportLines.push(`**APPLIED**: superseded ${f.ids[0]} @ ${f._target}`);
               applied++;
             } catch (err) {
               reportLines.push(`**FAILED**: ${err instanceof Error ? err.message : err}`);
             }
           } else if (f.action === "revoke" && f.ids.length > 0) {
             try {
-              revokeDecision(workspacePath, f.ids[0], f.resolution);
-              reportLines.push(`**APPLIED**: revoked ${f.ids[0]}`);
+              revokeDec(targetPath, f.ids[0], f.resolution);
+              reportLines.push(`**APPLIED**: revoked ${f.ids[0]} @ ${f._target}`);
               applied++;
             } catch (err) {
               reportLines.push(`**FAILED**: ${err instanceof Error ? err.message : err}`);
             }
           } else if (f.action === "ask" && f.question) {
-            askQuestion(workspacePath, {
+            askQ(workspacePath, {
               question: f.question,
-              context: f.ids.join(", "),
+              context: `${f.ids.join(", ")} @ ${f._target}`,
               source: "kb-audit",
             });
-            reportLines.push(`**QUESTION CREATED**: ${f.question}`);
+            reportLines.push(`**QUESTION**: ${f.question}`);
             applied++;
           }
         }
