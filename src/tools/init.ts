@@ -137,10 +137,11 @@ export async function initProjectWithLLM(projectPath: string, opts?: {
       const { runOracleScan } = await import("../agents/scanners/oracle.js");
       return { type: "oracle" as const, result: await runOracleScan({ projectPath, workspaceMode: opts?.workspaceMode }) };
     })(),
-    // Decision scan
+    // Decision scan — pass existing decisions (from presets) so scanner skips same-topic
     (async () => {
       const { runDecisionScan } = await import("../agents/scanners/decision.js");
-      return { type: "decision" as const, result: await runDecisionScan({ projectPath }) };
+      const existing = listDecisions(projectPath);
+      return { type: "decision" as const, result: await runDecisionScan({ projectPath, existingDecisions: existing }) };
     })(),
     // Safety scan
     (async () => {
