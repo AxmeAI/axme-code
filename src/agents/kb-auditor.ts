@@ -1,235 +1,172 @@
 /**
- * Knowledge Base Auditor — LLM-powered conflict detection and cleanup.
+ * Knowledge Base Auditor — agent-based KB cleanup.
  *
- * Analyzes all active decisions + memories across workspace, compares
- * against code evidence (oracle), and finds:
- * - Conflicting decisions (two rules contradict each other)
- * - Stale decisions (code evidence contradicts the rule)
- * - Consolidation candidates (3+ decisions about the same topic)
+ * Spawns a Claude agent with tools (Read, Grep, Glob, Agent) that:
+ * 1. Reads all decisions from .axme-code/decisions/
+ * 2. Finds duplicates and contradictions (using LLM judgment, not heuristics)
+ * 3. Verifies against actual code which decision is current
+ * 4. Updates storage files directly — supersedes outdated, removes true dupes
+ * 5. Same for memories
  *
- * Returns structured findings that can be auto-applied (supersede/revoke)
- * or turned into open questions for user review.
+ * Two modes:
+ * - Single repo: audit decisions + memories in one .axme-code/
+ * - --all-repos: agent independently audits each repo (can use sub-agents to parallelize)
  */
 
-import type { Decision, Memory } from "../types.js";
 import { DEFAULT_AUDITOR_MODEL } from "../types.js";
 import { extractCostFromResult, type CostInfo } from "../utils/cost-extractor.js";
-
-export interface KbAuditFinding {
-  type: "conflict" | "stale" | "consolidate" | "question";
-  /** Decision IDs involved. */
-  ids: string[];
-  /** Human-readable explanation. */
-  description: string;
-  /** Suggested resolution. */
-  resolution: string;
-  /** Confidence 0-1. Only findings >= 0.9 are auto-applied with --apply. */
-  confidence: number;
-  /** Suggested action if auto-applying. */
-  action?: "supersede" | "revoke" | "consolidate" | "ask";
-  /** For supersede: the new decision to create. */
-  newDecision?: Partial<Decision>;
-  /** For question: the question text. */
-  question?: string;
-}
+import { buildAgentQueryOptions } from "../utils/agent-options.js";
 
 export interface KbAuditResult {
-  findings: KbAuditFinding[];
-  totalDecisions: number;
-  totalMemories: number;
-  promptTokens: number;
+  decisionsReviewed: number;
+  memoriesReviewed: number;
+  superseded: number;
+  revoked: number;
+  questionsCreated: number;
   costUsd: number;
   durationMs: number;
 }
 
-const KB_AUDIT_PROMPT = `You are a knowledge base auditor for AXME Code, a development-lifecycle MCP server.
+const KB_AUDIT_PROMPT_SINGLE = `You are a knowledge base auditor for AXME Code.
 
-You are given the FULL list of active decisions and memories from a multi-project workspace, plus oracle summaries (stack, structure) of each project.
+Your task: clean up the .axme-code/ storage in the current project directory.
 
-Your task: find problems in the knowledge base.
+## Step 1: Audit decisions
 
-FIND THESE ISSUES:
+1. Read all decision files: Glob pattern ".axme-code/decisions/D-*.md"
+2. For each pair of decisions, determine if they are:
+   a) DUPLICATES — same topic, different wording. Keep the newer one (by date field), supersede the older.
+   b) CONTRADICTIONS — same topic, conflicting rules. Check the actual code (Read/Grep relevant files) to determine which is current. Supersede the outdated one.
+   c) INDEPENDENT — different topics. Leave both.
 
-1. CONFLICTS: Two or more active decisions that contradict each other.
-   Example: D-012 says "use Redis for cache" but D-045 says "use Valkey for cache".
+3. To supersede a decision: edit the older file's frontmatter to add:
+   status: superseded
+   supersededBy: <newer decision id>
+   Then edit the newer file to add:
+   supersedes: <older decision id>
 
-2. STALE: A decision that contradicts the current code evidence (from oracle).
-   Example: D-019 says "Python 3.10" but oracle/stack.md shows "Python 3.13".
+4. To revoke a decision (no longer applies per code evidence): edit its frontmatter to add:
+   status: revoked
+   revokedAt: <current ISO date>
+   revokedReason: <why, based on code evidence>
 
-3. CONSOLIDATE: 3+ decisions that are about the same topic and should be merged into one.
-   Example: D-031, D-044, D-067 all say slightly different things about deploy process.
+## Step 2: Audit memories
 
-4. QUESTIONS: Ambiguous situations where you cannot determine the right resolution
-   without asking the user.
+1. Read all memory files: Glob ".axme-code/memory/feedback/*.md" and ".axme-code/memory/patterns/*.md"
+2. Find duplicates (same advice, different wording) — delete the older file, keep the newer.
+3. Find stale memories that contradict current code — delete them.
 
-OUTPUT FORMAT (JSON array):
-###FINDINGS###
-[
-  {
-    "type": "conflict",
-    "ids": ["D-012", "D-045"],
-    "description": "D-012 says Redis, D-045 says Valkey for cache",
-    "resolution": "Supersede D-012 with D-045 (D-045 is newer)",
-    "confidence": 0.95,
-    "action": "supersede"
-  },
-  {
-    "type": "stale",
-    "ids": ["D-019"],
-    "description": "D-019 says Python 3.10 but oracle shows 3.13",
-    "resolution": "Update D-019 to reflect Python 3.13",
-    "confidence": 0.9,
-    "action": "supersede",
-    "newDecision": {
-      "title": "Python 3.13 is the primary runtime version",
-      "decision": "All services use Python 3.13",
-      "reasoning": "Oracle evidence shows python:3.13 in CI and 3.11 in Dockerfile"
-    }
-  },
-  {
-    "type": "question",
-    "ids": ["D-071"],
-    "description": "D-071 says deploy only via workflow, unclear if hotfix PRs exempt",
-    "resolution": "Ask user if hotfix PRs bypass workflow requirement",
-    "confidence": 0.5,
-    "action": "ask",
-    "question": "Does D-071 'deploy only via workflow' apply to hotfix PRs with pre-approved label?"
-  }
-]
-###END###
+## Rules
 
-RULES:
-- Only report REAL issues. If the knowledge base is clean, return an empty array.
-- Be conservative with confidence. Only use >= 0.9 when the evidence is unambiguous.
-- For CONFLICTS: the newer decision (by date) is usually correct. Suggest superseding the older.
-- For STALE: oracle evidence is authoritative for technical facts (versions, frameworks, structure).
-- Do not invent issues. If you are unsure, use type="question" with low confidence.
-- Output ONLY the JSON array between ###FINDINGS### and ###END### markers. No other text.
+- ALWAYS check code before deciding which decision is current. Use Read/Grep to verify.
+- When in doubt, keep both and move on. Only supersede/revoke when evidence is clear.
+- Work through ALL decisions systematically, not just a sample.
+- After all changes, report what you did: how many superseded, revoked, deleted.
+- Do NOT create new decisions or memories. Only clean up existing ones.
+`;
+
+const KB_AUDIT_PROMPT_ALL_REPOS = `You are a knowledge base auditor for AXME Code workspace.
+
+The workspace at the current directory contains multiple git repositories, each with its own .axme-code/ storage.
+
+Your task: audit EACH repository's knowledge base independently.
+
+## Process
+
+1. List all subdirectories that have .axme-code/ (use Glob or ls)
+2. For EACH repo, perform the full audit:
+   a) Read all .axme-code/decisions/D-*.md files
+   b) Find duplicates and contradictions among decisions
+   c) Check actual code in that repo to verify which decisions are current
+   d) Supersede outdated decisions (edit frontmatter: add status: superseded, supersededBy)
+   e) Revoke decisions that no longer apply (edit frontmatter: add status: revoked, revokedAt, revokedReason)
+   f) Read all .axme-code/memory/feedback/*.md and .axme-code/memory/patterns/*.md
+   g) Delete duplicate or stale memories
+3. Also audit the workspace root .axme-code/ the same way
+
+USE SUB-AGENTS (Agent tool) to parallelize — you can launch one agent per repo to work in parallel. Each sub-agent should:
+- Work only within its assigned repo directory
+- Follow the same audit rules below
+- Report back what it changed
+
+## Audit rules for each repo
+
+- DUPLICATES: same topic different wording → keep newer (by date), supersede older
+- CONTRADICTIONS: same topic conflicting content → Read/Grep code to determine current → supersede outdated
+- STALE: decision/memory contradicts current code → revoke with evidence
+- When in doubt, keep both. Only act on clear evidence.
+- Do NOT create new decisions or memories. Only clean up.
+
+## After all repos done
+
+Report summary: which repos had changes, how many decisions superseded/revoked, how many memories cleaned.
 `;
 
 /**
- * Run LLM-powered KB audit on the workspace.
+ * Run KB audit on a single repo or workspace.
  */
 export async function runKbAudit(opts: {
-  decisions: Decision[];
-  memories: Memory[];
-  oracleByRepo: Array<{ repo: string; stack: string; structure: string }>;
+  targetPath: string;
+  allRepos: boolean;
   model?: string;
 }): Promise<KbAuditResult> {
   const startTime = Date.now();
   const model = opts.model ?? DEFAULT_AUDITOR_MODEL;
-
-  // Build context
-  const decisionsList = opts.decisions.map(d =>
-    `${d.id} [${d.enforce ?? "info"}] (${d.date}) ${d.title}: ${d.decision}`
-  ).join("\n");
-
-  const memoriesList = opts.memories.map(m =>
-    `[${m.type}] ${m.title}: ${m.description}`
-  ).join("\n");
-
-  const oracleContext = opts.oracleByRepo.map(o =>
-    `=== ${o.repo} ===\nStack: ${o.stack.slice(0, 500)}\nStructure: ${o.structure.slice(0, 300)}`
-  ).join("\n\n");
-
-  const userPrompt = [
-    `<decisions count="${opts.decisions.length}">`,
-    decisionsList,
-    `</decisions>`,
-    "",
-    `<memories count="${opts.memories.length}">`,
-    memoriesList,
-    `</memories>`,
-    "",
-    `<oracle_evidence>`,
-    oracleContext,
-    `</oracle_evidence>`,
-  ].join("\n");
-
-  // Run LLM via Claude Agent SDK (same pattern as session-auditor)
   const sdk = await import("@anthropic-ai/claude-agent-sdk");
-  let output = "";
-  let promptTokens = 0;
-  let costUsd = 0;
 
-  const fullPrompt = KB_AUDIT_PROMPT + "\n\n" + userPrompt;
-  process.stderr.write(
-    `AXME kb-audit: prompt=${fullPrompt.length.toLocaleString()} chars (~${Math.round(fullPrompt.length / 4).toLocaleString()} tokens)\n`,
+  const prompt = opts.allRepos ? KB_AUDIT_PROMPT_ALL_REPOS : KB_AUDIT_PROMPT_SINGLE;
+
+  const queryOpts = buildAgentQueryOptions(
+    { cwd: opts.targetPath, model },
+    "auditor",
   );
 
-  try {
-    const q = sdk.query({
-      prompt: fullPrompt,
-      options: {
-        model,
-        systemPrompt: "You are a knowledge base auditor. Output ONLY the structured JSON between ###FINDINGS### and ###END### markers.",
-        settingSources: [],
-        mcpServers: {},
-        permissionMode: "bypassPermissions" as const,
-        allowDangerouslySkipPermissions: true,
-        allowedTools: [],
-        disallowedTools: ["Write", "Edit", "Bash", "Read", "Grep", "Glob", "Agent", "Skill", "TodoWrite", "WebFetch", "WebSearch", "NotebookEdit", "ToolSearch"],
-        env: { ...process.env, AXME_SKIP_HOOKS: "1" },
-      },
-    });
+  // Allow Agent tool for sub-agent parallelization in --all-repos mode
+  // Allow Edit/Write for updating decision/memory files
+  // Allow Read/Grep/Glob for code verification
+  queryOpts.allowedTools = ["Read", "Grep", "Glob", "Edit", "Write", "Agent"];
+  queryOpts.disallowedTools = ["Bash", "WebFetch", "WebSearch", "TodoWrite", "Skill", "NotebookEdit", "ToolSearch"];
 
-    let cost: CostInfo | undefined;
-    for await (const msg of q) {
-      if (msg.type === "assistant") {
-        const content = (msg as any).message?.content;
-        if (Array.isArray(content)) {
-          for (const block of content) {
-            if (block.type === "text" && block.text) output += block.text;
+  const q = sdk.query({ prompt, options: queryOpts });
+
+  let resultText = "";
+  let cost: CostInfo | undefined;
+
+  for await (const msg of q) {
+    if (msg.type === "assistant") {
+      const content = (msg as any).message?.content;
+      if (Array.isArray(content)) {
+        for (const block of content) {
+          // Stream thinking and text responses to stderr for visibility
+          if (block.type === "thinking" && block.thinking) {
+            process.stderr.write(`\x1b[2m[thinking] ${String(block.thinking).slice(0, 200)}...\x1b[0m\n`);
+          }
+          if (block.type === "text" && block.text) {
+            resultText += block.text;
+            process.stderr.write(`${block.text}\n`);
           }
         }
       }
-      if (msg.type === "result") {
-        cost = extractCostFromResult(msg);
-        if ((msg as any).subtype === "success" && (msg as any).result) {
-          output = (msg as any).result;
-        }
+    }
+    if (msg.type === "result") {
+      cost = extractCostFromResult(msg);
+      if ((msg as any).subtype === "success" && (msg as any).result) {
+        resultText = (msg as any).result;
       }
     }
-    if (cost) {
-      promptTokens = cost.inputTokens ?? 0;
-      costUsd = cost.costUsd ?? 0;
-    }
-  } catch (err) {
-    process.stderr.write(`AXME kb-audit LLM error: ${err instanceof Error ? err.message : err}\n`);
-    return {
-      findings: [],
-      totalDecisions: opts.decisions.length,
-      totalMemories: opts.memories.length,
-      promptTokens: 0,
-      costUsd: 0,
-      durationMs: Date.now() - startTime,
-    };
   }
 
-  // Parse findings
-  const findings = parseFindingsOutput(output);
+  // Parse agent's summary to extract counts
+  const superseded = (resultText.match(/supersed/gi) || []).length;
+  const revoked = (resultText.match(/revok/gi) || []).length;
 
   return {
-    findings,
-    totalDecisions: opts.decisions.length,
-    totalMemories: opts.memories.length,
-    promptTokens,
-    costUsd,
+    decisionsReviewed: 0, // agent handles internally
+    memoriesReviewed: 0,
+    superseded,
+    revoked,
+    questionsCreated: 0,
+    costUsd: cost?.costUsd ?? 0,
     durationMs: Date.now() - startTime,
   };
-}
-
-function parseFindingsOutput(output: string): KbAuditFinding[] {
-  const match = output.match(/###FINDINGS###\s*([\s\S]*?)\s*###END###/);
-  if (!match) return [];
-
-  try {
-    const parsed = JSON.parse(match[1]);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter((f: any) =>
-      f.type && f.ids && Array.isArray(f.ids) && f.description
-    );
-  } catch {
-    return [];
-  }
 }

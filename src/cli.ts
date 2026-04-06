@@ -434,216 +434,27 @@ async function main() {
     }
 
     case "audit-kb": {
-      // Auto-detect workspace root: --workspace flag, or detect from cwd
-      const wsIdx = args.indexOf("--workspace");
-      let workspacePath: string;
-      if (wsIdx >= 0 && args[wsIdx + 1]) {
-        workspacePath = resolve(args[wsIdx + 1]);
+      // Determine target path: cwd, auto-detect workspace root if in sub-repo
+      let targetPath = resolve(".");
+      const ws = detectWorkspace(targetPath);
+      if (ws.type === "single") {
+        const parentWs = detectWorkspace(resolve(".."));
+        if (parentWs.type !== "single") targetPath = parentWs.root;
       } else {
-        // Auto-detect: try cwd first, then parent (if cwd is a sub-repo of a workspace)
-        let ws = detectWorkspace(resolve("."));
-        if (ws.type === "single") {
-          const parent = resolve("..");
-          const parentWs = detectWorkspace(parent);
-          if (parentWs.type !== "single") ws = parentWs;
-        }
-        workspacePath = ws.root;
+        targetPath = ws.root;
       }
       const allRepos = args.includes("--all-repos");
 
-      const { readKbAuditCounter, resetKbAuditCounter, writeKbAuditReport } = await import("./storage/kb-audit.js");
-      const { listDecisions } = await import("./storage/decisions.js");
-      const { listMemories } = await import("./storage/memory.js");
-      const { readdirSync, statSync, existsSync } = await import("node:fs");
-
-      const counter = readKbAuditCounter(workspacePath);
-      console.log(`KB Audit for ${workspacePath}${allRepos ? " (all repos)" : " (workspace-level only)"}`);
-      console.log(`  Sessions since last audit: ${counter?.count ?? 0}`);
-      console.log(`  Last KB audit: ${counter?.lastRunAt ?? "never"}`);
-
-      // Collect decisions + memories: workspace-level, or all repos if --all-repos
-      let allDecisions: any[] = listDecisions(workspacePath, { includeAll: true });
-      let memories: any[] = listMemories(workspacePath);
-
-      if (allRepos) {
-        try {
-          for (const entry of readdirSync(workspacePath)) {
-            const repoPath = join(workspacePath, entry);
-            try { if (!statSync(repoPath).isDirectory()) continue; } catch { continue; }
-            if (!existsSync(join(repoPath, ".axme-code"))) continue;
-            const repoDecs = listDecisions(repoPath, { includeAll: true });
-            // Tag decisions with repo name for cross-repo conflict detection
-            for (const d of repoDecs) (d as any)._repo = entry;
-            allDecisions.push(...repoDecs);
-            memories.push(...listMemories(repoPath));
-          }
-        } catch {}
-      }
-
-      const activeDecisions = allDecisions.filter((d: any) => !d.status || d.status === "active");
-      const superseded = allDecisions.filter((d: any) => d.status === "superseded");
-
-      console.log(`  Active decisions: ${activeDecisions.length}`);
-      console.log(`  Superseded decisions: ${superseded.length}`);
-      console.log(`  Memories: ${memories.length}`);
-
-      const applyMode = args.includes("--apply");
-
-      // Collect oracle evidence — workspace-level only for KB audit (per-repo
-      // adds 50K+ chars and is not needed for decision conflict detection).
-      // For stale-detection against specific repos, future versions can add
-      // targeted per-repo oracle on demand.
-      const { loadOracleFiles } = await import("./storage/oracle.js");
-      const oracleByRepo: Array<{ repo: string; stack: string; structure: string }> = [];
-      const wsOracle = loadOracleFiles(workspacePath);
-      if (wsOracle) oracleByRepo.push({ repo: "workspace", stack: wsOracle.stack, structure: wsOracle.structure });
-      // Add only the main repos' oracle (top 5 by decision count for targeted stale detection)
-      const repoDecCounts: Array<{ name: string; path: string; count: number }> = [];
-      try {
-        for (const entry of readdirSync(workspacePath)) {
-          const repoPath = join(workspacePath, entry);
-          try { if (!statSync(repoPath).isDirectory()) continue; } catch { continue; }
-          if (!existsSync(join(repoPath, ".axme-code"))) continue;
-          const repoDecs = listDecisions(repoPath);
-          repoDecCounts.push({ name: entry, path: repoPath, count: repoDecs.length });
-        }
-      } catch {}
-      // Top 5 repos by decision count
-      repoDecCounts.sort((a, b) => b.count - a.count);
-      for (const repo of repoDecCounts.slice(0, 5)) {
-        const oracle = loadOracleFiles(repo.path);
-        if (oracle) oracleByRepo.push({ repo: repo.name, stack: oracle.stack, structure: oracle.structure });
-      }
+      console.log(`KB Audit: ${targetPath}${allRepos ? " (all repos)" : ""}`);
+      console.log(`Agent will read decisions + memories, check code, and update storage directly.\n`);
 
       const { runKbAudit } = await import("./agents/kb-auditor.js");
-      const { supersedeDecision: supersedeDec, revokeDecision: revokeDec } = await import("./storage/decisions.js");
-      const { askQuestion: askQ } = await import("./storage/questions.js");
+      const result = await runKbAudit({ targetPath, allRepos });
 
-      // Build list of targets: workspace + each repo if --all-repos
-      const targets: Array<{ label: string; path: string; decisions: any[]; memories: any[]; oracle: any[] }> = [];
+      console.log(`\nDone: $${result.costUsd.toFixed(2)}, ${(result.durationMs / 1000).toFixed(0)}s`);
 
-      // Workspace-level always included
-      targets.push({
-        label: "workspace",
-        path: workspacePath,
-        decisions: listDecisions(workspacePath).filter((d: any) => !d.status || d.status === "active"),
-        memories: listMemories(workspacePath),
-        oracle: wsOracle ? [{ repo: "workspace", stack: wsOracle.stack, structure: wsOracle.structure }] : [],
-      });
-
-      if (allRepos) {
-        for (const repo of repoDecCounts) {
-          const repoDecs = listDecisions(repo.path).filter((d: any) => !d.status || d.status === "active");
-          if (repoDecs.length === 0) continue; // skip empty repos
-          const repoOracle = loadOracleFiles(repo.path);
-          targets.push({
-            label: repo.name,
-            path: repo.path,
-            decisions: repoDecs,
-            memories: listMemories(repo.path),
-            oracle: repoOracle ? [{ repo: repo.name, stack: repoOracle.stack, structure: repoOracle.structure }] : [],
-          });
-        }
-      }
-
-      console.log(`\nRunning LLM analysis on ${targets.length} target(s)...`);
-
-      const allFindings: Array<KbAuditFinding & { _target: string }> = [];
-      let totalCost = 0;
-      let totalDuration = 0;
-
-      for (const target of targets) {
-        if (target.decisions.length === 0) continue;
-        console.log(`\n  [${target.label}] ${target.decisions.length} decisions, ${target.memories.length} memories...`);
-        const result = await runKbAudit({
-          decisions: target.decisions,
-          memories: target.memories,
-          oracleByRepo: target.oracle,
-        });
-        totalCost += result.costUsd;
-        totalDuration += result.durationMs;
-        console.log(`    ${result.findings.length} findings, $${result.costUsd.toFixed(2)}, ${(result.durationMs / 1000).toFixed(0)}s`);
-        for (const f of result.findings) allFindings.push({ ...f, _target: target.label });
-      }
-
-      console.log(`\nTotal: ${allFindings.length} findings, $${totalCost.toFixed(2)}, ${(totalDuration / 1000).toFixed(0)}s`);
-
-      // Build report
-      const reportLines = [
-        `# KB Audit Report - ${new Date().toISOString().slice(0, 19)}`,
-        "",
-        `## Summary`,
-        `- Targets audited: ${targets.length}`,
-        `- Total active decisions: ${activeDecisions.length}`,
-        `- Total findings: ${allFindings.length}`,
-        `- Total cost: $${totalCost.toFixed(2)}`,
-        `- Sessions since last audit: ${counter?.count ?? 0}`,
-        "",
-      ];
-
-      if (allFindings.length === 0) {
-        reportLines.push("## Findings", "", "No issues found. Knowledge base is clean.");
-      } else {
-        reportLines.push(`## Findings (${allFindings.length})`, "");
-        for (const f of allFindings) {
-          reportLines.push(`### [${f.type.toUpperCase()}] ${f.ids.join(", ")} @ ${f._target} (confidence: ${f.confidence})`);
-          reportLines.push(f.description);
-          reportLines.push(`**Resolution**: ${f.resolution}`);
-          if (f.action) reportLines.push(`**Action**: ${f.action}`);
-          reportLines.push("");
-        }
-      }
-
-      // Auto-apply high-confidence findings if --apply
-      if (applyMode && allFindings.length > 0) {
-        let applied = 0;
-        for (const f of allFindings) {
-          if (f.confidence < 0.9 && f.type !== "question") continue;
-          // Determine target path for apply
-          const targetPath = targets.find(t => t.label === f._target)?.path ?? workspacePath;
-
-          if (f.action === "supersede" && f.newDecision && f.ids.length > 0) {
-            try {
-              supersedeDec(targetPath, f.ids[0], {
-                slug: f.newDecision.title?.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 50) ?? "kb-fix",
-                title: f.newDecision.title ?? f.description,
-                decision: f.newDecision.decision ?? f.resolution,
-                reasoning: f.newDecision.reasoning ?? `KB audit: ${f.description}`,
-                date: new Date().toISOString().slice(0, 10),
-                source: "session",
-                sessionId: null,
-                enforce: null,
-              });
-              reportLines.push(`**APPLIED**: superseded ${f.ids[0]} @ ${f._target}`);
-              applied++;
-            } catch (err) {
-              reportLines.push(`**FAILED**: ${err instanceof Error ? err.message : err}`);
-            }
-          } else if (f.action === "revoke" && f.ids.length > 0) {
-            try {
-              revokeDec(targetPath, f.ids[0], f.resolution);
-              reportLines.push(`**APPLIED**: revoked ${f.ids[0]} @ ${f._target}`);
-              applied++;
-            } catch (err) {
-              reportLines.push(`**FAILED**: ${err instanceof Error ? err.message : err}`);
-            }
-          } else if (f.action === "ask" && f.question) {
-            askQ(workspacePath, {
-              question: f.question,
-              context: `${f.ids.join(", ")} @ ${f._target}`,
-              source: "kb-audit",
-            });
-            reportLines.push(`**QUESTION**: ${f.question}`);
-            applied++;
-          }
-        }
-        console.log(`  Applied: ${applied} actions`);
-      }
-
-      const reportPath = writeKbAuditReport(workspacePath, reportLines.join("\n"));
-      resetKbAuditCounter(workspacePath);
-      console.log(`  Report: ${reportPath}`);
-      console.log(`  Counter reset to 0.`);
+      const { resetKbAuditCounter } = await import("./storage/kb-audit.js");
+      resetKbAuditCounter(targetPath);
       break;
     }
 
