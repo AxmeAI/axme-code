@@ -398,6 +398,7 @@ export async function runSessionCleanup(
         sessionEvents,
         filesChanged,
         model: config.auditorModel,
+        agentClosed: session.agentClosed === true,
       });
 
       // Per-extraction logging: snapshot existing slugs at every potential
@@ -571,7 +572,7 @@ export async function runSessionCleanup(
         try {
           const isoDate = new Date().toISOString().slice(0, 16).replace("T", " ");
           const shortId = sessionId.slice(0, 8);
-          const title = audit.handoff?.stoppedAt?.slice(0, 80) || "Session work";
+          const title = audit.handoff?.stoppedAt || "Session work";
           const entry = `## ${isoDate} -- Session ${shortId}: ${title}\n\n${audit.sessionSummary}\n\n`;
           appendFileSync(join(workspacePath, AXME_CODE_DIR, "worklog.md"), entry);
           result.worklogSummary = true;

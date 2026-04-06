@@ -133,7 +133,7 @@ function buildInstructions(): string {
     parts.push("Call axme_context at session start to load project knowledge base.");
   }
   parts.push("Save memories, decisions, and safety rules immediately when discovered during work.");
-  parts.push("SESSION CLOSE: when the user asks to close/end the session (any language), call axme_close_session with a detailed handoff and startup text. Then output the startup text to the user in chat for copy-paste into the next session.");
+  parts.push("SESSION CLOSE: when the user asks to close/end the session (any language), call axme_begin_close to get the close checklist. Follow it: extract memories/decisions/safety (choosing correct scope for each), prepare handoff data, then call axme_finalize_close with everything. After finalize, output to the user: storage summary (what saved where), then startup_text.");
   parts.push("DECISION CONFLICT RULE: if two active decisions contradict each other, treat the NEWER one (by date) as authoritative. The older one is a candidate for supersede at next audit.");
   parts.push(
     `STORAGE ROOT: ${defaultProjectPath}/.axme-code — for any direct inspection of .axme-code/ files via Bash (ls, cat, grep, find), use this ABSOLUTE path. Do NOT use relative paths from your cwd; in a multi-repo workspace your cwd may point to a child repo with its own separate .axme-code/ storage. Every session's meta.json also contains an "origin" field with its absolute parent directory — read it to verify which storage a given session belongs to.`,
@@ -396,12 +396,74 @@ server.tool(
   },
 );
 
-// --- axme_close_session ---
+// --- axme_begin_close ---
 server.tool(
-  "axme_close_session",
-  "Explicitly close the current session with a detailed handoff. Call when the user says 'close session' / 'end session' / 'закрывай сессию'. Writes enriched handoff, runs LLM audit synchronously, returns result. After calling this, output the startup_text to the user in chat for copy-paste into the next session.",
+  "axme_begin_close",
+  "Start session close process. Call when user says 'close session' / 'end session' / '\u0437\u0430\u043A\u0440\u044B\u0432\u0430\u0439 \u0441\u0435\u0441\u0441\u0438\u044E'. Returns extraction checklist with dedup context. Follow the checklist, then call axme_finalize_close.",
+  {},
+  async () => {
+    const sid = getOwnedSessionIdForLogging();
+    if (!sid) {
+      return { content: [{ type: "text" as const, text: "No active AXME session found." }] };
+    }
+
+    const { getCloseContext } = await import("./tools/context.js");
+    const dedupContext = getCloseContext(pp(), wp());
+
+    const checklist = [
+      `# Session Close Checklist (session ${sid.slice(0, 8)})`,
+      "",
+      "## Step 1: Extract Knowledge",
+      "",
+      "Review your ENTIRE session for knowledge worth preserving.",
+      "Save items the user explicitly confirmed. For uncertain items, ask the user before saving.",
+      "",
+      "### Scope rules:",
+      "- Workspace-wide (git safety, deploy procedures, auth model, cross-repo conventions) -> `scope: [\"all\"]`",
+      "- Repo-specific (test patterns, build config, API design for one service) -> omit scope or `scope: [\"<repo-name>\"]`",
+      "- If you worked in multiple repos: split items by repo, each gets the scope where it applies",
+      "",
+      "### What to extract:",
+      "1. **Memories** (feedback from user corrections, validated patterns) -> `axme_save_memory` for each",
+      "2. **Decisions** (policies user confirmed, architectural choices) -> `axme_save_decision` for each",
+      "3. **Safety rules** (user mandated bash_deny, fs_deny, git_protected_branch, etc.) -> `axme_update_safety` for each",
+      "",
+      "## Step 2: Prepare Handoff",
+      "",
+      "Prepare the following data for `axme_finalize_close`:",
+      "- `stopped_at`: what the session stopped at (single line)",
+      "- `summary`: 2-5 bullet points of what was accomplished",
+      "- `in_progress`: current state (branches, PRs, uncommitted work)",
+      "- `prs`: array of {url, title, status} for PRs created/merged",
+      "- `test_results`: test run summary (optional)",
+      "- `blockers`: blockers for next session (optional)",
+      "- `next_steps`: concrete next steps",
+      "- `dirty_branches`: branch names with state (optional)",
+      "- `worklog_entry`: narrative summary of what happened in this session (5-15 lines markdown)",
+      "- `startup_text`: ready-to-paste text for next session start",
+      "",
+      "## Step 3: Finalize",
+      "",
+      "Call `axme_finalize_close` with all prepared data.",
+      "After it returns, output to the user: first the storage summary, then the startup_text.",
+      "",
+      "---",
+      "",
+      "## Dedup Context (existing knowledge - do NOT duplicate)",
+      "",
+      dedupContext,
+    ];
+
+    return { content: [{ type: "text" as const, text: checklist.join("\n") }] };
+  },
+);
+
+// --- axme_finalize_close ---
+server.tool(
+  "axme_finalize_close",
+  "Finalize session close: writes handoff, worklog entry, sets agentClosed flag. Call after completing the extraction checklist from axme_begin_close.",
   {
-    stopped_at: z.string().describe("What the session stopped at"),
+    stopped_at: z.string().describe("What the session stopped at (single line)"),
     summary: z.string().describe("2-5 bullet points of what was accomplished"),
     in_progress: z.string().describe("Current state: branches, PRs, uncommitted work"),
     prs: z.array(z.object({
@@ -413,6 +475,7 @@ server.tool(
     blockers: z.string().optional().describe("Blockers for next session"),
     next_steps: z.string().describe("Concrete next steps for next session"),
     dirty_branches: z.string().optional().describe("Branch names with state"),
+    worklog_entry: z.string().describe("Narrative session summary (5-15 lines markdown)"),
     startup_text: z.string().describe("Ready-to-paste startup text for the next session"),
   },
   async (args) => {
@@ -421,9 +484,11 @@ server.tool(
       return { content: [{ type: "text" as const, text: "No active AXME session found." }] };
     }
 
+    const targetPath = defaultProjectPath;
+
     // 1. Write enriched handoff
     const { writeHandoff } = await import("./storage/plans.js");
-    const handoff = {
+    writeHandoff(targetPath, {
       stoppedAt: args.stopped_at,
       summary: args.summary,
       inProgress: args.in_progress,
@@ -435,37 +500,52 @@ server.tool(
       sessionId: sid,
       date: new Date().toISOString().slice(0, 10),
       source: "agent" as const,
-    };
-    writeHandoff(defaultProjectPath, handoff);
+    });
 
-    // 2. Run audit synchronously (same as detached worker but inline)
-    const { runSessionCleanup } = await import("./session-cleanup.js");
-    let auditResult: string;
+    // 2. Append worklog entry
+    const { appendFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const { AXME_CODE_DIR } = await import("./types.js");
+    const isoDate = new Date().toISOString().slice(0, 16).replace("T", " ");
+    const shortId = sid.slice(0, 8);
+    const worklogEntry = `## ${isoDate} -- Session ${shortId}: ${args.stopped_at}\n\n${args.worklog_entry}\n\n`;
     try {
-      const result = await runSessionCleanup(defaultProjectPath, sid);
-      const parts = [`Audit: ${result.auditRan ? "ran" : "skipped"}`];
-      if (result.skipped) parts.push(`(${result.skipped})`);
-      if (result.auditRan) {
-        parts.push(`memories=${result.memories}, decisions=${result.decisions}, cost=$${result.costUsd.toFixed(2)}`);
-      }
-      parts.push(`handoff saved: yes`);
-      auditResult = parts.join(", ");
-    } catch (err) {
-      auditResult = `Audit error: ${err}`;
+      appendFileSync(join(targetPath, AXME_CODE_DIR, "worklog.md"), worklogEntry);
+    } catch {}
+
+    // 3. Set agentClosed flag on session meta
+    const { loadSession, writeSession } = await import("./storage/sessions.js");
+    const session = loadSession(targetPath, sid);
+    if (session) {
+      session.agentClosed = true;
+      writeSession(targetPath, session);
     }
 
-    // 3. Return result + startup text
-    const lines = [
-      `Session ${sid.slice(0, 8)} closed.`,
-      auditResult,
+    // 4. Build storage summary from recent worklog events
+    const { readWorklog } = await import("./storage/worklog.js");
+    const events = readWorklog(targetPath, { limit: 50 });
+    const sessionEvents = events.filter(e => e.sessionId === sid);
+    const memoriesSaved = sessionEvents.filter(e => e.type === "memory_saved").length;
+    const decisionsSaved = sessionEvents.filter(e => e.type === "decision_saved").length;
+
+    const summaryLines = [
+      `Session ${shortId} closed.`,
       "",
-      "Handoff written. Now output the startup_text below to the user in chat:",
+      "## Storage Summary",
+      `- Handoff: written to .axme-code/plans/handoff.md`,
+      `- Worklog: entry appended to .axme-code/worklog.md`,
+      `- Memories saved this session: ${memoriesSaved}`,
+      `- Decisions saved this session: ${decisionsSaved}`,
+      `- agentClosed: true`,
+      "",
+      "Output to the user: first the storage summary above, then the startup_text below.",
       "",
       "---",
       args.startup_text,
       "---",
     ];
-    return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+
+    return { content: [{ type: "text" as const, text: summaryLines.join("\n") }] };
   },
 );
 

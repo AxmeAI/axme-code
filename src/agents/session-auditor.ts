@@ -363,6 +363,60 @@ If the session had no meaningful work (ghost session, only reads), write "No sig
 REMEMBER: Use your tools to verify every candidate before extracting. Empty is correct. All output English (except SESSION_SUMMARY which matches session language).`;
 
 /**
+ * Lighter audit prompt for sessions where the agent already ran the close
+ * checklist (agentClosed=true). The agent extracted memories/decisions/safety
+ * during the live session with full context. This prompt only catches items
+ * the agent missed. Handoff is skipped (agent already wrote it).
+ */
+const VERIFY_ONLY_AUDIT_PROMPT = `You are auditing a Claude Code session where the AGENT ALREADY extracted knowledge during the session close process. The agent had full conversation context and saved memories, decisions, and safety rules via MCP tools. Your job is ONLY to catch items the agent MISSED.
+
+IMPORTANT: the agent's extractions are ALREADY in storage. Most categories should be EMPTY in your output. Only extract genuinely missed items.
+
+Same rules apply as full audit:
+- User confirmation is mandatory for memories/decisions/safety
+- Dedup check is mandatory (Grep before emitting)
+- Empty is correct for most sessions
+- All output in English (except SESSION_SUMMARY)
+
+==== MANDATORY DEDUP CHECK ====
+
+Same as full audit: Grep each candidate against .axme-code/ storage before emitting. An empty DEDUP_CHECK section means you emit no extractions.
+
+==== OUTPUT FORMAT ====
+
+Use the same markers as full audit. Most sections will be empty.
+
+###DEDUP_CHECK###
+(list Grep calls made)
+
+###MEMORIES###
+(only items the agent MISSED — most sessions: empty)
+
+###DECISIONS###
+(only items the agent MISSED — most sessions: empty)
+
+###SAFETY###
+(only items the agent MISSED — most sessions: empty)
+
+###ORACLE_CHANGES###
+YES or NO (same criteria as full audit)
+
+###QUESTIONS###
+(only if ambiguities remain after the agent's close process)
+
+###HANDOFF###
+SKIP — agent already wrote handoff via axme_finalize_close.
+
+###SESSION_SUMMARY###
+Write a concise narrative summary of what happened in the session (5-15 lines).
+This is used for the worklog even when the agent already wrote an entry.
+Write in the same language the session was conducted in.
+If the session had no meaningful work, write "No significant activity."
+###END###
+
+REMEMBER: The agent already did the heavy lifting. Your role is safety net only. Empty is almost always correct.`;
+
+/**
  * Build the "storage locations" context block. We DO NOT give the auditor an
  * inventory of existing decisions/memories in the prompt — earlier experiments
  * showed that Opus treats such a list as sufficient and skips the actual
@@ -499,6 +553,9 @@ export async function runSessionAudit(opts: {
    *  auditor_model field from .axme-code/config.yaml via readConfig(). The
    *  hard default (DEFAULT_AUDITOR_MODEL) is Sonnet 4.6. */
   model?: string;
+  /** If true, the agent already ran the close checklist and extracted
+   *  knowledge. Use a lighter verify-only prompt that catches missed items. */
+  agentClosed?: boolean;
 }): Promise<SessionAuditResult> {
   const startTime = Date.now();
   const model = opts.model ?? DEFAULT_AUDITOR_MODEL;
@@ -514,8 +571,9 @@ export async function runSessionAudit(opts: {
   let chunks: string[];
   if (opts.sessionTurns && opts.sessionTurns.length > 0) {
     // Preferred path: we have structured turns, so we can chunk at turn boundaries.
+    const activePromptForBudget = opts.agentClosed ? VERIFY_ONLY_AUDIT_PROMPT : AUDIT_PROMPT;
     const fixedOverhead =
-      AUDIT_PROMPT.length +
+      activePromptForBudget.length +
       workspaceContext.length +
       existingContext.length +
       JSON.stringify(opts.filesChanged).length +
@@ -563,11 +621,12 @@ export async function runSessionAudit(opts: {
       mergedDecisions,
       mergedSafetyRules,
     );
+    const activePrompt = opts.agentClosed ? VERIFY_ONLY_AUDIT_PROMPT : AUDIT_PROMPT;
     const chunkResult = await runSingleAuditCall({
       sessionId: opts.sessionId,
       sessionOrigin: opts.sessionOrigin,
       model,
-      auditPrompt: AUDIT_PROMPT,
+      auditPrompt: activePrompt,
       workspaceContext,
       existingContext,
       alreadyExtractedContext,
