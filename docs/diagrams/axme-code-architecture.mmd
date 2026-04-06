@@ -1,0 +1,76 @@
+graph TB
+    subgraph "Claude Code (VS Code)"
+        Agent["Agent (LLM)"]
+        HC["Hook Controller"]
+    end
+
+    subgraph "MCP Server (stdio, persistent)"
+        Tools["Tool Handlers<br/>axme_context, axme_save_*, axme_begin_close, axme_finalize_close"]
+        SessionMgr["Session Manager<br/>ownerPpid mapping, stale adoption"]
+    end
+
+    subgraph "Hooks (fresh process per call)"
+        PreHook["pre-tool-use<br/>Hard safety enforcement<br/>(100% reliable, not prompt-based)"]
+        PostHook["post-tool-use<br/>Track filesChanged"]
+        EndHook["session-end<br/>Spawn audit worker"]
+    end
+
+    subgraph "Detached Auditor (background)"
+        AuditFull["Full Extraction<br/>(agentClosed=false)<br/>crash/orphan sessions"]
+        AuditVerify["Verify-Only<br/>(agentClosed=true)<br/>catch missed items"]
+    end
+
+    subgraph ".axme-code/ Storage"
+        Oracle["oracle/<br/>stack, structure,<br/>patterns, glossary"]
+        Decisions["decisions/<br/>D-001..D-NNN"]
+        Memory["memory/<br/>feedback/ + patterns/"]
+        Safety["safety/<br/>rules.yaml"]
+        Sessions["sessions/<br/>meta.json per session"]
+        Plans["plans/<br/>handoff.md"]
+        Worklog["worklog.jsonl<br/>worklog.md"]
+    end
+
+    %% Agent -> MCP Server
+    Agent -->|"tool calls"| Tools
+    Tools -->|"read/write<br/>(atomicWrite)"| Oracle
+    Tools -->|"read/write"| Decisions
+    Tools -->|"read/write"| Memory
+    Tools -->|"read/write"| Safety
+    Tools -->|"read/write"| Plans
+    Tools -->|"append"| Worklog
+    Tools -->|"agentClosed flag"| Sessions
+
+    %% Hook flow
+    HC -->|"every tool call"| PreHook
+    HC -->|"Edit/Write only"| PostHook
+    HC -->|"session close"| EndHook
+    PreHook -->|"DENY"| Agent
+    PreHook -->|"create/refresh"| SessionMgr
+    PreHook -.->|"reads"| Safety
+    PostHook -->|"filesChanged"| Sessions
+    EndHook -->|"spawn detached"| AuditFull
+
+    %% Auditor
+    AuditFull -->|"extract & save"| Decisions
+    AuditFull -->|"extract & save"| Memory
+    AuditVerify -->|"catch missed"| Decisions
+    AuditVerify -->|"catch missed"| Memory
+    AuditFull -->|"write if no agent handoff"| Plans
+    AuditVerify -.->|"skip (agent wrote)"| Plans
+
+    %% Session close flow
+    Agent -->|"1. axme_begin_close"| Tools
+    Tools -->|"returns checklist"| Agent
+    Agent -->|"2. axme_save_*"| Tools
+    Agent -->|"3. axme_finalize_close"| Tools
+
+    %% Styling
+    classDef hook fill:#f9f,stroke:#333,stroke-width:2px
+    classDef storage fill:#bbf,stroke:#333,stroke-width:1px
+    classDef agent fill:#bfb,stroke:#333,stroke-width:2px
+    classDef audit fill:#fbb,stroke:#333,stroke-width:1px
+
+    class PreHook,PostHook,EndHook hook
+    class Oracle,Decisions,Memory,Safety,Sessions,Plans,Worklog storage
+    class Agent,Tools agent
+    class AuditFull,AuditVerify audit
