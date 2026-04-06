@@ -290,6 +290,13 @@ export interface SessionHandoff {
   blockers: string;
   next: string;
   dirtyBranches: string;
+  /** Enriched fields (optional for backward compat with auditor extraction). */
+  sessionId?: string;
+  date?: string;
+  summary?: string;
+  prs?: Array<{ url: string; title: string; status: string }>;
+  testResults?: string;
+  source?: "agent" | "auditor";
 }
 
 // --- Test Plan ---

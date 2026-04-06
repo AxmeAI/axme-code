@@ -6,7 +6,7 @@
  *   .axme-code/plans/handoff.md
  */
 
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync, readdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { atomicWrite, readSafe, ensureDir, pathExists } from "./engine.js";
@@ -144,41 +144,130 @@ export function showPlan(projectPath: string, id: string): string {
 
 // --- Handoff ---
 
+const HANDOFF_RETENTION = 5; // keep last N handoff files
+
+/**
+ * Write enriched handoff. Saves as per-session file (handoff-<short-id>.md)
+ * and also overwrites handoff.md (latest, for quick access).
+ */
 export function writeHandoff(projectPath: string, handoff: SessionHandoff): void {
   ensureDir(plansRoot(projectPath));
-  const lines = [
-    "# Session Handoff", "",
-    `Stopped at: ${handoff.stoppedAt}`, "",
-    "## In Progress", handoff.inProgress, "",
-    "## Blockers", handoff.blockers, "",
-    "## Next Steps", handoff.next, "",
-    "## Dirty Branches", handoff.dirtyBranches,
-  ];
-  atomicWrite(join(plansRoot(projectPath), "handoff.md"), lines.join("\n") + "\n");
+  const content = formatHandoff(handoff);
+  // Always write latest
+  atomicWrite(join(plansRoot(projectPath), "handoff.md"), content);
+  // Per-session history file
+  if (handoff.sessionId) {
+    const shortId = handoff.sessionId.slice(0, 8);
+    atomicWrite(join(plansRoot(projectPath), `handoff-${shortId}.md`), content);
+    cleanupOldHandoffs(projectPath);
+  }
 }
 
+function formatHandoff(h: SessionHandoff): string {
+  const lines = ["# Session Handoff", ""];
+  if (h.date || h.sessionId) {
+    const meta: string[] = [];
+    if (h.date) meta.push(`Date: ${h.date}`);
+    if (h.sessionId) meta.push(`Session: ${h.sessionId.slice(0, 8)}`);
+    if (h.source) meta.push(`Source: ${h.source}`);
+    lines.push(meta.join(" | "), "");
+  }
+  lines.push(`Stopped at: ${h.stoppedAt}`, "");
+  if (h.summary) {
+    lines.push("## Summary", h.summary, "");
+  }
+  lines.push("## In Progress", h.inProgress, "");
+  if (h.prs && h.prs.length > 0) {
+    lines.push("## PRs");
+    for (const pr of h.prs) lines.push(`- [${pr.status}] ${pr.title} - ${pr.url}`);
+    lines.push("");
+  }
+  if (h.testResults) {
+    lines.push("## Test Results", h.testResults, "");
+  }
+  lines.push("## Blockers", h.blockers || "None", "");
+  lines.push("## Next Steps", h.next, "");
+  lines.push("## Dirty Branches", h.dirtyBranches || "None");
+  return lines.join("\n") + "\n";
+}
+
+function cleanupOldHandoffs(projectPath: string): void {
+  try {
+    const dir = plansRoot(projectPath);
+    const files = readdirSync(dir)
+      .filter(f => f.startsWith("handoff-") && f.endsWith(".md"))
+      .sort()
+      .reverse();
+    for (const f of files.slice(HANDOFF_RETENTION)) {
+      try { unlinkSync(join(dir, f)); } catch {}
+    }
+  } catch {}
+}
+
+/**
+ * Read the latest handoff (handoff.md).
+ * Parses both enriched and legacy minimal format.
+ */
 export function readHandoff(projectPath: string): SessionHandoff | null {
   const content = readSafe(join(plansRoot(projectPath), "handoff.md"));
-  if (!content) return null;
+  if (!content || content.trim().length < 10) return null;
   const get = (heading: string): string => {
     const regex = new RegExp(`## ${heading}\\n([\\s\\S]*?)(?=\\n## |$)`);
     const m = content.match(regex);
     return m ? m[1].trim() : "";
   };
   const stoppedMatch = content.match(/Stopped at: (.+)/);
+  const sessionMatch = content.match(/Session: (\S+)/);
+  const dateMatch = content.match(/Date: (\S+)/);
+  const sourceMatch = content.match(/Source: (\S+)/);
+  // Parse PRs if present
+  const prsSection = get("PRs");
+  const prs: Array<{ url: string; title: string; status: string }> = [];
+  if (prsSection) {
+    for (const line of prsSection.split("\n")) {
+      const m = line.match(/^- \[(\w+)\] (.+?) - (.+)$/);
+      if (m) prs.push({ status: m[1], title: m[2], url: m[3] });
+    }
+  }
   return {
     stoppedAt: stoppedMatch?.[1] ?? "",
     inProgress: get("In Progress"),
     blockers: get("Blockers"),
     next: get("Next Steps"),
     dirtyBranches: get("Dirty Branches"),
+    summary: get("Summary") || undefined,
+    testResults: get("Test Results") || undefined,
+    sessionId: sessionMatch?.[1],
+    date: dateMatch?.[1],
+    source: (sourceMatch?.[1] as "agent" | "auditor") ?? undefined,
+    prs: prs.length > 0 ? prs : undefined,
   };
 }
 
+/**
+ * Context string for axme_context - shows latest handoff to next session.
+ */
 export function handoffContext(projectPath: string): string {
   const h = readHandoff(projectPath);
   if (!h) return "";
-  return `## Previous Session Handoff\n\nStopped: ${h.stoppedAt}\nIn progress: ${h.inProgress}\nBlockers: ${h.blockers}\nNext: ${h.next}`;
+  const parts = [
+    "## Previous Session Handoff",
+    "",
+  ];
+  if (h.date || h.sessionId) {
+    parts.push(`*${[h.date, h.sessionId ? `session ${h.sessionId}` : "", h.source ? `(${h.source})` : ""].filter(Boolean).join(", ")}*`, "");
+  }
+  parts.push(`**Stopped at**: ${h.stoppedAt}`);
+  if (h.summary) parts.push("", h.summary);
+  if (h.prs && h.prs.length > 0) {
+    parts.push("", "**PRs**:");
+    for (const pr of h.prs) parts.push(`- [${pr.status}] ${pr.title} - ${pr.url}`);
+  }
+  if (h.testResults) parts.push("", `**Tests**: ${h.testResults}`);
+  parts.push("", `**In progress**: ${h.inProgress}`);
+  if (h.blockers && h.blockers !== "None") parts.push(`**Blockers**: ${h.blockers}`);
+  parts.push(`**Next steps**: ${h.next}`);
+  return parts.join("\n");
 }
 
 // --- File format ---

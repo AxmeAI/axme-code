@@ -14,7 +14,7 @@ import { safetyContext, loadSafetyRules } from "../storage/safety.js";
 import { allMemoryContext, listMemories } from "../storage/memory.js";
 import { mergeDecisions, mergeMemories, mergeSafetyRules } from "../storage/workspace-merge.js";
 import { testPlanContext } from "../storage/test-plan.js";
-import { plansContext } from "../storage/plans.js";
+import { plansContext, handoffContext } from "../storage/plans.js";
 import { listPendingAudits } from "../storage/sessions.js";
 import { detectWorkspace } from "../utils/workspace-detector.js";
 import { questionsContext } from "../storage/questions.js";
@@ -127,6 +127,10 @@ export function getFullContext(projectPath: string, workspacePath?: string): str
   // Active plans
   const plans = plansContext(projectPath);
   if (plans) parts.push(plans);
+
+  // Previous session handoff - shows next session what was done and what to do next
+  const handoff = handoffContext(workspacePath ?? projectPath);
+  if (handoff) parts.push(handoff);
 
   // "parts" always has at least the Storage root header — so detect
   // "not initialized" by checking absence of any real content modules.

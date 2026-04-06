@@ -225,9 +225,12 @@ SAFETY
 Requires USER CONFIRMATION (see above). Extract ONLY if the user explicitly mandated a new bash_deny/bash_allow/fs_deny/git_protected_branch rule ("agent must never run X", "block writes to Y", "main branch is protected from force push"). An incident happening in the session is NOT enough by itself — incidents go to the worklog, not to safety rules. Safety rules persist forever and must come from explicit user mandate.
 
 HANDOFF
-Restate session state with specifics based on the transcript alone. This section does NOT require novelty.
+Restate session state with specifics based on the transcript alone. This section does NOT require novelty. This is what the NEXT agent session will see as context, so be specific enough to resume work.
 - stopped_at: exact task/file at end of session
+- summary: 2-5 bullet points of what was accomplished (PRs, merges, fixes, deploys). Include PR numbers and URLs if visible in transcript.
 - in_progress: branch names, PR numbers, uncommitted work
+- prs: list of PRs touched in this session, format "url | title | status" per line (status: open/merged/closed)
+- test_results: summary of test runs if any (e.g. "119/119 pass, 12/12 chain-bypass pass")
 - blockers: concrete blockers with enough detail to resume
 - next: concrete next steps (file paths, commands)
 - dirty_branches: branch names with state
@@ -333,7 +336,10 @@ If no questions, leave this section empty (just the marker, no entries).
 
 ###HANDOFF###
 stopped_at: <English>
+summary: <English, 2-5 bullet points>
 in_progress: <English>
+prs: <one per line: url | title | status>
+test_results: <English, or "none">
 blockers: <English>
 next: <English>
 dirty_branches: <English>
@@ -966,18 +972,35 @@ export function parseAuditOutput(output: string, sessionId: string): Omit<Sessio
     }
   }
 
-  // Parse handoff
+  // Parse handoff (enriched format with backward compat)
   let handoff: SessionHandoff | null = null;
   const handoffSection = extractSection(output, "HANDOFF");
   if (handoffSection) {
     const stoppedAt = getField(handoffSection, "stopped_at");
+    const summary = getField(handoffSection, "summary");
     const inProgress = getField(handoffSection, "in_progress");
+    const prsRaw = getField(handoffSection, "prs");
+    const testResults = getField(handoffSection, "test_results");
     const blockers = getField(handoffSection, "blockers");
     const next = getField(handoffSection, "next");
     const dirtyBranches = getField(handoffSection, "dirty_branches");
+    // Parse PRs: "url | title | status" per line
+    const prs: Array<{ url: string; title: string; status: string }> = [];
+    if (prsRaw) {
+      for (const line of prsRaw.split("\n")) {
+        const parts = line.split("|").map(s => s.trim());
+        if (parts.length >= 3) prs.push({ url: parts[0], title: parts[1], status: parts[2] });
+      }
+    }
     const hasContent = [stoppedAt, inProgress, next].some(v => v && v !== "none" && v !== "nothing");
     if (hasContent) {
-      handoff = { stoppedAt, inProgress, blockers, next, dirtyBranches };
+      handoff = {
+        stoppedAt, inProgress, blockers, next, dirtyBranches,
+        summary: summary || undefined,
+        testResults: (testResults && testResults !== "none") ? testResults : undefined,
+        prs: prs.length > 0 ? prs : undefined,
+        source: "auditor",
+      };
     }
   }
 
