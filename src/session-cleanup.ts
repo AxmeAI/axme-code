@@ -496,7 +496,26 @@ export async function runSessionCleanup(
         result.handoffSaved = true;
       }
 
-      if (audit.oracleNeedsRescan && filesChanged.length > 0) {
+      // Oracle rescan triggers — two paths:
+      // 1. Deterministic: if filesChanged contains a structural manifest file
+      //    (package.json, pyproject.toml, go.mod, CLAUDE.md, etc.) → always rescan
+      // 2. LLM: if the auditor's ORACLE_CHANGES output said YES → rescan
+      const STRUCTURAL_FILE_PATTERNS = [
+        /\/package\.json$/,
+        /\/pyproject\.toml$/,
+        /\/go\.mod$/,
+        /\/Cargo\.toml$/,
+        /\/pom\.xml$/,
+        /\/build\.gradle(\.kts)?$/,
+        /\/requirements\.txt$/,
+        /\/CLAUDE\.md$/,
+        /\/AGENTS\.md$/,
+      ];
+      const deterministicRescan = filesChanged.some(f =>
+        STRUCTURAL_FILE_PATTERNS.some(p => p.test(f))
+      );
+      const shouldRescan = deterministicRescan || audit.oracleNeedsRescan;
+      if (shouldRescan && filesChanged.length > 0) {
         try {
           const { runOracleScan } = await import("./agents/scanners/oracle.js");
           const oracleResult = await runOracleScan({ projectPath: workspacePath });
