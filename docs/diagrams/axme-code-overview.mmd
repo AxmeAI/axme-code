@@ -10,12 +10,12 @@ graph LR
     end
 
     subgraph KB[".axme-code/ Knowledge Base"]
-        O["Oracle\nstack, structure,\npatterns"]
-        D["Decisions\nrules, policies"]
-        M["Memory\nfeedback, patterns"]
-        S["Safety\ngit, bash, fs\nguardrails"]
-        HO["Handoff\nsession state"]
-        W["Worklog\nevent history"]
+        O["Oracle\nstack, structure\npatterns, glossary"]
+        D["Decisions\nrules, policies\nenforce levels"]
+        M["Memory\nfeedback\npatterns"]
+        S["Safety Rules\ngit, bash, fs"]
+        HO["Handoff\nsession state\nnext steps"]
+        W["Worklog\nsession history"]
     end
 
     A -->|"reads KB at start"| MCP
