@@ -456,21 +456,33 @@ async function main() {
 
       const applyMode = args.includes("--apply");
 
-      // Collect oracle evidence from workspace + per-repo
+      // Collect oracle evidence — workspace-level only for KB audit (per-repo
+      // adds 50K+ chars and is not needed for decision conflict detection).
+      // For stale-detection against specific repos, future versions can add
+      // targeted per-repo oracle on demand.
       const { loadOracleFiles } = await import("./storage/oracle.js");
-      const { readdirSync, statSync, existsSync } = await import("node:fs");
+      const { existsSync } = await import("node:fs");
       const oracleByRepo: Array<{ repo: string; stack: string; structure: string }> = [];
       const wsOracle = loadOracleFiles(workspacePath);
       if (wsOracle) oracleByRepo.push({ repo: "workspace", stack: wsOracle.stack, structure: wsOracle.structure });
+      // Add only the main repos' oracle (top 5 by decision count for targeted stale detection)
+      const { readdirSync, statSync } = await import("node:fs");
+      const repoDecCounts: Array<{ name: string; path: string; count: number }> = [];
       try {
         for (const entry of readdirSync(workspacePath)) {
           const repoPath = join(workspacePath, entry);
           try { if (!statSync(repoPath).isDirectory()) continue; } catch { continue; }
           if (!existsSync(join(repoPath, ".axme-code"))) continue;
-          const oracle = loadOracleFiles(repoPath);
-          if (oracle) oracleByRepo.push({ repo: entry, stack: oracle.stack, structure: oracle.structure });
+          const repoDecs = listDecisions(repoPath);
+          repoDecCounts.push({ name: entry, path: repoPath, count: repoDecs.length });
         }
       } catch {}
+      // Top 5 repos by decision count
+      repoDecCounts.sort((a, b) => b.count - a.count);
+      for (const repo of repoDecCounts.slice(0, 5)) {
+        const oracle = loadOracleFiles(repo.path);
+        if (oracle) oracleByRepo.push({ repo: repo.name, stack: oracle.stack, structure: oracle.structure });
+      }
 
       console.log(`  Oracle evidence from ${oracleByRepo.length} repos`);
       console.log(`\nRunning LLM analysis...`);

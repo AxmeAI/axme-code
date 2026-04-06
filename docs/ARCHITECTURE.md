@@ -214,3 +214,158 @@ The auditor is a safety net. Without it, the knowledge base depends entirely on 
 ```
 
 Each repo in a workspace has its own `.axme-code/` with separate decisions, oracle, and safety rules. The workspace-level `.axme-code/` stores cross-repo items and sessions.
+
+---
+
+## Two-Level Storage: Workspace vs Repo
+
+### The Problem
+
+A workspace can contain 50+ repos. Some knowledge is universal ("never push to main", "all SDKs release together"), some is repo-specific ("this repo uses Go 1.24", "httpx.AsyncClient is mandatory in gateway handlers"). Storing everything in one place either pollutes repo-specific context with irrelevant rules or loses cross-repo knowledge.
+
+### The Solution: Two Storage Levels
+
+```
+axme-workspace/                         <- WORKSPACE ROOT
+|-- .axme-code/                         <- WORKSPACE-LEVEL storage
+|   |-- decisions/  (75 decisions)         cross-repo rules
+|   |-- memory/     (feedback + patterns)  universal lessons
+|   |-- safety/     (rules.yaml)           workspace-wide safety
+|   |-- oracle/     (stack.md, ...)        workspace overview
+|   |-- sessions/   (session tracking)     ALL sessions live here
+|   +-- worklog.jsonl                      ALL events live here
+|
+|-- axme-control-plane/
+|   +-- .axme-code/                     <- REPO-LEVEL storage
+|       |-- decisions/  (60 decisions)     repo-specific rules
+|       |-- memory/                        repo-specific lessons
+|       |-- safety/     (rules.yaml)       repo-specific safety
+|       +-- oracle/     (stack.md, ...)    repo tech stack
+|
+|-- axme-cli/
+|   +-- .axme-code/                     <- REPO-LEVEL storage
+|       |-- decisions/  (46 decisions)
+|       |-- ...
+|
+|-- axme-sdk-python/
+|   +-- .axme-code/                     <- REPO-LEVEL storage
+|       +-- ...
+|
++-- ... (56 repos total, each with .axme-code/)
+```
+
+### What Lives Where
+
+| Level | What gets stored | Example |
+|-------|-----------------|---------|
+| **Workspace** | Cross-repo rules, universal conventions, session tracking, worklog, audit logs, plans, handoff | "All SDKs release together on same version", "Never merge PRs as agent", "Protected branches: main" |
+| **Repo** | Repo-specific tech stack, coding patterns, architecture decisions, repo-specific safety rules | "Python SDK uses httpx (sync only)", "Go CLI uses Cobra", "axme-control-plane: AsyncClient mandatory in async handlers" |
+
+### Scope Routing: How Writes Go to the Right Place
+
+Every item (decision, memory, safety rule) has an optional `scope` field that controls where it gets stored. Routing happens identically for saves during a session (via MCP tools) and saves after a session (via the auditor).
+
+```
+scope: undefined / [] / ["all"]
+  -> writes to workspace root .axme-code/
+     (discoverable by all repos via merged context)
+
+scope: ["axme-control-plane"]
+  -> writes to axme-control-plane/.axme-code/
+     (only visible when working in that repo)
+
+scope: ["axme-cli", "axme-sdk-go"]
+  -> writes to BOTH repos' .axme-code/
+     (visible in either repo, not in others)
+```
+
+The routing logic in code (`saveScopedDecisions`, `saveScopedMemories`, `saveScopedSafetyRule`):
+
+```typescript
+if (isAllScope) {
+  // scope=all -> write to session origin (workspace root in workspace sessions)
+  save(projectPath, item);
+} else {
+  // scope=["repo-a", "repo-b"] -> write to each listed repo
+  for (const repoName of scope) {
+    const repoPath = join(workspacePath, repoName);
+    save(repoPath, item);
+    crossProject++;
+  }
+}
+```
+
+D-NNN IDs are generated independently per storage location. Workspace root and each repo have their own sequence: workspace D-075, axme-control-plane D-060, axme-cli D-046 - these are all independent counters.
+
+### Merge on Read: How Both Levels Combine
+
+When the agent calls `axme_context`, both levels are read and merged into a single unified view. The merge strategy differs by data type:
+
+**Decisions** - concatenate, project wins on ID conflict:
+```
+workspace decisions:  D-001..D-075 (universal rules)
+  +
+repo decisions:       D-001..D-060 (repo-specific)
+  =
+agent sees:           135 decisions total
+```
+If workspace has D-042 and repo has D-042 (same ID, different content), the repo version wins. In practice this doesn't happen because IDs are generated independently and slugs differ.
+
+**Safety rules** - union merge, strictest wins:
+```
+workspace rules.yaml:                    repo rules.yaml:
+  protectedBranches: [main, master]        protectedBranches: [main, develop]
+  deniedPrefixes: [rm -rf /, ...]          deniedPrefixes: [docker push, ...]
+  allowForcePush: false                    allowForcePush: false
+
+merged result:
+  protectedBranches: [main, master, develop]    <- union
+  deniedPrefixes: [rm -rf /, ..., docker push]  <- union
+  allowForcePush: false                         <- AND (both must allow)
+  requirePrForMain: true                        <- OR (either can require)
+```
+
+Principle: deny lists **union** (a deny at any level wins), boolean allow flags **AND** (both levels must allow), boolean require flags **OR** (either level can require).
+
+**Memories** - concatenate, deduplicate by slug (repo wins):
+```
+workspace memories:  universal feedback + patterns
+  +
+repo memories:       repo-specific feedback
+  =
+agent sees:          combined set, repo version wins on slug collision
+```
+
+**Oracle** - both levels returned, labeled separately:
+```
+Workspace oracle:  overall workspace structure, project list
+Project oracle:    repo-specific stack, patterns, glossary
+```
+The agent sees both sections in `axme_context` output, clearly labeled as "Workspace Context" and "Project Context".
+
+### Per-Repo Gate
+
+Before working in any specific repo, the agent must call `axme_context` with that repo's path. This loads the repo-level context on top of the workspace context. Without this call, the agent only sees workspace-level rules and misses repo-specific decisions and patterns.
+
+This is enforced by instruction in CLAUDE.md:
+```
+### Per-Repo Gate (MANDATORY)
+Every repo has its own .axme-code/ storage created during setup.
+BEFORE reading code, making changes, or running tests in any repo:
+  call axme_context with that repo's path to load repo-specific context.
+```
+
+### Auditor Scope Routing
+
+The post-session auditor decides scope for each extraction based on the transcript content. If the agent discussed a Python-specific pattern while working in `axme-control-plane`, the auditor routes it to that repo. If the agent discussed a universal rule ("never merge PRs"), the auditor routes it to workspace level.
+
+The auditor also uses `filesChanged` from the session to infer which repos were touched, and routes extracted items accordingly. A memory about a bug in `axme-cli/cmd/axme/tasks.go` goes to `axme-cli/.axme-code/`, not to the workspace root.
+
+### Why Not Just One Level?
+
+With 56 repos and 2444+ decisions, a flat storage would be unusable:
+- The agent would see all 2444 decisions on every `axme_context` call, most irrelevant
+- Safety rules for a Go CLI repo would include Python-specific rules from the gateway
+- Oracle would mix TypeScript patterns with Java conventions
+
+Two levels give the agent **focused context**: only the universal rules plus the repo it's actually working in.
