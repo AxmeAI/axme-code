@@ -254,7 +254,7 @@ Usage:
   axme-code status [path]                 Show project status
   axme-code cleanup legacy-artifacts [--dry-run]  Remove pre-PR#7 sessions/logs
   axme-code cleanup decisions-normalize [--dry-run]  Add status:active to decisions
-  axme-code audit-kb [--workspace <path>]           KB health report + counter reset
+  axme-code audit-kb [--all-repos] [--apply]         KB health report + LLM conflict analysis
   axme-code help                          Show this help
 
 After setup, run 'claude' as usual. AXME tools are available automatically.`);
@@ -434,21 +434,54 @@ async function main() {
     }
 
     case "audit-kb": {
+      // Auto-detect workspace root: --workspace flag, or detect from cwd
       const wsIdx = args.indexOf("--workspace");
-      const workspacePath = wsIdx >= 0 && args[wsIdx + 1] ? resolve(args[wsIdx + 1]) : resolve(".");
+      let workspacePath: string;
+      if (wsIdx >= 0 && args[wsIdx + 1]) {
+        workspacePath = resolve(args[wsIdx + 1]);
+      } else {
+        // Auto-detect: try cwd first, then parent (if cwd is a sub-repo of a workspace)
+        let ws = detectWorkspace(resolve("."));
+        if (ws.type === "single") {
+          const parent = resolve("..");
+          const parentWs = detectWorkspace(parent);
+          if (parentWs.type !== "single") ws = parentWs;
+        }
+        workspacePath = ws.root;
+      }
+      const allRepos = args.includes("--all-repos");
+
       const { readKbAuditCounter, resetKbAuditCounter, writeKbAuditReport } = await import("./storage/kb-audit.js");
       const { listDecisions } = await import("./storage/decisions.js");
       const { listMemories } = await import("./storage/memory.js");
+      const { readdirSync, statSync, existsSync } = await import("node:fs");
 
       const counter = readKbAuditCounter(workspacePath);
-      console.log(`KB Audit for ${workspacePath}`);
+      console.log(`KB Audit for ${workspacePath}${allRepos ? " (all repos)" : " (workspace-level only)"}`);
       console.log(`  Sessions since last audit: ${counter?.count ?? 0}`);
       console.log(`  Last KB audit: ${counter?.lastRunAt ?? "never"}`);
 
-      const allDecisions = listDecisions(workspacePath, { includeAll: true });
+      // Collect decisions + memories: workspace-level, or all repos if --all-repos
+      let allDecisions: any[] = listDecisions(workspacePath, { includeAll: true });
+      let memories: any[] = listMemories(workspacePath);
+
+      if (allRepos) {
+        try {
+          for (const entry of readdirSync(workspacePath)) {
+            const repoPath = join(workspacePath, entry);
+            try { if (!statSync(repoPath).isDirectory()) continue; } catch { continue; }
+            if (!existsSync(join(repoPath, ".axme-code"))) continue;
+            const repoDecs = listDecisions(repoPath, { includeAll: true });
+            // Tag decisions with repo name for cross-repo conflict detection
+            for (const d of repoDecs) (d as any)._repo = entry;
+            allDecisions.push(...repoDecs);
+            memories.push(...listMemories(repoPath));
+          }
+        } catch {}
+      }
+
       const activeDecisions = allDecisions.filter((d: any) => !d.status || d.status === "active");
       const superseded = allDecisions.filter((d: any) => d.status === "superseded");
-      const memories = listMemories(workspacePath);
 
       console.log(`  Active decisions: ${activeDecisions.length}`);
       console.log(`  Superseded decisions: ${superseded.length}`);
@@ -461,12 +494,10 @@ async function main() {
       // For stale-detection against specific repos, future versions can add
       // targeted per-repo oracle on demand.
       const { loadOracleFiles } = await import("./storage/oracle.js");
-      const { existsSync } = await import("node:fs");
       const oracleByRepo: Array<{ repo: string; stack: string; structure: string }> = [];
       const wsOracle = loadOracleFiles(workspacePath);
       if (wsOracle) oracleByRepo.push({ repo: "workspace", stack: wsOracle.stack, structure: wsOracle.structure });
       // Add only the main repos' oracle (top 5 by decision count for targeted stale detection)
-      const { readdirSync, statSync } = await import("node:fs");
       const repoDecCounts: Array<{ name: string; path: string; count: number }> = [];
       try {
         for (const entry of readdirSync(workspacePath)) {
