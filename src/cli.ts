@@ -446,29 +446,121 @@ async function main() {
       console.log(`  Last KB audit: ${counter?.lastRunAt ?? "never"}`);
 
       const allDecisions = listDecisions(workspacePath, { includeAll: true });
-      const activeDecisions = allDecisions.filter(d => !d.status || d.status === "active");
-      const superseded = allDecisions.filter(d => d.status === "superseded");
+      const activeDecisions = allDecisions.filter((d: any) => !d.status || d.status === "active");
+      const superseded = allDecisions.filter((d: any) => d.status === "superseded");
       const memories = listMemories(workspacePath);
 
       console.log(`  Active decisions: ${activeDecisions.length}`);
       console.log(`  Superseded decisions: ${superseded.length}`);
       console.log(`  Memories: ${memories.length}`);
 
-      // Build report (without LLM for now — LLM integration is a future enhancement)
+      const applyMode = args.includes("--apply");
+
+      // Collect oracle evidence from workspace + per-repo
+      const { loadOracleFiles } = await import("./storage/oracle.js");
+      const { readdirSync, statSync, existsSync } = await import("node:fs");
+      const oracleByRepo: Array<{ repo: string; stack: string; structure: string }> = [];
+      const wsOracle = loadOracleFiles(workspacePath);
+      if (wsOracle) oracleByRepo.push({ repo: "workspace", stack: wsOracle.stack, structure: wsOracle.structure });
+      try {
+        for (const entry of readdirSync(workspacePath)) {
+          const repoPath = join(workspacePath, entry);
+          try { if (!statSync(repoPath).isDirectory()) continue; } catch { continue; }
+          if (!existsSync(join(repoPath, ".axme-code"))) continue;
+          const oracle = loadOracleFiles(repoPath);
+          if (oracle) oracleByRepo.push({ repo: entry, stack: oracle.stack, structure: oracle.structure });
+        }
+      } catch {}
+
+      console.log(`  Oracle evidence from ${oracleByRepo.length} repos`);
+      console.log(`\nRunning LLM analysis...`);
+
+      // Run LLM KB audit
+      const { runKbAudit } = await import("./agents/kb-auditor.js");
+      const auditResult = await runKbAudit({
+        decisions: activeDecisions,
+        memories,
+        oracleByRepo,
+      });
+
+      console.log(`  Duration: ${(auditResult.durationMs / 1000).toFixed(1)}s`);
+      console.log(`  Prompt tokens: ${auditResult.promptTokens}`);
+      console.log(`  Cost: $${auditResult.costUsd.toFixed(2)}`);
+      console.log(`  Findings: ${auditResult.findings.length}`);
+
+      // Build report
       const reportLines = [
-        `# KB Audit Report — ${new Date().toISOString().slice(0, 19)}`,
+        `# KB Audit Report - ${new Date().toISOString().slice(0, 19)}`,
         "",
         `## Summary`,
         `- Active decisions: ${activeDecisions.length}`,
         `- Superseded decisions: ${superseded.length}`,
         `- Memories: ${memories.length}`,
+        `- Oracle evidence: ${oracleByRepo.length} repos`,
         `- Sessions since last audit: ${counter?.count ?? 0}`,
+        `- Cost: $${auditResult.costUsd.toFixed(2)}`,
         "",
-        `## Note`,
-        `This is a structural report. LLM-powered conflict detection and`,
-        `consolidation analysis will be added in a future version.`,
-        `For now, use this command to check storage health and reset the counter.`,
       ];
+
+      if (auditResult.findings.length === 0) {
+        reportLines.push("## Findings", "", "No issues found. Knowledge base is clean.");
+      } else {
+        reportLines.push(`## Findings (${auditResult.findings.length})`, "");
+        for (const f of auditResult.findings) {
+          reportLines.push(`### [${f.type.toUpperCase()}] ${f.ids.join(", ")} (confidence: ${f.confidence})`);
+          reportLines.push(f.description);
+          reportLines.push(`**Resolution**: ${f.resolution}`);
+          if (f.action) reportLines.push(`**Action**: ${f.action}`);
+          reportLines.push("");
+        }
+      }
+
+      // Auto-apply high-confidence findings if --apply
+      if (applyMode && auditResult.findings.length > 0) {
+        const { supersedeDecision, revokeDecision } = await import("./storage/decisions.js");
+        const { askQuestion } = await import("./storage/questions.js");
+        let applied = 0;
+
+        for (const f of auditResult.findings) {
+          if (f.confidence < 0.9 && f.type !== "question") continue;
+
+          if (f.action === "supersede" && f.newDecision && f.ids.length > 0) {
+            try {
+              supersedeDecision(workspacePath, f.ids[0], {
+                slug: f.newDecision.title?.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 50) ?? "kb-fix",
+                title: f.newDecision.title ?? f.description,
+                decision: f.newDecision.decision ?? f.resolution,
+                reasoning: f.newDecision.reasoning ?? `KB audit: ${f.description}`,
+                date: new Date().toISOString().slice(0, 10),
+                source: "session",
+                sessionId: null,
+                enforce: null,
+              });
+              reportLines.push(`**APPLIED**: superseded ${f.ids[0]}`);
+              applied++;
+            } catch (err) {
+              reportLines.push(`**FAILED**: ${err instanceof Error ? err.message : err}`);
+            }
+          } else if (f.action === "revoke" && f.ids.length > 0) {
+            try {
+              revokeDecision(workspacePath, f.ids[0], f.resolution);
+              reportLines.push(`**APPLIED**: revoked ${f.ids[0]}`);
+              applied++;
+            } catch (err) {
+              reportLines.push(`**FAILED**: ${err instanceof Error ? err.message : err}`);
+            }
+          } else if (f.action === "ask" && f.question) {
+            askQuestion(workspacePath, {
+              question: f.question,
+              context: f.ids.join(", "),
+              source: "kb-audit",
+            });
+            reportLines.push(`**QUESTION CREATED**: ${f.question}`);
+            applied++;
+          }
+        }
+        console.log(`  Applied: ${applied} actions`);
+      }
 
       const reportPath = writeKbAuditReport(workspacePath, reportLines.join("\n"));
       resetKbAuditCounter(workspacePath);

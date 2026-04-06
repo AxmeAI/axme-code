@@ -423,8 +423,8 @@ export async function runSessionCleanup(
             title: m.title,
             scope: m.scope,
             proposedRoutes: routes,
-            status: wasDuplicate ? "deduped" : "saved",
-            reason: wasDuplicate ? "slug already existed at all target paths (overwritten)" : undefined,
+            status: wasDuplicate ? "updated" : "saved",
+            reason: wasDuplicate ? "slug already existed, file overwritten" : undefined,
           });
         }
         saveScopedMemories(audit.memories, workspacePath, workspaceRoot);
@@ -481,8 +481,8 @@ export async function runSessionCleanup(
           extractions.push({
             type: "decision", slug: d.slug, title: d.title,
             scope: d.scope, proposedRoutes: routes,
-            status: wasDuplicate ? "deduped" : "saved",
-            reason: wasDuplicate ? "slug already existed at all target paths (overwritten)" : undefined,
+            status: wasDuplicate ? "updated" : "saved",
+            reason: wasDuplicate ? "slug already existed, file overwritten" : undefined,
           });
         }
         if (newDecisions.length > 0) {
@@ -547,6 +547,20 @@ export async function runSessionCleanup(
       if (audit.handoff) {
         writeHandoff(workspacePath, audit.handoff);
         result.handoffSaved = true;
+      }
+
+      // Save questions from auditor as open questions
+      if (audit.questions && audit.questions.length > 0) {
+        try {
+          const { askQuestion } = await import("./storage/questions.js");
+          for (const q of audit.questions) {
+            askQuestion(workspacePath, {
+              question: q.question,
+              context: q.context,
+              source: `session-${sessionId.slice(0, 8)}`,
+            });
+          }
+        } catch {}
       }
 
       // Oracle rescan triggers — two paths:

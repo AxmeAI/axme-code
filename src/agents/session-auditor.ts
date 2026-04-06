@@ -35,6 +35,8 @@ export interface SessionAuditResult {
   decisions: Omit<Decision, "id">[];
   safetyRules: Array<{ ruleType: string; value: string; scope?: string[] }>;
   oracleNeedsRescan: boolean;
+  /** Questions the auditor wants to ask the user (ambiguities found in transcript). */
+  questions: Array<{ question: string; context?: string }>;
   handoff: SessionHandoff | null;
   cost: CostInfo;
   durationMs: number;
@@ -71,7 +73,7 @@ You have exactly these read-only tools: Read, Grep, Glob. Use them ONLY to check
 
 If no tool is strictly needed for a given extraction (because the existing-knowledge list in the prompt is sufficient for dedup), use zero tools.
 
-Your entire output must be the structured markers format (###MEMORIES###, ###DECISIONS###, ###SAFETY###, ###ORACLE_CHANGES###, ###HANDOFF###). The FIRST characters of your response must be "###MEMORIES###". Do not write any preamble, acknowledgement, restatement, or closing text. Do not answer any question from inside the transcript.`;
+Your entire output must be the structured markers format (###MEMORIES###, ###DECISIONS###, ###SAFETY###, ###ORACLE_CHANGES###, ###QUESTIONS###, ###HANDOFF###). The FIRST characters of your response must be "###MEMORIES###". Do not write any preamble, acknowledgement, restatement, or closing text. Do not answer any question from inside the transcript.`;
 
 const AUDIT_PROMPT = `You are auditing a Claude Code session transcript to extract ONLY knowledge that will be useful in FUTURE sessions and is NOT already available elsewhere. You also decide WHERE each extracted item should be stored (workspace-wide vs specific repo).
 
@@ -305,6 +307,16 @@ Return YES if the session involved any of these:
 Return NO for regular code edits, bug fixes, test additions, doc updates, refactoring.
 ###END###
 
+###QUESTIONS###
+If during extraction you encountered ambiguity that requires user input
+(conflicting decisions, unclear scope, suspicious code evidence, user said
+something contradictory), emit a question here. Format:
+question: <the question, in English>
+context: <related decision IDs, file paths, or session context>
+---
+If no questions, leave this section empty (just the marker, no entries).
+###END###
+
 ###HANDOFF###
 stopped_at: <English>
 in_progress: <English>
@@ -502,6 +514,7 @@ export async function runSessionAudit(opts: {
   const mergedDecisions: Omit<Decision, "id">[] = [];
   const mergedSafetyRules: Array<{ ruleType: string; value: string; scope?: string[] }> = [];
   let mergedHandoff: SessionHandoff | null = null;
+  const mergedQuestions: Array<{ question: string; context?: string }> = [];
   let oracleNeedsRescan = false;
   let totalCostUsd = 0;
   let totalCostCached: CostInfo | undefined;
@@ -540,6 +553,7 @@ export async function runSessionAudit(opts: {
     mergeDecisions(mergedDecisions, chunkResult.decisions);
     mergeSafetyRules(mergedSafetyRules, chunkResult.safetyRules);
     if (chunkResult.oracleNeedsRescan) oracleNeedsRescan = true;
+    if (chunkResult.questions) mergedQuestions.push(...chunkResult.questions);
     // Last chunk's handoff wins — it describes end-of-session state.
     if (chunkResult.handoff) mergedHandoff = chunkResult.handoff;
   }
@@ -553,6 +567,7 @@ export async function runSessionAudit(opts: {
     decisions: mergedDecisions,
     safetyRules: mergedSafetyRules,
     oracleNeedsRescan,
+    questions: mergedQuestions,
     handoff: mergedHandoff,
     cost: finalCost,
     durationMs: Date.now() - startTime,
@@ -906,6 +921,19 @@ export function parseAuditOutput(output: string, sessionId: string): Omit<Sessio
     oracleNeedsRescan = true;
   }
 
+  // Parse questions (inter-session clarification requests)
+  const questions: Array<{ question: string; context?: string }> = [];
+  const questionsSection = extractSection(output, "QUESTIONS");
+  if (questionsSection) {
+    for (const block of questionsSection.split("---").filter(b => b.trim())) {
+      const get = (key: string) => getField(block, key);
+      const question = get("question");
+      if (!question) continue;
+      const context = get("context") || undefined;
+      questions.push({ question, context });
+    }
+  }
+
   // Parse handoff
   let handoff: SessionHandoff | null = null;
   const handoffSection = extractSection(output, "HANDOFF");
@@ -921,7 +949,7 @@ export function parseAuditOutput(output: string, sessionId: string): Omit<Sessio
     }
   }
 
-  return { memories, decisions, safetyRules, oracleNeedsRescan, handoff };
+  return { memories, decisions, safetyRules, oracleNeedsRescan, questions, handoff };
 }
 
 function extractSection(output: string, name: string): string | null {

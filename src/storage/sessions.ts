@@ -215,7 +215,7 @@ export interface AuditLogExtraction {
   value?: string;
   scope?: string[];
   proposedRoutes: string[]; // e.g. ["workspace/.axme-code/memory/"]
-  status: "saved" | "deduped" | "dropped";
+  status: "saved" | "updated" | "deduped" | "dropped";
   reason?: string; // for deduped/dropped
 }
 
