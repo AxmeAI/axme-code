@@ -44,6 +44,35 @@ const LEGACY_PENDING_AUDITS_DIR = "pending-audits";
 export const AUDIT_STALE_TIMEOUT_MS = 15 * 60 * 1000;
 
 /**
+ * Error patterns indicating transient failures that should be retried
+ * rather than treated as deterministic bugs. Matched against the error
+ * message string. Anything not matching is considered non-retryable
+ * (prompt too large, parser error, etc.) and stops retry immediately.
+ */
+export const RETRYABLE_ERROR_PATTERNS: RegExp[] = [
+  /429/i,
+  /rate limit/i,
+  /overloaded/i,
+  /ETIMEDOUT/,
+  /ECONNRESET/,
+  /ECONNREFUSED/,
+  /socket hang up/i,
+  /network error/i,
+  /timeout/i,
+];
+
+/**
+ * Maximum retry attempts for transient (retryable) errors. After this many
+ * consecutive retryable failures the session is marked as failed. This is
+ * separate from MAX_AUDIT_ATTEMPTS which caps deterministic failures at 1.
+ */
+export const RETRYABLE_MAX_ATTEMPTS = 5;
+
+export function isRetryableError(errMsg: string): boolean {
+  return RETRYABLE_ERROR_PATTERNS.some(p => p.test(errMsg));
+}
+
+/**
  * Find the real Claude Code process ID that owns this hook/MCP invocation.
  *
  * Claude Code wraps hook commands in `sh -c 'axme-code hook ...'`, which

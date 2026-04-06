@@ -28,6 +28,8 @@ import {
   writeAuditedOffset,
   AUDIT_STALE_TIMEOUT_MS,
   MAX_AUDIT_ATTEMPTS,
+  isRetryableError,
+  RETRYABLE_MAX_ATTEMPTS,
   type AuditLog,
   type AuditLogExtraction,
   type AuditLogResumeInfo,
@@ -97,12 +99,28 @@ function recordAuditFailure(
 ): void {
   const errMsg = err instanceof Error ? err.message : String(err);
   const errStack = err instanceof Error ? err.stack : undefined;
+  const retryable = isRetryableError(errMsg);
+
   try {
     const s = loadSession(workspacePath, sessionId);
     if (s) {
-      s.lastAuditError = `[${phase}] ${errMsg}`;
-      s.auditStatus = "failed";
-      s.auditFinishedAt = new Date().toISOString();
+      const attempts = s.auditAttempts ?? 0;
+      if (retryable && attempts < RETRYABLE_MAX_ATTEMPTS) {
+        // Transient error: leave as stale-pending so orphan scan retries.
+        // Set auditStartedAt far enough in the past to exceed the stale
+        // timeout, so the next findOrphanSessions cycle picks it up.
+        s.auditStatus = "pending";
+        s.auditStartedAt = new Date(Date.now() - AUDIT_STALE_TIMEOUT_MS - 60_000).toISOString();
+        s.lastAuditError = `[${phase}] (retryable ${attempts + 1}/${RETRYABLE_MAX_ATTEMPTS}) ${errMsg}`;
+        process.stderr.write(
+          `AXME audit: retryable error for ${sessionId} (attempt ${attempts + 1}/${RETRYABLE_MAX_ATTEMPTS}): ${errMsg}\n`,
+        );
+      } else {
+        // Deterministic failure or retryable max reached: mark as failed permanently.
+        s.auditStatus = "failed";
+        s.lastAuditError = `[${phase}] ${errMsg}`;
+        s.auditFinishedAt = new Date().toISOString();
+      }
       writeSession(workspacePath, s);
     }
   } catch {
@@ -111,7 +129,9 @@ function recordAuditFailure(
   try {
     logError(workspacePath, sessionId, `audit failed (${phase}): ${errMsg}`);
   } catch {}
-  process.stderr.write(`AXME audit failed (${phase}) for ${sessionId}: ${errStack ?? errMsg}\n`);
+  if (!retryable) {
+    process.stderr.write(`AXME audit failed (${phase}) for ${sessionId}: ${errStack ?? errMsg}\n`);
+  }
 }
 
 export interface SessionCleanupResult {
