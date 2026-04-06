@@ -223,7 +223,10 @@ export function checkBash(rules: SafetyRules, command: string): SafetyVerdict {
   for (const prefix of rules.bash.deniedPrefixes) {
     if (isPrefixBoundaryMatch(firstCmd, prefix)) return { allowed: false, reason: `Denied prefix: ${prefix}` };
     if (prefix.includes("|")) {
-      if (pipeNormalized === prefix || isPrefixBoundaryMatch(pipeNormalized, prefix)) {
+      // Check if pipe-pattern appears anywhere in the pipe chain, not just from start.
+      // "curl | sh" should match in "cat | curl | sh".
+      if (pipeNormalized === prefix || isPrefixBoundaryMatch(pipeNormalized, prefix) ||
+          pipeNormalized.includes(prefix)) {
         return { allowed: false, reason: `Denied prefix: ${prefix}` };
       }
     } else {

@@ -54,7 +54,7 @@ export function listQuestions(projectPath: string, opts?: { status?: OpenQuestio
   const blocks = content.split(/^## /m).filter(b => b.trim());
 
   for (const block of blocks) {
-    const headerMatch = block.match(/^(Q-\d+)\s+\[(\w+)\]\s+(\S+)\s+source=(\S+)/);
+    const headerMatch = block.match(/^(Q-\d+)\s+\[(\w+)\]\s+(\S+\s+\S+)\s+source=(\S+)/);
     if (!headerMatch) continue;
 
     const [, id, status, createdAt, source] = headerMatch;
@@ -97,8 +97,13 @@ export function askQuestion(
   projectPath: string,
   input: { question: string; context?: string; source: string },
 ): OpenQuestion {
+  // Parse existing to find next id. Also scan raw file as fallback
+  // in case parser has edge cases.
   const existing = listQuestions(projectPath);
-  const id = nextId(existing);
+  const rawContent = readSafe(questionsPath(projectPath));
+  const rawIds = [...rawContent.matchAll(/^## (Q-\d+)/gm)].map(m => m[1]);
+  const allIds = [...existing.map(q => q.id), ...rawIds];
+  const id = nextId(allIds.map(i => ({ id: i } as OpenQuestion)));
   const now = new Date().toISOString().slice(0, 19).replace("T", " ");
 
   const q: OpenQuestion = {
