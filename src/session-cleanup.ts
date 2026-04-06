@@ -590,6 +590,17 @@ export async function runSessionCleanup(
       result.costUsd = audit.cost?.costUsd ?? 0;
       auditSucceeded = true;
 
+      // Bump KB audit counter — after N session audits, recommend deep KB cleanup
+      try {
+        const { incrementKbAuditCounter } = await import("./storage/kb-audit.js");
+        const { count, recommendAudit } = incrementKbAuditCounter(workspacePath);
+        if (recommendAudit) {
+          process.stderr.write(
+            `AXME: KB audit recommended (${count} sessions since last run). Run: axme-code audit-kb\n`,
+          );
+        }
+      } catch {}
+
       // Resume-audit checkpoint: persist per-Claude-session end offsets so
       // the next audit of the same transcript (session reopen, restart
       // recovery) starts from here instead of re-reading the full file.

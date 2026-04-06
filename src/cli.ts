@@ -253,6 +253,8 @@ Usage:
   axme-code serve                         Start MCP server (stdio transport)
   axme-code status [path]                 Show project status
   axme-code cleanup legacy-artifacts [--dry-run]  Remove pre-PR#7 sessions/logs
+  axme-code cleanup decisions-normalize [--dry-run]  Add status:active to decisions
+  axme-code audit-kb [--workspace <path>]           KB health report + counter reset
   axme-code help                          Show this help
 
 After setup, run 'claude' as usual. AXME tools are available automatically.`);
@@ -428,6 +430,50 @@ async function main() {
         console.error("Available: legacy-artifacts, decisions-normalize");
         process.exit(1);
       }
+      break;
+    }
+
+    case "audit-kb": {
+      const wsIdx = args.indexOf("--workspace");
+      const workspacePath = wsIdx >= 0 && args[wsIdx + 1] ? resolve(args[wsIdx + 1]) : resolve(".");
+      const { readKbAuditCounter, resetKbAuditCounter, writeKbAuditReport } = await import("./storage/kb-audit.js");
+      const { listDecisions } = await import("./storage/decisions.js");
+      const { listMemories } = await import("./storage/memory.js");
+
+      const counter = readKbAuditCounter(workspacePath);
+      console.log(`KB Audit for ${workspacePath}`);
+      console.log(`  Sessions since last audit: ${counter?.count ?? 0}`);
+      console.log(`  Last KB audit: ${counter?.lastRunAt ?? "never"}`);
+
+      const allDecisions = listDecisions(workspacePath, { includeAll: true });
+      const activeDecisions = allDecisions.filter(d => !d.status || d.status === "active");
+      const superseded = allDecisions.filter(d => d.status === "superseded");
+      const memories = listMemories(workspacePath);
+
+      console.log(`  Active decisions: ${activeDecisions.length}`);
+      console.log(`  Superseded decisions: ${superseded.length}`);
+      console.log(`  Memories: ${memories.length}`);
+
+      // Build report (without LLM for now — LLM integration is a future enhancement)
+      const reportLines = [
+        `# KB Audit Report — ${new Date().toISOString().slice(0, 19)}`,
+        "",
+        `## Summary`,
+        `- Active decisions: ${activeDecisions.length}`,
+        `- Superseded decisions: ${superseded.length}`,
+        `- Memories: ${memories.length}`,
+        `- Sessions since last audit: ${counter?.count ?? 0}`,
+        "",
+        `## Note`,
+        `This is a structural report. LLM-powered conflict detection and`,
+        `consolidation analysis will be added in a future version.`,
+        `For now, use this command to check storage health and reset the counter.`,
+      ];
+
+      const reportPath = writeKbAuditReport(workspacePath, reportLines.join("\n"));
+      resetKbAuditCounter(workspacePath);
+      console.log(`  Report: ${reportPath}`);
+      console.log(`  Counter reset to 0.`);
       break;
     }
 
