@@ -57,8 +57,9 @@ Fired by Claude Code automatically **on every tool call** (all tools, including 
 
 ### `pre-tool-use` - BEFORE tool execution
 
-- **Safety enforcement**: checks `checkGit` (push to main? force push?), `checkBash` (rm -rf /? npm publish?), `checkFilePath` (/etc/passwd? .env?)
-- If violation detected: returns `"deny"` and Claude Code blocks the tool call
+- **Hard safety enforcement**: checks `checkGit` (push to main? force push?), `checkBash` (rm -rf /? npm publish?), `checkFilePath` (/etc/passwd? .env?)
+- If violation detected: returns `"deny"` and Claude Code **blocks the tool call before execution**
+- This is **not prompt-based** - the hook intercepts the tool call at the Claude Code harness level, before any command runs. The LLM cannot bypass, ignore, or override this block. Even if the agent's prompt is jailbroken or the LLM hallucinates a reason to run a denied command, the hook physically prevents execution. This gives **100% enforcement reliability** for safety rules.
 - If OK: silently passes
 - Also calls `ensureAxmeSessionForClaude` - lazily creates an AXME session on the first hook call of the window
 
