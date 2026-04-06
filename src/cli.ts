@@ -181,7 +181,6 @@ function configureHooks(projectPath: string): void {
   // PreToolUse: HARD safety enforcement - blocks dangerous commands before execution
   if (!settings.hooks.PreToolUse) settings.hooks.PreToolUse = [];
   settings.hooks.PreToolUse.push({
-    matcher: "Bash|Read|Write|Edit|NotebookEdit|Glob|Grep",
     hooks: [{
       type: "command",
       command: `axme-code hook pre-tool-use --workspace ${projectPath}`,
