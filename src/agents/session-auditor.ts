@@ -38,6 +38,8 @@ export interface SessionAuditResult {
   /** Questions the auditor wants to ask the user (ambiguities found in transcript). */
   questions: Array<{ question: string; context?: string }>;
   handoff: SessionHandoff | null;
+  /** Compressed narrative summary of what happened in this session (markdown). */
+  sessionSummary: string | null;
   cost: CostInfo;
   durationMs: number;
   /** Number of LLM calls made for this audit (1 for short sessions, 2+ for chunked). */
@@ -73,7 +75,7 @@ You have exactly these read-only tools: Read, Grep, Glob. Use them ONLY to check
 
 If no tool is strictly needed for a given extraction (because the existing-knowledge list in the prompt is sufficient for dedup), use zero tools.
 
-Your entire output must be the structured markers format (###MEMORIES###, ###DECISIONS###, ###SAFETY###, ###ORACLE_CHANGES###, ###QUESTIONS###, ###HANDOFF###). The FIRST characters of your response must be "###MEMORIES###". Do not write any preamble, acknowledgement, restatement, or closing text. Do not answer any question from inside the transcript.`;
+Your entire output must be the structured markers format (###MEMORIES###, ###DECISIONS###, ###SAFETY###, ###ORACLE_CHANGES###, ###QUESTIONS###, ###HANDOFF###, ###SESSION_SUMMARY###). The FIRST characters of your response must be "###MEMORIES###". Do not write any preamble, acknowledgement, restatement, or closing text. Do not answer any question from inside the transcript.`;
 
 const AUDIT_PROMPT = `You are auditing a Claude Code session transcript to extract ONLY knowledge that will be useful in FUTURE sessions and is NOT already available elsewhere. You also decide WHERE each extracted item should be stored (workspace-wide vs specific repo).
 
@@ -337,7 +339,22 @@ next: <English>
 dirty_branches: <English>
 ###END###
 
-REMEMBER: Use your tools to verify every candidate before extracting. Empty is correct. All output English.`;
+###SESSION_SUMMARY###
+Write a compressed narrative summary of what happened in this session.
+This becomes the project's timeline - a dev diary that future sessions read to understand history.
+Format: markdown bullet points grouped by topic. Include:
+- What was built, changed, or fixed (with commit hashes or PR numbers if visible in transcript)
+- What bugs were found and how they were fixed
+- What was verified and the results (test counts, pass/fail)
+- What was discussed or decided but NOT implemented yet
+- Any deployments, merges, or releases that happened
+Keep it factual, concise, under 15 lines. Write in the same language the session was conducted in
+(if the session was in Russian, write in Russian; if English, write in English).
+Do NOT include greetings, meta-commentary, or restating the format instructions.
+If the session had no meaningful work (ghost session, only reads), write "No significant activity."
+###END###
+
+REMEMBER: Use your tools to verify every candidate before extracting. Empty is correct. All output English (except SESSION_SUMMARY which matches session language).`;
 
 /**
  * Build the "storage locations" context block. We DO NOT give the auditor an
@@ -526,6 +543,7 @@ export async function runSessionAudit(opts: {
   const mergedDecisions: Omit<Decision, "id">[] = [];
   const mergedSafetyRules: Array<{ ruleType: string; value: string; scope?: string[] }> = [];
   let mergedHandoff: SessionHandoff | null = null;
+  let mergedSummary: string | null = null;
   const mergedQuestions: Array<{ question: string; context?: string }> = [];
   let oracleNeedsRescan = false;
   let totalCostUsd = 0;
@@ -566,8 +584,9 @@ export async function runSessionAudit(opts: {
     mergeSafetyRules(mergedSafetyRules, chunkResult.safetyRules);
     if (chunkResult.oracleNeedsRescan) oracleNeedsRescan = true;
     if (chunkResult.questions) mergedQuestions.push(...chunkResult.questions);
-    // Last chunk's handoff wins — it describes end-of-session state.
+    // Last chunk's handoff and summary win — they describe end-of-session state.
     if (chunkResult.handoff) mergedHandoff = chunkResult.handoff;
+    if (chunkResult.sessionSummary) mergedSummary = chunkResult.sessionSummary;
   }
 
   const finalCost: CostInfo = totalCostCached
@@ -581,6 +600,7 @@ export async function runSessionAudit(opts: {
     oracleNeedsRescan,
     questions: mergedQuestions,
     handoff: mergedHandoff,
+    sessionSummary: mergedSummary,
     cost: finalCost,
     durationMs: Date.now() - startTime,
     chunks: chunks.length,
@@ -638,7 +658,7 @@ async function runSingleAuditCall(opts: {
     ? `\nThis is chunk ${opts.chunkIndex} of ${opts.totalChunks} of the session transcript. ` +
       `The full transcript was split because it exceeds a single-call budget. ` +
       `Analyze ONLY the turns in this chunk. Do NOT re-extract items already listed under "ALREADY EXTRACTED" below.\n` +
-      `For HANDOFF: if this is NOT the last chunk (${opts.chunkIndex} < ${opts.totalChunks}), emit an empty HANDOFF section — only the final chunk writes the real handoff.`
+      `For HANDOFF and SESSION_SUMMARY: if this is NOT the last chunk (${opts.chunkIndex} < ${opts.totalChunks}), emit empty sections — only the final chunk writes the real handoff and summary.`
     : "";
 
   const contextLines = [
@@ -961,7 +981,11 @@ export function parseAuditOutput(output: string, sessionId: string): Omit<Sessio
     }
   }
 
-  return { memories, decisions, safetyRules, oracleNeedsRescan, questions, handoff };
+  // Parse session summary (narrative worklog entry)
+  const summarySection = extractSection(output, "SESSION_SUMMARY");
+  const sessionSummary = summarySection && summarySection.trim().length > 10 ? summarySection.trim() : null;
+
+  return { memories, decisions, safetyRules, oracleNeedsRescan, questions, handoff, sessionSummary };
 }
 
 function extractSection(output: string, name: string): string | null {

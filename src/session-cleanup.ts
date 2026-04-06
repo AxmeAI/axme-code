@@ -11,6 +11,7 @@
  */
 
 import { join } from "node:path";
+import { appendFileSync } from "node:fs";
 import { readWorklog, logSessionEnd, logError, logCheckResult } from "./storage/worklog.js";
 import { saveScopedMemories, listMemories } from "./storage/memory.js";
 import { saveScopedDecisions, listDecisions, supersedeDecision, getDecision } from "./storage/decisions.js";
@@ -141,6 +142,7 @@ export interface SessionCleanupResult {
   decisions: number;
   safetyRules: number;
   handoffSaved: boolean;
+  worklogSummary: boolean;
   oracleRescanned: boolean;
   costUsd: number;
   skipped?: "already-audited" | "not-found" | "no-storage" | "concurrent-audit" | "retry-cap";
@@ -169,6 +171,7 @@ export async function runSessionCleanup(
     decisions: 0,
     safetyRules: 0,
     handoffSaved: false,
+    worklogSummary: false,
     oracleRescanned: false,
     costUsd: 0,
   };
@@ -547,6 +550,18 @@ export async function runSessionCleanup(
       if (audit.handoff) {
         writeHandoff(workspacePath, audit.handoff);
         result.handoffSaved = true;
+      }
+
+      // Append narrative session summary to worklog.md (dev diary).
+      if (audit.sessionSummary) {
+        try {
+          const isoDate = new Date().toISOString().slice(0, 16).replace("T", " ");
+          const shortId = sessionId.slice(0, 8);
+          const title = audit.handoff?.stoppedAt?.slice(0, 80) || "Session work";
+          const entry = `## ${isoDate} -- Session ${shortId}: ${title}\n\n${audit.sessionSummary}\n\n`;
+          appendFileSync(join(workspacePath, AXME_CODE_DIR, "worklog.md"), entry);
+          result.worklogSummary = true;
+        } catch {}
       }
 
       // Save questions from auditor as open questions
