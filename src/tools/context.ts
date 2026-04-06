@@ -218,3 +218,68 @@ export function getDecisions(projectPath: string): string {
 export function getEnforceableRules(projectPath: string): string {
   return enforceableDecisionsContext(projectPath);
 }
+
+/**
+ * Build dedup context for session close checklist.
+ * Lists existing memories, decisions, and safety rules so the agent
+ * can avoid saving duplicates during the close extraction.
+ */
+export function getCloseContext(projectPath: string, workspacePath?: string): string {
+  const parts: string[] = [];
+
+  // Workspace projects list (for scope targeting)
+  const ws = detectWorkspace(projectPath);
+  if (ws.type !== "single") {
+    parts.push("### Workspace Projects (valid scope targets)");
+    for (const p of ws.projects) {
+      parts.push(`- \`${p.name}\` (${p.path})`);
+    }
+    parts.push("");
+  }
+
+  // Merge workspace + project data if applicable
+  const hasWorkspace = workspacePath && workspacePath !== projectPath;
+
+  // Existing memories
+  const memories = hasWorkspace
+    ? mergeMemories(listMemories(workspacePath), listMemories(projectPath))
+    : listMemories(projectPath);
+  if (memories.length > 0) {
+    parts.push("### Existing Memories (do NOT re-save these)");
+    for (const m of memories) {
+      parts.push(`- [${m.type}] \`${m.slug}\`: ${m.title}`);
+    }
+    parts.push("");
+  }
+
+  // Existing decisions
+  const decisions = hasWorkspace
+    ? mergeDecisions(listDecisions(workspacePath), listDecisions(projectPath))
+    : listDecisions(projectPath);
+  if (decisions.length > 0) {
+    parts.push("### Existing Decisions (do NOT re-save same topics)");
+    for (const d of decisions) {
+      parts.push(`- ${d.id}: ${d.title} [${d.enforce ?? "info"}]`);
+    }
+    parts.push("");
+  }
+
+  // Existing safety rules
+  const rules = hasWorkspace
+    ? mergeSafetyRules(loadSafetyRules(workspacePath), loadSafetyRules(projectPath))
+    : loadSafetyRules(projectPath);
+  const safetyLines: string[] = [];
+  if (rules.git.protectedBranches.length > 0)
+    safetyLines.push(`Protected branches: ${rules.git.protectedBranches.join(", ")}`);
+  if (rules.bash.deniedPrefixes.length > 0)
+    safetyLines.push(`Denied prefixes (${rules.bash.deniedPrefixes.length}): ${rules.bash.deniedPrefixes.slice(0, 15).join(", ")}...`);
+  if (rules.bash.deniedCommands && rules.bash.deniedCommands.length > 0)
+    safetyLines.push(`Denied commands (${rules.bash.deniedCommands.length}): ${rules.bash.deniedCommands.join(", ")}`);
+  if (safetyLines.length > 0) {
+    parts.push("### Existing Safety Rules (do NOT re-add)");
+    parts.push(safetyLines.join("\n"));
+    parts.push("");
+  }
+
+  return parts.join("\n");
+}

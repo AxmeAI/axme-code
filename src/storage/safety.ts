@@ -137,6 +137,35 @@ export function updateSafetyRule(
   writeSafetyRules(projectPath, rules);
 }
 
+export function removeSafetyRule(
+  projectPath: string,
+  ruleType: "git_protected_branch" | "bash_deny" | "bash_allow" | "fs_deny" | "fs_readonly",
+  value: string,
+): void {
+  const rules = loadSafetyRules(projectPath);
+  const filter = (arr: string[]) => arr.filter(v => v !== value);
+
+  switch (ruleType) {
+    case "git_protected_branch":
+      rules.git.protectedBranches = filter(rules.git.protectedBranches);
+      break;
+    case "bash_deny":
+      rules.bash.deniedPrefixes = filter(rules.bash.deniedPrefixes);
+      break;
+    case "bash_allow":
+      rules.bash.allowedPrefixes = filter(rules.bash.allowedPrefixes);
+      break;
+    case "fs_deny":
+      rules.filesystem.deniedPaths = filter(rules.filesystem.deniedPaths);
+      break;
+    case "fs_readonly":
+      rules.filesystem.readOnlyPaths = filter(rules.filesystem.readOnlyPaths);
+      break;
+  }
+
+  writeSafetyRules(projectPath, rules);
+}
+
 export function safetyExists(projectPath: string): boolean {
   return pathExists(join(projectPath, AXME_CODE_DIR, SAFETY_DIR, RULES_FILE));
 }

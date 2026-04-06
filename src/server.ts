@@ -20,10 +20,12 @@ import { detectWorkspace } from "./utils/workspace-detector.js";
 import {
   findOrphanSessions,
   listClaudeSessionMappings,
+  writeClaudeSessionMapping,
   clearClaudeSessionMapping,
   clearLegacyActiveSession,
   clearLegacyPendingAuditsDir,
   readClaudeSessionMapping,
+  isPidAlive,
 } from "./storage/sessions.js";
 import { logEvent } from "./storage/worklog.js";
 import { spawnDetachedAuditWorker } from "./audit-spawner.js";
@@ -58,13 +60,34 @@ clearLegacyPendingAuditsDir(defaultProjectPath);
 /**
  * Return the AXME session UUID owned by this MCP server for worklog purposes.
  * If there are multiple owned sessions (shouldn't happen normally), returns
- * the first one. If none, returns undefined — the caller should pass no
- * sessionId to the worklog.
+ * the first one.
+ *
+ * Session recovery: if no mapping matches OWN_PPID (e.g. after VS Code reload
+ * where a new Claude Code process spawned this MCP server but the old mapping
+ * still points to the previous PID), we adopt stale mappings whose ownerPpid
+ * is dead. This ensures MCP tools work without requiring a hook-triggering
+ * built-in tool call first.
  */
 function getOwnedSessionIdForLogging(): string | undefined {
-  const owned = listClaudeSessionMappings(defaultProjectPath)
-    .filter(m => m.ownerPpid === OWN_PPID);
-  return owned[0]?.axmeSessionId;
+  const all = listClaudeSessionMappings(defaultProjectPath);
+  const owned = all.filter(m => m.ownerPpid === OWN_PPID);
+  if (owned.length > 0) return owned[0].axmeSessionId;
+
+  // No mapping for our PID — check for stale mappings from dead Claude Code
+  // processes and adopt them. This handles VS Code reload where the old
+  // Claude Code process died but its mapping file persists.
+  for (const m of all) {
+    if (m.ownerPpid != null && !isPidAlive(m.ownerPpid)) {
+      writeClaudeSessionMapping(defaultProjectPath, m.claudeSessionId, m.axmeSessionId);
+      process.stderr.write(
+        `AXME: adopted stale mapping ${m.claudeSessionId.slice(0, 8)} ` +
+        `(old ppid=${m.ownerPpid}, new ppid=${OWN_PPID})\n`,
+      );
+      return m.axmeSessionId;
+    }
+  }
+
+  return undefined;
 }
 
 // Session cleanup is triggered by transport.onclose (see main() below) rather
@@ -133,7 +156,7 @@ function buildInstructions(): string {
     parts.push("Call axme_context at session start to load project knowledge base.");
   }
   parts.push("Save memories, decisions, and safety rules immediately when discovered during work.");
-  parts.push("SESSION CLOSE: when the user asks to close/end the session (any language), call axme_close_session with a detailed handoff and startup text. Then output the startup text to the user in chat for copy-paste into the next session.");
+  parts.push("SESSION CLOSE: when the user asks to close/end the session (any language), call axme_begin_close to get the close checklist. Follow it: extract memories/decisions/safety (choosing correct scope for each), prepare handoff data, then call axme_finalize_close with everything. After finalize, output to the user: storage summary (what saved where), then startup_text.");
   parts.push("DECISION CONFLICT RULE: if two active decisions contradict each other, treat the NEWER one (by date) as authoritative. The older one is a candidate for supersede at next audit.");
   parts.push(
     `STORAGE ROOT: ${defaultProjectPath}/.axme-code — for any direct inspection of .axme-code/ files via Bash (ls, cat, grep, find), use this ABSOLUTE path. Do NOT use relative paths from your cwd; in a multi-repo workspace your cwd may point to a child repo with its own separate .axme-code/ storage. Every session's meta.json also contains an "origin" field with its absolute parent directory — read it to verify which storage a given session belongs to.`,
@@ -396,12 +419,110 @@ server.tool(
   },
 );
 
-// --- axme_close_session ---
+// --- axme_begin_close ---
 server.tool(
-  "axme_close_session",
-  "Explicitly close the current session with a detailed handoff. Call when the user says 'close session' / 'end session' / 'закрывай сессию'. Writes enriched handoff, runs LLM audit synchronously, returns result. After calling this, output the startup_text to the user in chat for copy-paste into the next session.",
+  "axme_begin_close",
+  "Start session close process. Call when user says 'close session' / 'end session' / '\u0437\u0430\u043A\u0440\u044B\u0432\u0430\u0439 \u0441\u0435\u0441\u0441\u0438\u044E'. Returns extraction checklist. Follow it, then call axme_finalize_close with everything.",
+  {},
+  async () => {
+    const sid = getOwnedSessionIdForLogging();
+    if (!sid) {
+      return { content: [{ type: "text" as const, text: "No active AXME session found." }] };
+    }
+
+    const checklist = [
+      `# Session Close Checklist (session ${sid.slice(0, 8)})`,
+      "",
+      "## Step 1: Extract Knowledge",
+      "",
+      "Review your ENTIRE session for knowledge worth preserving.",
+      "Save items the user explicitly confirmed. For uncertain items, ask the user before saving.",
+      "",
+      "### Scope rules:",
+      "- Workspace-wide (git safety, deploy procedures, auth model, cross-repo conventions) -> `scope: [\"all\"]`",
+      "- Repo-specific (test patterns, build config, API design for one service) -> omit scope or `scope: [\"<repo-name>\"]`",
+      "- If you worked in multiple repos: split items by repo, each gets the scope where it applies",
+      "",
+      "### What to extract:",
+      "- **Memories** (feedback from user corrections, validated patterns)",
+      "- **Decisions** (policies user confirmed, architectural choices)",
+      "- **Safety rules** (user mandated bash_deny, fs_deny, git_protected_branch, etc.)",
+      "",
+      "### Dedup & conflict check (MANDATORY for each item):",
+      "Compare every candidate against what you already loaded via `axme_context`.",
+      "If writing to a repo you haven't loaded yet, call `axme_context` for it first.",
+      "You already have the full list of memories, decisions, and safety rules in context.",
+      "",
+      "**Exact duplicate** (same concept, different wording): skip, do NOT add.",
+      "**Same topic, updated info**: action `supersede` with the old slug/id.",
+      "**Direct contradiction**: action `supersede` on the older item (newer is authoritative).",
+      "**Unclear contradiction**: ask the user which to keep before adding.",
+      "**Outdated item found** (even unrelated to new ones): action `remove` with its slug/id.",
+      "",
+      "## Step 2: Prepare Everything for `axme_finalize_close`",
+      "",
+      "Collect ALL data into a single `axme_finalize_close` call:",
+      "",
+      "### Extractions (arrays, can be empty):",
+      "- `memories`: [{action, type, title, description, body, keywords, scope}]",
+      "  - action: `add` | `remove` (slug required) | `supersede` (slug required + new data)",
+      "- `decisions`: [{action, title, decision, reasoning, enforce, scope}]",
+      "  - action: `add` | `remove` (id required) | `supersede` (id required + new data)",
+      "- `safety_rules`: [{action, rule_type, value}]",
+      "  - action: `add` | `remove`",
+      "",
+      "### Handoff:",
+      "- `stopped_at`: what the session stopped at (single line)",
+      "- `summary`: 2-5 bullet points of what was accomplished",
+      "- `in_progress`: current state (branches, PRs, uncommitted work)",
+      "- `prs`: [{url, title, status}]",
+      "- `test_results`, `blockers`, `dirty_branches` (optional)",
+      "- `next_steps`: concrete next steps",
+      "- `worklog_entry`: narrative summary (5-15 lines markdown)",
+      "- `startup_text`: ready-to-paste text for next session",
+      "",
+      "## Step 3: Call `axme_finalize_close`",
+      "",
+      "Pass everything in one call. MCP writes all files atomically.",
+      "After it returns, output to the user: storage summary, then startup_text.",
+    ];
+
+    return { content: [{ type: "text" as const, text: checklist.join("\n") }] };
+  },
+);
+
+// --- axme_finalize_close ---
+server.tool(
+  "axme_finalize_close",
+  "Finalize session close: saves extractions, writes handoff + worklog, sets agentClosed flag. Call with ALL data after completing the checklist from axme_begin_close.",
   {
-    stopped_at: z.string().describe("What the session stopped at"),
+    // --- Extractions ---
+    memories: z.array(z.object({
+      action: z.enum(["add", "remove", "supersede"]),
+      slug: z.string().optional().describe("Required for remove/supersede: slug of existing memory"),
+      type: z.enum(["feedback", "pattern"]).optional().describe("Required for add/supersede"),
+      title: z.string().optional().describe("Required for add/supersede"),
+      description: z.string().optional().describe("Required for add/supersede"),
+      body: z.string().optional(),
+      keywords: z.array(z.string()).optional(),
+      scope: z.array(z.string()).optional(),
+    })).optional().describe("Memories to add/remove/supersede"),
+    decisions: z.array(z.object({
+      action: z.enum(["add", "remove", "supersede"]),
+      id: z.string().optional().describe("Required for remove/supersede: decision ID (e.g. D-042)"),
+      title: z.string().optional().describe("Required for add/supersede"),
+      decision: z.string().optional().describe("Required for add/supersede"),
+      reasoning: z.string().optional().describe("Required for add/supersede"),
+      enforce: z.enum(["required", "advisory"]).optional(),
+      scope: z.array(z.string()).optional(),
+    })).optional().describe("Decisions to add/remove/supersede"),
+    safety_rules: z.array(z.object({
+      action: z.enum(["add", "remove"]),
+      rule_type: z.enum(["git_protected_branch", "bash_deny", "bash_allow", "fs_deny", "fs_readonly"]),
+      value: z.string(),
+    })).optional().describe("Safety rules to add/remove"),
+    // --- Handoff ---
+    stopped_at: z.string().describe("What the session stopped at (single line)"),
     summary: z.string().describe("2-5 bullet points of what was accomplished"),
     in_progress: z.string().describe("Current state: branches, PRs, uncommitted work"),
     prs: z.array(z.object({
@@ -413,6 +534,7 @@ server.tool(
     blockers: z.string().optional().describe("Blockers for next session"),
     next_steps: z.string().describe("Concrete next steps for next session"),
     dirty_branches: z.string().optional().describe("Branch names with state"),
+    worklog_entry: z.string().describe("Narrative session summary (5-15 lines markdown)"),
     startup_text: z.string().describe("Ready-to-paste startup text for the next session"),
   },
   async (args) => {
@@ -421,9 +543,94 @@ server.tool(
       return { content: [{ type: "text" as const, text: "No active AXME session found." }] };
     }
 
-    // 1. Write enriched handoff
+    const targetPath = defaultProjectPath;
+    const report: string[] = [];
+
+    // 1. Process extractions
+    const { saveMemoryTool } = await import("./tools/memory-tools.js");
+    const { saveDecisionTool } = await import("./tools/decision-tools.js");
+    const { updateSafetyTool } = await import("./tools/safety-tools.js");
+    const { deleteMemory } = await import("./storage/memory.js");
+    const { supersedeDecision, revokeDecision } = await import("./storage/decisions.js");
+
+    // Memories
+    if (args.memories && args.memories.length > 0) {
+      for (const m of args.memories) {
+        try {
+          if (m.action === "add" && m.type && m.title && m.description) {
+            const result = saveMemoryTool(targetPath, {
+              type: m.type, title: m.title, description: m.description,
+              body: m.body, keywords: m.keywords, scope: m.scope,
+            }, sid);
+            report.push(`Memory added: ${result.slug}`);
+          } else if (m.action === "remove" && m.slug) {
+            deleteMemory(targetPath, m.slug);
+            report.push(`Memory removed: ${m.slug}`);
+          } else if (m.action === "supersede" && m.slug && m.type && m.title && m.description) {
+            deleteMemory(targetPath, m.slug);
+            const result = saveMemoryTool(targetPath, {
+              type: m.type, title: m.title, description: m.description,
+              body: m.body, keywords: m.keywords, scope: m.scope,
+            }, sid);
+            report.push(`Memory superseded: ${m.slug} -> ${result.slug}`);
+          }
+        } catch (err) {
+          report.push(`Memory error (${m.action} ${m.slug ?? m.title}): ${err}`);
+        }
+      }
+    }
+
+    // Decisions
+    if (args.decisions && args.decisions.length > 0) {
+      for (const d of args.decisions) {
+        try {
+          if (d.action === "add" && d.title && d.decision && d.reasoning) {
+            const result = saveDecisionTool(targetPath, {
+              title: d.title, decision: d.decision, reasoning: d.reasoning,
+              enforce: d.enforce, scope: d.scope,
+            });
+            report.push(`Decision added: ${result.id} - ${d.title}`);
+          } else if (d.action === "remove" && d.id) {
+            revokeDecision(targetPath, d.id, "Removed during session close by agent");
+            report.push(`Decision revoked: ${d.id}`);
+          } else if (d.action === "supersede" && d.id && d.title && d.decision && d.reasoning) {
+            const result = supersedeDecision(targetPath, d.id, {
+              title: d.title, slug: d.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 50),
+              decision: d.decision, reasoning: d.reasoning,
+              enforce: d.enforce ?? null, scope: d.scope,
+              date: new Date().toISOString().slice(0, 10),
+              source: "session" as const,
+              sessionId: sid,
+            });
+            report.push(`Decision superseded: ${d.id} -> ${result.newDecision.id} - ${d.title}`);
+          }
+        } catch (err) {
+          report.push(`Decision error (${d.action} ${d.id ?? d.title}): ${err}`);
+        }
+      }
+    }
+
+    // Safety rules
+    if (args.safety_rules && args.safety_rules.length > 0) {
+      for (const s of args.safety_rules) {
+        try {
+          if (s.action === "add") {
+            updateSafetyTool(targetPath, s.rule_type, s.value);
+            report.push(`Safety added: ${s.rule_type} = ${s.value}`);
+          } else if (s.action === "remove") {
+            const { removeSafetyRule } = await import("./storage/safety.js");
+            removeSafetyRule(targetPath, s.rule_type, s.value);
+            report.push(`Safety removed: ${s.rule_type} = ${s.value}`);
+          }
+        } catch (err) {
+          report.push(`Safety error (${s.action} ${s.rule_type}): ${err}`);
+        }
+      }
+    }
+
+    // 2. Write enriched handoff
     const { writeHandoff } = await import("./storage/plans.js");
-    const handoff = {
+    writeHandoff(targetPath, {
       stoppedAt: args.stopped_at,
       summary: args.summary,
       inProgress: args.in_progress,
@@ -435,37 +642,45 @@ server.tool(
       sessionId: sid,
       date: new Date().toISOString().slice(0, 10),
       source: "agent" as const,
-    };
-    writeHandoff(defaultProjectPath, handoff);
+    });
 
-    // 2. Run audit synchronously (same as detached worker but inline)
-    const { runSessionCleanup } = await import("./session-cleanup.js");
-    let auditResult: string;
+    // 3. Append worklog entry
+    const { appendFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const { AXME_CODE_DIR } = await import("./types.js");
+    const isoDate = new Date().toISOString().slice(0, 16).replace("T", " ");
+    const shortId = sid.slice(0, 8);
+    const worklogEntry = `## ${isoDate} -- Session ${shortId}: ${args.stopped_at}\n\n${args.worklog_entry}\n\n`;
     try {
-      const result = await runSessionCleanup(defaultProjectPath, sid);
-      const parts = [`Audit: ${result.auditRan ? "ran" : "skipped"}`];
-      if (result.skipped) parts.push(`(${result.skipped})`);
-      if (result.auditRan) {
-        parts.push(`memories=${result.memories}, decisions=${result.decisions}, cost=$${result.costUsd.toFixed(2)}`);
-      }
-      parts.push(`handoff saved: yes`);
-      auditResult = parts.join(", ");
-    } catch (err) {
-      auditResult = `Audit error: ${err}`;
+      appendFileSync(join(targetPath, AXME_CODE_DIR, "worklog.md"), worklogEntry);
+    } catch {}
+
+    // 4. Set agentClosed flag
+    const { loadSession, writeSession } = await import("./storage/sessions.js");
+    const session = loadSession(targetPath, sid);
+    if (session) {
+      session.agentClosed = true;
+      writeSession(targetPath, session);
     }
 
-    // 3. Return result + startup text
-    const lines = [
-      `Session ${sid.slice(0, 8)} closed.`,
-      auditResult,
+    // 5. Build storage summary
+    const summaryLines = [
+      `Session ${shortId} closed.`,
       "",
-      "Handoff written. Now output the startup_text below to the user in chat:",
+      "## Storage Summary",
+      ...report.length > 0 ? report.map(r => `- ${r}`) : ["- No extractions"],
+      `- Handoff: written to .axme-code/plans/handoff.md`,
+      `- Worklog: entry appended to .axme-code/worklog.md`,
+      `- agentClosed: true`,
+      "",
+      "Output to the user: first the storage summary above, then the startup_text below.",
       "",
       "---",
       args.startup_text,
       "---",
     ];
-    return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+
+    return { content: [{ type: "text" as const, text: summaryLines.join("\n") }] };
   },
 );
 

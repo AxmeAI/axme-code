@@ -240,6 +240,9 @@ export interface SessionMeta {
   auditStartedAt?: string;
   /** ISO timestamp when the most recent audit attempt finished (success or failure). */
   auditFinishedAt?: string;
+  /** True if the agent completed the close checklist (axme_finalize_close called).
+   *  When true, the auditor runs in verify-only mode instead of full extraction. */
+  agentClosed?: boolean;
 }
 
 // --- Config ---
