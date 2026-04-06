@@ -331,7 +331,7 @@ function buildExistingContext(sessionOrigin: string, workspaceInfo?: WorkspaceIn
   if (workspaceInfo && workspaceInfo.type !== "single") {
     const seen = new Set<string>([sessionOrigin]);
     for (const proj of workspaceInfo.projects) {
-      const absPath = proj.path.startsWith("/") ? proj.path : `${workspaceInfo.root}/${proj.path}`;
+      const absPath = proj.path.startsWith("/") ? proj.path : `${workspaceInfo.root}/${proj.path.replace(/^\.\/?/, "")}`;
       if (seen.has(absPath)) continue;
       seen.add(absPath);
       paths.push({ label: proj.name, path: absPath });

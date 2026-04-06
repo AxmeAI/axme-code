@@ -212,8 +212,13 @@ export function checkBash(rules: SafetyRules, command: string): SafetyVerdict {
   const firstCmd = stripped.split("|")[0].trim();
   const pipeNormalized = stripped.split("|").map(s => s.trim().split(/\s+/)[0]).join(" | ");
 
+  // Check deniedCommands per pipe segment so that `ls | shutdown` is caught
+  // even though "shutdown" doesn't appear at the start of the full command.
+  const segments = stripped.split("|").map(s => s.trim());
   for (const denied of rules.bash.deniedCommands) {
-    if (stripped.includes(denied)) return { allowed: false, reason: `Denied command: ${denied}` };
+    for (const seg of segments) {
+      if (seg.includes(denied)) return { allowed: false, reason: `Denied command: ${denied}` };
+    }
   }
   for (const prefix of rules.bash.deniedPrefixes) {
     if (isPrefixBoundaryMatch(firstCmd, prefix)) return { allowed: false, reason: `Denied prefix: ${prefix}` };

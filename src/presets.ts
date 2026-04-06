@@ -139,7 +139,9 @@ const AI_AGENT_GUARDRAILS: PresetBundle = {
     { slug: "agent-budget-awareness", type: "pattern", title: "Track agent token usage against budget", description: "Set budget limits per session and per pipeline step. Stop when budget is exceeded.", keywords: ["budget", "cost", "tokens", "limit", "spending", "session"], body: "**Why:** Without budget limits, a stuck agent loop can consume unlimited API credits.\n\n**How to apply:** Check remaining budget before each turn. Log token usage. Alert at 80% consumed." },
   ],
   deployChecklists: {},
-  configDefaults: { model: "claude-sonnet-4-6", reviewEnabled: true, presets: ["essential-safety", "ai-agent-guardrails"] },
+  // Note: presets field removed to avoid self-referencing circular dependency.
+  // Users choose which presets to apply during axme-code setup.
+  configDefaults: { model: "claude-sonnet-4-6", reviewEnabled: true },
 };
 
 // --- Public API ---

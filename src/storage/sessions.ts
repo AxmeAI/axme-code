@@ -503,6 +503,9 @@ export function ensureAxmeSessionForClaude(
   projectPath: string,
   claudeSessionId: string,
   transcriptPath: string,
+  /** If set, stale mappings from read-only tools (Read/Glob/Grep) reuse
+   *  the existing session id instead of creating a fresh empty-tail session. */
+  toolName?: string,
 ): string {
   const existing = readClaudeSessionMapping(projectPath, claudeSessionId);
   if (existing) {
@@ -518,6 +521,13 @@ export function ensureAxmeSessionForClaude(
         transcriptPath,
         role: "main",
       });
+      return existing;
+    }
+    // Read-only tools (Read/Glob/Grep) should not create fresh sessions from
+    // stale mappings — that produces empty "tail" sessions with 0 extractions.
+    // Return the stale id instead; the next mutation tool will create a fresh one.
+    const READ_ONLY_TOOLS = ["Read", "Glob", "Grep"];
+    if (toolName && READ_ONLY_TOOLS.includes(toolName) && existing) {
       return existing;
     }
     // Stale mapping: log once and fall through to create a fresh session,

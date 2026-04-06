@@ -60,21 +60,24 @@ export function detectWorkspace(cwd: string): WorkspaceInfo {
  * Scan for .git/ subdirectories and add any that are missing from the detected project list.
  */
 function enrichWithGitRepos(root: string, ws: WorkspaceInfo): WorkspaceInfo {
-  const knownPaths = new Set(ws.projects.map(p => p.path));
-  let added = 0;
+  // Use a Set for O(1) dedup and normalize paths to bare entry names
+  // (no leading ./ or dir/ prefix — just the directory name).
+  const knownPaths = new Set(ws.projects.map(p => p.path.replace(/^\.\/?/, "")));
+  const newProjects = [...ws.projects];
 
   for (const entry of safeReaddir(root)) {
     if (entry.startsWith(".") || ["node_modules", "dist", "build", ".git"].includes(entry)) continue;
-    if (knownPaths.has(entry)) continue;
+    const normalized = entry.replace(/^\.\/?/, "");
+    if (knownPaths.has(normalized)) continue;
 
     const entryPath = join(root, entry);
     if (isDir(entryPath) && existsSync(join(entryPath, ".git"))) {
-      ws.projects.push({ path: entry, name: entry });
-      added++;
+      newProjects.push({ path: normalized, name: normalized });
+      knownPaths.add(normalized);
     }
   }
 
-  return ws;
+  return { ...ws, projects: newProjects };
 }
 
 // --- Detectors ---
