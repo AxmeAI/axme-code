@@ -121,12 +121,6 @@ export async function runKbAudit(opts: {
     "auditor",
   );
 
-  // Allow Agent tool for sub-agent parallelization in --all-repos mode
-  // Allow Edit/Write for updating decision/memory files
-  // Allow Read/Grep/Glob for code verification
-  queryOpts.allowedTools = ["Read", "Grep", "Glob", "Edit", "Write", "Agent"];
-  queryOpts.disallowedTools = ["Bash", "WebFetch", "WebSearch", "TodoWrite", "Skill", "NotebookEdit", "ToolSearch"];
-
   const q = sdk.query({ prompt, options: queryOpts });
 
   let resultText = "";

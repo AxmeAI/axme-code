@@ -4,9 +4,13 @@
 
 type Options = import("@anthropic-ai/claude-agent-sdk").Options;
 
-export type AgentRole = "scanner" | "tester" | "reviewer" | "engineer" | "architect";
+export type AgentRole = "scanner" | "tester" | "reviewer" | "engineer" | "architect" | "auditor";
 
 const ROLE_TOOLS: Record<AgentRole, { allowed: string[]; disallowed: string[] }> = {
+  auditor: {
+    allowed: ["Read", "Glob", "Grep", "Edit", "Write", "Agent"],
+    disallowed: ["Bash", "WebFetch", "WebSearch", "TodoWrite", "Skill", "NotebookEdit", "ToolSearch"],
+  },
   scanner: {
     allowed: ["Read", "Glob", "Grep", "Bash"],
     disallowed: ["Write", "Edit", "Agent", "NotebookEdit", "Skill", "TodoWrite"],
