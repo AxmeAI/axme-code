@@ -17,7 +17,7 @@ import { saveScopedMemories, listMemories } from "./storage/memory.js";
 import { saveScopedDecisions, listDecisions, supersedeDecision, getDecision } from "./storage/decisions.js";
 import { saveScopedSafetyRule, loadSafetyRules, type SafetyRuleType } from "./storage/safety.js";
 import { writeOracleFiles } from "./storage/oracle.js";
-import { writeHandoff } from "./storage/plans.js";
+import { writeHandoff, readHandoff } from "./storage/plans.js";
 import {
   closeSession,
   loadSession,
@@ -546,12 +546,24 @@ export async function runSessionCleanup(
       // One handoff per AXME session — if the session was opened in a
       // workspace, handoff goes to workspace/.axme-code/plans/; if in a
       // single repo, it goes to that repo's .axme-code/plans/.
+      //
+      // If the agent already wrote a handoff via axme_close_session
+      // (source=agent), don't overwrite it — the agent has full conversation
+      // context and produces a higher-quality handoff than the auditor
+      // (which only sees the transcript, possibly truncated).
+      // Auditor handoff is only used as a fallback for orphan/crash sessions.
       if (audit.handoff) {
-        audit.handoff.sessionId = sessionId;
-        audit.handoff.date = new Date().toISOString().slice(0, 10);
-        if (!audit.handoff.source) audit.handoff.source = "auditor";
-        writeHandoff(workspacePath, audit.handoff);
-        result.handoffSaved = true;
+        const existing = readHandoff(workspacePath);
+        if (existing?.source === "agent") {
+          // Agent handoff is authoritative — skip auditor overwrite
+          result.handoffSaved = false;
+        } else {
+          audit.handoff.sessionId = sessionId;
+          audit.handoff.date = new Date().toISOString().slice(0, 10);
+          if (!audit.handoff.source) audit.handoff.source = "auditor";
+          writeHandoff(workspacePath, audit.handoff);
+          result.handoffSaved = true;
+        }
       }
 
       // Append narrative session summary to worklog.md (dev diary).
