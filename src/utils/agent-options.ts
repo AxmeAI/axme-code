@@ -8,8 +8,8 @@ export type AgentRole = "scanner" | "tester" | "reviewer" | "engineer" | "archit
 
 const ROLE_TOOLS: Record<AgentRole, { allowed: string[]; disallowed: string[] }> = {
   auditor: {
-    allowed: ["Read", "Glob", "Grep", "Edit", "Write", "Agent"],
-    disallowed: ["Bash", "WebFetch", "WebSearch", "TodoWrite", "Skill", "NotebookEdit", "ToolSearch"],
+    allowed: ["Read", "Glob", "Grep", "Edit", "Write", "Bash", "Agent"],
+    disallowed: ["WebFetch", "WebSearch", "TodoWrite", "Skill", "NotebookEdit", "ToolSearch"],
   },
   scanner: {
     allowed: ["Read", "Glob", "Grep", "Bash"],
