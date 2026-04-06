@@ -189,6 +189,24 @@ function stripQuoted(command: string): string {
 /**
  * Check if a bash command is safe.
  */
+/**
+ * Word-boundary-aware prefix match.
+ *
+ * If the prefix ends with an alphanumeric/underscore character, the character
+ * immediately after in `cmd` must NOT be alphanumeric, underscore, or hyphen.
+ * This prevents `git push origin main` from matching `git push origin main-file-feat`
+ * while still allowing `rm -rf /` to match `rm -rf /foo` (prefix ends with `/`).
+ */
+function isPrefixBoundaryMatch(cmd: string, prefix: string): boolean {
+  if (!cmd.startsWith(prefix)) return false;
+  if (cmd.length === prefix.length) return true;
+  const lastPrefixChar = prefix[prefix.length - 1];
+  if (/[a-zA-Z0-9_]/.test(lastPrefixChar)) {
+    return !/[a-zA-Z0-9_-]/.test(cmd[prefix.length]);
+  }
+  return true;
+}
+
 export function checkBash(rules: SafetyRules, command: string): SafetyVerdict {
   const stripped = stripQuoted(command.trim());
   const firstCmd = stripped.split("|")[0].trim();
@@ -198,14 +216,14 @@ export function checkBash(rules: SafetyRules, command: string): SafetyVerdict {
     if (stripped.includes(denied)) return { allowed: false, reason: `Denied command: ${denied}` };
   }
   for (const prefix of rules.bash.deniedPrefixes) {
-    if (firstCmd.startsWith(prefix)) return { allowed: false, reason: `Denied prefix: ${prefix}` };
+    if (isPrefixBoundaryMatch(firstCmd, prefix)) return { allowed: false, reason: `Denied prefix: ${prefix}` };
     if (prefix.includes("|")) {
-      if (pipeNormalized === prefix || pipeNormalized.startsWith(prefix)) {
+      if (pipeNormalized === prefix || isPrefixBoundaryMatch(pipeNormalized, prefix)) {
         return { allowed: false, reason: `Denied prefix: ${prefix}` };
       }
     } else {
       for (const seg of stripped.split("|").map(s => s.trim())) {
-        if (seg.startsWith(prefix)) return { allowed: false, reason: `Denied prefix: ${prefix}` };
+        if (isPrefixBoundaryMatch(seg, prefix)) return { allowed: false, reason: `Denied prefix: ${prefix}` };
       }
     }
   }
