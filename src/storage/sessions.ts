@@ -16,7 +16,7 @@
  * deletes it on startup.
  */
 
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { readdirSync, readFileSync, rmSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { ensureDir, writeJson, readJson, pathExists, atomicWrite, removeFile, readSafe } from "./engine.js";
@@ -743,8 +743,11 @@ export function getLastSession(projectPath: string): SessionMeta | null {
 export function trackFileChanged(projectPath: string, sessionId: string, filePath: string): void {
   const session = loadSession(projectPath, sessionId);
   if (!session) return;
-  if (!session.filesChanged.includes(filePath)) {
-    session.filesChanged.push(filePath);
+  // Normalize path to avoid duplicates from different representations
+  // (/home/user/./x.ts vs /home/user/x.ts)
+  const normalized = resolve(filePath);
+  if (!session.filesChanged.includes(normalized)) {
+    session.filesChanged.push(normalized);
     writeSession(projectPath, session);
   }
 }

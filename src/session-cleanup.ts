@@ -182,6 +182,18 @@ export async function runSessionCleanup(
     return { ...base, skipped: "not-found" };
   }
 
+  // Ghost detection: sessions with 0 filesChanged and <2s lifetime are artifacts
+  // from subclaude hook fires (Bug F) or race conditions. Skip LLM audit entirely
+  // and mark as done. Saves LLM cost on empty sessions.
+  const isGhost =
+    session.filesChanged.length === 0 &&
+    session.closedAt && session.createdAt &&
+    (Date.parse(session.closedAt) - Date.parse(session.createdAt)) < 2000;
+  if (isGhost) {
+    markAudited(workspacePath, sessionId);
+    return { ...base, skipped: "ghost" };
+  }
+
   // Dedup 1: if audit already ran, don't repeat. Just ensure session is closed.
   if (session.auditedAt) {
     if (!session.closedAt) closeSession(workspacePath, sessionId);
