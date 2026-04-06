@@ -11,7 +11,7 @@
  */
 
 import { join } from "node:path";
-import { readWorklog, logSessionEnd, logError } from "./storage/worklog.js";
+import { readWorklog, logSessionEnd, logError, logCheckResult } from "./storage/worklog.js";
 import { saveScopedMemories, listMemories } from "./storage/memory.js";
 import { saveScopedDecisions, listDecisions } from "./storage/decisions.js";
 import { saveScopedSafetyRule, loadSafetyRules, type SafetyRuleType } from "./storage/safety.js";
@@ -632,6 +632,16 @@ export async function runSessionCleanup(
     filesChanged,
     auditRan: result.auditRan,
   });
+
+  // Log audit check result for observability — turns logCheckResult from dead
+  // export into an active call. Writes a `check_result` event with PASS/FAIL.
+  if (result.auditRan) {
+    const summary = `${result.memories} mem, ${result.decisions} dec, ${result.safetyRules} safety`;
+    try {
+      logCheckResult(workspacePath, sessionId, "auditor",
+        auditSucceeded ? "PASS" : "FAIL", summary);
+    } catch {}
+  }
 
   // Note: clearing the per-Claude-session mapping file is the caller's
   // responsibility — they know which Claude session_id to clear. The

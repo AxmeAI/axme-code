@@ -20,6 +20,7 @@ import { join } from "node:path";
 import { readdirSync, readFileSync, rmSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { ensureDir, writeJson, readJson, pathExists, atomicWrite, removeFile, readSafe } from "./engine.js";
+import { logSessionStart } from "./worklog.js";
 import type { SessionMeta, ClaudeSessionRef } from "../types.js";
 import { AXME_CODE_DIR } from "../types.js";
 
@@ -528,6 +529,7 @@ export function ensureAxmeSessionForClaude(
     );
   }
   const axmeSession = createSession(projectPath);
+  try { logSessionStart(projectPath, axmeSession.id); } catch {}
   writeClaudeSessionMapping(projectPath, claudeSessionId, axmeSession.id);
   attachClaudeSession(projectPath, axmeSession.id, {
     id: claudeSessionId,
