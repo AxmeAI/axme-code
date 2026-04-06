@@ -179,11 +179,22 @@ Required fields: what agent was doing, what user asked for instead, THE USER'S S
 MEMORIES (type=pattern)
 Requires USER CONFIRMATION (see above). Extract ONLY when a non-obvious technique was discovered through trial and error AND the user explicitly validated it worked ("да, так и оставим", "yes that worked"). NOT "we built feature X" — features are in the code. Agent saying "this approach worked" alone is not enough; find the user's explicit endorsement.
 
+CRITICAL DEDUP CHECK for memories: check existing memories in <existing_decisions> context. If an existing memory says the SAME thing (same advice, same lesson) even with different wording — do NOT extract. Examples:
+- "verify before claiming done" and "verify completely before claiming done" and "verify fully before done" → SAME advice, keep one
+- "english-only prompts and storage" and "english-only storage and prompts" → SAME rule
+
 DECISIONS
 Extract ONLY if ALL THREE:
 (a) The decision is NOT visible in the resulting code/config/diff — someone reading the code cannot recover the reasoning or the rule.
 (b) The user explicitly stated it as a rule/policy/constraint in the transcript, OR the user explicitly said yes to a specific proposed rule (not silence, not "ok maybe", not topic change — see USER CONFIRMATION section above).
 (c) The decision has a clear "rule shape" — something a future session should follow, not a one-time action.
+
+CRITICAL DEDUP CHECK — before extracting ANY decision:
+Read the existing decisions in <existing_decisions> below. For EACH candidate you want to extract, check: does ANY existing decision cover the SAME TOPIC? Not same words — same concept/rule/constraint. Examples of same-topic:
+- "Two-layer auth: x-api-key + Bearer" and "Auth model: x-api-key for machine + Bearer for actor" → SAME TOPIC, do not extract
+- "PR-only merges to main" and "Protected main: require PR with checks" → SAME TOPIC
+- "Structured error codes" and "No opaque 500 for expected errors" → SAME TOPIC
+If an existing decision covers the same topic, use action=supersede (if yours is better/newer) or skip entirely (if existing is fine). NEVER create a second decision on the same topic.
 
 REJECT:
 - "We added feature X because Y" — feature is in the code
@@ -192,6 +203,7 @@ REJECT:
 - "User confirmed implementation Z" — implementation is in the code
 - Agent proposed X and user did not respond — no confirmation
 - User said "hmm" / "interesting" / "maybe" — not confirmation
+- Candidate covers same topic as an existing decision — use supersede or skip
 
 ACCEPT:
 - Process rules the user stated: "never merge without staging check"
