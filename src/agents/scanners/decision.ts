@@ -91,11 +91,17 @@ Find ALL decisions you can find evidence for. Do not limit the number. Cover all
 Do NOT include:
 - Trivial/obvious decisions ("project uses git", "has tests")
 - Decisions you're guessing about with no evidence
-- Duplicate decisions (if "uses PostgreSQL" and "uses SQLAlchemy" are the same decision, combine them)`;
+- Duplicate decisions (if "uses PostgreSQL" and "uses SQLAlchemy" are the same decision, combine them)
+
+CRITICAL DEDUP: If <existing_decisions> is provided below, it lists decisions already stored for this project (e.g. from presets). Do NOT extract any decision covering the SAME TOPIC as an existing one — even with different wording. Same topic = skip.
+Examples: existing "All changes to main via PR" → skip "PR-only merges with checks". Existing "No destructive git ops" → skip "Never force-push".
+If your version adds genuinely new details the existing lacks, extract it and note which existing ID it would supersede.`;
 
 export async function runDecisionScan(opts: {
   projectPath: string;
   model?: string;
+  /** Existing decisions (e.g. from presets) — scanner skips same-topic. */
+  existingDecisions?: Decision[];
 }): Promise<DecisionScanResult> {
   const sdk = await import("@anthropic-ai/claude-agent-sdk");
   const startTime = Date.now();
@@ -106,7 +112,15 @@ export async function runDecisionScan(opts: {
     "scanner",
   );
 
-  const q = sdk.query({ prompt: DECISION_SCAN_PROMPT, options: queryOpts });
+  let prompt = DECISION_SCAN_PROMPT;
+  if (opts.existingDecisions && opts.existingDecisions.length > 0) {
+    const list = opts.existingDecisions.map(d =>
+      `- ${d.id}: ${d.title} [${d.enforce ?? "info"}] — ${d.decision}`
+    ).join("\n");
+    prompt += `\n\n<existing_decisions>\n${list}\n</existing_decisions>`;
+  }
+
+  const q = sdk.query({ prompt, options: queryOpts });
 
   let result = "";
   let cost: CostInfo | undefined;
