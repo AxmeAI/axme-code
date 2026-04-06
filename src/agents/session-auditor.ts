@@ -199,7 +199,7 @@ ACCEPT:
 
 DECISIONS OUTPUT FIELD NAMES — CRITICAL
 Use EXACTLY these field names for each DECISION block:
-  title, decision, reasoning, enforce, scope
+  action, title, decision, reasoning, enforce, scope, supersedes, amends
 DO NOT use ADR-style field names. Specifically rejected by the parser and the rules:
   slug (parser generates from title), status, rationale (use "reasoning"),
   alternatives_considered, consequences, context
@@ -273,12 +273,16 @@ body: <English. Include **Why:** and **How to apply:** lines. Non-English quotes
 ###END###
 
 ###DECISIONS###
+action: <new | supersede | amend>
 title: <English, max 80 chars>
 decision: <English, what was decided>
 reasoning: <English, with specifics from the session>
 enforce: <required | advisory | none>
 scope: <project name, comma-separated list, or "all">
+supersedes: <D-NNN id of old decision, only when action=supersede>
+amends: <D-NNN id of existing decision, only when action=amend>
 ---
+Use "supersede" when the session explicitly reverses a previous decision ("switching from X to Y", "stop doing Z, use W instead"). Use "amend" to update/clarify an existing decision without replacing it. Default is "new".
 ###END###
 
 ###SAFETY###
@@ -855,6 +859,10 @@ export function parseAuditOutput(output: string, sessionId: string): Omit<Sessio
 
       const enforceRaw = get("enforce").toLowerCase();
       const scope = parseScopeField(get("scope"));
+      const action = get("action") || "new";
+      const supersedesId = get("supersedes");
+      const amendsId = get("amends");
+
       decisions.push({
         slug: toSlug(title), title, decision,
         reasoning,
@@ -862,7 +870,11 @@ export function parseAuditOutput(output: string, sessionId: string): Omit<Sessio
         enforce: enforceRaw === "required" ? "required" : enforceRaw === "advisory" ? "advisory" : null,
         sessionId,
         ...(scope ? { scope } : {}),
-      });
+        // Supersede/amend metadata — consumed by saveScopedDecisions caller
+        ...(action === "supersede" && supersedesId ? { supersedes: [supersedesId] } : {}),
+        ...(action === "amend" && amendsId ? { _amendsId: amendsId } : {}),
+        ...(action !== "new" ? { _action: action } : {}),
+      } as any);
     }
   }
 

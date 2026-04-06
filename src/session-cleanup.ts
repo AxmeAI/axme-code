@@ -13,7 +13,7 @@
 import { join } from "node:path";
 import { readWorklog, logSessionEnd, logError, logCheckResult } from "./storage/worklog.js";
 import { saveScopedMemories, listMemories } from "./storage/memory.js";
-import { saveScopedDecisions, listDecisions } from "./storage/decisions.js";
+import { saveScopedDecisions, listDecisions, supersedeDecision, getDecision } from "./storage/decisions.js";
 import { saveScopedSafetyRule, loadSafetyRules, type SafetyRuleType } from "./storage/safety.js";
 import { writeOracleFiles } from "./storage/oracle.js";
 import { writeHandoff } from "./storage/plans.js";
@@ -430,23 +430,64 @@ export async function runSessionCleanup(
         saveScopedMemories(audit.memories, workspacePath, workspaceRoot);
       }
 
-      // Same scope routing for decisions. saveScopedDecisions accepts
-      // Omit<Decision, "id"> and generates a fresh id per target path.
+      // Decisions: handle action=new/supersede/amend from auditor output.
       if (audit.decisions.length > 0) {
+        const newDecisions: typeof audit.decisions = [];
         for (const d of audit.decisions) {
+          const action = (d as any)._action || "new";
           const routes = resolveScopeRoutes(d.scope, workspacePath, workspaceRoot);
           const wasDuplicate = routes.every(p => snapshot.decisions[p]?.has(d.slug));
+
+          if (action === "supersede" && (d as any).supersedes?.length) {
+            // Try to supersede the old decision at workspace path
+            const oldId = (d as any).supersedes[0];
+            try {
+              const { newDecision } = supersedeDecision(workspacePath, oldId, d);
+              extractions.push({
+                type: "decision", slug: d.slug, title: d.title,
+                scope: d.scope, proposedRoutes: routes,
+                status: "saved",
+                reason: `superseded ${oldId} with ${newDecision.id}`,
+              });
+              dSaved++;
+            } catch {
+              // Old decision not found — fall through to normal save
+              newDecisions.push(d);
+              extractions.push({
+                type: "decision", slug: d.slug, title: d.title,
+                scope: d.scope, proposedRoutes: routes,
+                status: wasDuplicate ? "deduped" : "saved",
+                reason: `supersede target ${oldId} not found, saved as new`,
+              });
+            }
+            continue;
+          }
+
+          if (action === "amend" && (d as any)._amendsId) {
+            // Amend = save with same slug. addDecision dedup by title will
+            // find the existing entry and overwrite it. The auditor should
+            // have used the same title as the original decision for amend.
+            newDecisions.push(d);
+            extractions.push({
+              type: "decision", slug: d.slug, title: d.title,
+              scope: d.scope, proposedRoutes: routes,
+              status: "saved", reason: `amended ${(d as any)._amendsId}`,
+            });
+            continue;
+          }
+
+          // Default: new decision
+          newDecisions.push(d);
           extractions.push({
-            type: "decision",
-            slug: d.slug,
-            title: d.title,
-            scope: d.scope,
-            proposedRoutes: routes,
+            type: "decision", slug: d.slug, title: d.title,
+            scope: d.scope, proposedRoutes: routes,
             status: wasDuplicate ? "deduped" : "saved",
             reason: wasDuplicate ? "slug already existed at all target paths (overwritten)" : undefined,
           });
         }
-        saveScopedDecisions(audit.decisions, workspacePath, workspaceRoot);
+        if (newDecisions.length > 0) {
+          saveScopedDecisions(newDecisions, workspacePath, workspaceRoot);
+        }
       }
 
       // Safety rules: scope routing per rule.
