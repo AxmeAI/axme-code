@@ -79,18 +79,39 @@ export function logSessionStart(projectPath: string, sessionId: string): void {
   logEvent(projectPath, "session_start", sessionId);
 }
 
-export function logSessionEnd(projectPath: string, sessionId: string, data?: Record<string, unknown>): void {
-  logEvent(projectPath, "session_end", sessionId, data);
+export function logSessionEnd(
+  projectPath: string, sessionId: string,
+  data?: { filesCount?: number; auditRan?: boolean },
+): void {
+  logEvent(projectPath, "session_end", sessionId, data ?? {});
 }
 
-export function logCheckResult(
-  projectPath: string,
-  sessionId: string,
-  agent: string,
-  result: string,
-  details?: string,
+export function logSafetyBlock(
+  projectPath: string, sessionId: string,
+  tool: string, target: string, rule: string, reason: string,
 ): void {
-  logEvent(projectPath, "check_result", sessionId, { agent, result, details });
+  logEvent(projectPath, "safety_block", sessionId, { tool, target, rule, reason });
+}
+
+export function logAuditComplete(
+  projectPath: string, sessionId: string,
+  data: { costUsd: number; memories: number; decisions: number; safety: number; durationMs: number },
+): void {
+  logEvent(projectPath, "audit_complete", sessionId, data);
+}
+
+export function logDecisionSaved(
+  projectPath: string, sessionId: string,
+  id: string, title: string, source: string,
+): void {
+  logEvent(projectPath, "decision_saved", sessionId, { id, title, source });
+}
+
+export function logDecisionSuperseded(
+  projectPath: string, sessionId: string,
+  oldId: string, newId: string,
+): void {
+  logEvent(projectPath, "decision_superseded", sessionId, { oldId, newId });
 }
 
 export function logMemorySaved(
@@ -104,4 +125,50 @@ export function logMemorySaved(
 
 export function logError(projectPath: string, sessionId: string, error: string): void {
   logEvent(projectPath, "error", sessionId, { error });
+}
+
+/**
+ * Parse worklog stats for CLI display.
+ */
+export function worklogStats(projectPath: string): {
+  totalSessions: number;
+  totalAudits: number;
+  totalCostUsd: number;
+  safetyBlocks: Array<{ tool: string; target: string; reason: string; timestamp: string }>;
+  recentErrors: Array<{ error: string; timestamp: string }>;
+} {
+  const events = readWorklog(projectPath);
+  let totalSessions = 0;
+  let totalAudits = 0;
+  let totalCostUsd = 0;
+  const safetyBlocks: Array<{ tool: string; target: string; reason: string; timestamp: string }> = [];
+  const recentErrors: Array<{ error: string; timestamp: string }> = [];
+
+  for (const e of events) {
+    switch (e.type) {
+      case "session_start":
+        totalSessions++;
+        break;
+      case "audit_complete":
+        totalAudits++;
+        totalCostUsd += (e.data.costUsd as number) ?? 0;
+        break;
+      case "safety_block":
+        safetyBlocks.push({
+          tool: e.data.tool as string,
+          target: e.data.target as string,
+          reason: e.data.reason as string,
+          timestamp: e.timestamp,
+        });
+        break;
+      case "error":
+        recentErrors.push({
+          error: e.data.error as string,
+          timestamp: e.timestamp,
+        });
+        break;
+    }
+  }
+
+  return { totalSessions, totalAudits, totalCostUsd, safetyBlocks, recentErrors: recentErrors.slice(0, 10) };
 }

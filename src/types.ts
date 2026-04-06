@@ -153,8 +153,10 @@ export type WorklogEventType =
   | "session_start"
   | "session_end"
   | "session_orphan_audit_queued"
-  | "agent_turn"
-  | "check_result"
+  | "safety_block"
+  | "audit_complete"
+  | "decision_saved"
+  | "decision_superseded"
   | "memory_saved"
   | "error";
 

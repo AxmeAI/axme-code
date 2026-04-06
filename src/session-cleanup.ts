@@ -12,7 +12,7 @@
 
 import { join } from "node:path";
 import { appendFileSync } from "node:fs";
-import { readWorklog, logSessionEnd, logError, logCheckResult } from "./storage/worklog.js";
+import { readWorklog, logSessionEnd, logError, logAuditComplete } from "./storage/worklog.js";
 import { saveScopedMemories, listMemories } from "./storage/memory.js";
 import { saveScopedDecisions, listDecisions, supersedeDecision, getDecision } from "./storage/decisions.js";
 import { saveScopedSafetyRule, loadSafetyRules, type SafetyRuleType } from "./storage/safety.js";
@@ -722,17 +722,20 @@ export async function runSessionCleanup(
   closeSession(workspacePath, sessionId);
 
   logSessionEnd(workspacePath, sessionId, {
-    filesChanged,
+    filesCount: filesChanged.length,
     auditRan: result.auditRan,
   });
 
-  // Log audit check result for observability — turns logCheckResult from dead
-  // export into an active call. Writes a `check_result` event with PASS/FAIL.
+  // Log structured audit result with cost and extraction counts.
   if (result.auditRan) {
-    const summary = `${result.memories} mem, ${result.decisions} dec, ${result.safetyRules} safety`;
     try {
-      logCheckResult(workspacePath, sessionId, "auditor",
-        auditSucceeded ? "PASS" : "FAIL", summary);
+      logAuditComplete(workspacePath, sessionId, {
+        costUsd: result.costUsd,
+        memories: result.memories,
+        decisions: result.decisions,
+        safety: result.safetyRules,
+        durationMs: 0, // duration is in audit-logs, not needed here
+      });
     } catch {}
   }
 

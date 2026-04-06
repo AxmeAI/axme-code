@@ -9,6 +9,7 @@
 import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { atomicWrite, ensureDir, pathExists } from "./engine.js";
+import { logDecisionSaved, logDecisionSuperseded } from "./worklog.js";
 import type { Decision } from "../types.js";
 import { AXME_CODE_DIR } from "../types.js";
 
@@ -81,6 +82,7 @@ export function addDecision(projectPath: string, input: Omit<Decision, "id">): D
       // flag: "wx" = O_CREAT | O_EXCL — atomic, fails if file already exists.
       writeFileSync(filePath, formatDecisionFile(decision), { flag: "wx", encoding: "utf-8" });
       rebuildIndex(projectPath);
+      try { logDecisionSaved(projectPath, input.sessionId ?? "", id, input.title, input.source ?? "agent"); } catch {}
       return decision;
     } catch (err: any) {
       if (err?.code !== "EEXIST") throw err;
@@ -132,6 +134,7 @@ export function supersedeDecision(
   const dir = decisionsDir(projectPath);
   atomicWrite(join(dir, `${old.id}-${old.slug}.md`), formatDecisionFile(old));
   rebuildIndex(projectPath);
+  try { logDecisionSuperseded(projectPath, newInput.sessionId ?? "", old.id, newDecision.id); } catch {}
 
   return { oldDecision: old, newDecision };
 }
