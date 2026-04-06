@@ -5,8 +5,9 @@
  * No LLM involved - purely rule-based.
  */
 
-import { readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { readFileSync, existsSync, readdirSync } from "node:fs";
+import { join, resolve, dirname } from "node:path";
+import { execSync } from "node:child_process";
 import { homedir } from "node:os";
 import yaml from "js-yaml";
 import { atomicWrite, ensureDir, pathExists } from "./engine.js";
@@ -291,12 +292,57 @@ export function checkGit(rules: SafetyRules, command: string): SafetyVerdict {
   // Block push to a branch that already has a merged PR. This catches the
   // case where an agent continues pushing to a stale feature branch after
   // the PR was merged, losing commits that never reach main.
+  //
+  // Two sources for the branch name (in priority order):
+  // 1. Parse from the command itself: `git push origin <branch>` -> <branch>
+  // 2. Fall back to `git branch --show-current` (only works inside a git repo)
+  //
+  // The CWD may be a workspace root (not a git repo), so we also try running
+  // git from child directories that contain .git.
   if (stripped.startsWith("git push")) {
     try {
-      const { execSync } = require("node:child_process");
-      const branch = execSync("git branch --show-current", {
-        encoding: "utf-8", timeout: 5000, stdio: ["pipe", "pipe", "pipe"],
-      }).trim();
+      // Parse branch from command: `git push [-u] origin <branch>`
+      let branch: string | null = null;
+      const pushTokens = stripped.split(/\s+/);
+      // Find the token after "origin"/"upstream" that looks like a branch name
+      for (let i = 2; i < pushTokens.length; i++) {
+        if (pushTokens[i] === "origin" || pushTokens[i] === "upstream") {
+          const candidate = pushTokens[i + 1];
+          if (candidate && !candidate.startsWith("-") && !candidate.startsWith("+")) {
+            branch = candidate;
+            break;
+          }
+        }
+      }
+
+      // Fall back to current branch if not found in command
+      if (!branch) {
+        try {
+          branch = execSync("git branch --show-current", {
+            encoding: "utf-8", timeout: 5000, stdio: ["pipe", "pipe", "pipe"],
+          }).trim() || null;
+        } catch {
+          // Not in a git repo - try cwd subdirectories
+          const cwd = process.cwd();
+          try {
+            const entries = readdirSync(cwd);
+            for (const entry of entries) {
+              const gitDir = join(cwd, entry, ".git");
+              if (existsSync(gitDir)) {
+                try {
+                  branch = execSync("git branch --show-current", {
+                    encoding: "utf-8", timeout: 5000,
+                    stdio: ["pipe", "pipe", "pipe"],
+                    cwd: join(cwd, entry),
+                  }).trim() || null;
+                  if (branch) break;
+                } catch {}
+              }
+            }
+          } catch {}
+        }
+      }
+
       if (branch && branch !== "main" && branch !== "master") {
         const mergedCount = execSync(
           `gh pr list --head "${branch}" --state merged --json number --jq length`,

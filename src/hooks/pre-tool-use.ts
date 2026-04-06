@@ -12,7 +12,8 @@
 
 import { loadMergedSafetyRules, checkBash, checkGit, checkFilePath } from "../storage/safety.js";
 import { pathExists } from "../storage/engine.js";
-import { ensureAxmeSessionForClaude } from "../storage/sessions.js";
+import { ensureAxmeSessionForClaude, readClaudeSessionMapping } from "../storage/sessions.js";
+import { logSafetyBlock } from "../storage/worklog.js";
 import { detectWorkspace } from "../utils/workspace-detector.js";
 import { dirname, join, resolve } from "node:path";
 import { existsSync } from "node:fs";
@@ -182,6 +183,15 @@ function handlePreToolUse(sessionOrigin: string, event: HookInput): void {
   }
 
   if (!verdict.allowed) {
+    // Log safety block to worklog for audit trail
+    try {
+      const mapping = event.session_id ? readClaudeSessionMapping(sessionOrigin, event.session_id) : null;
+      const axmeSessionId = mapping ?? "unknown";
+      const target = tool_name === "Bash"
+        ? (tool_input.command as string ?? "").slice(0, 120)
+        : (tool_input.file_path || tool_input.path || "") as string;
+      logSafetyBlock(sessionOrigin, axmeSessionId, tool_name, target, "safety_rule", verdict.reason);
+    } catch {}
     deny(verdict.reason);
   }
 }

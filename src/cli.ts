@@ -255,6 +255,7 @@ Usage:
   axme-code cleanup legacy-artifacts [--dry-run]  Remove pre-PR#7 sessions/logs
   axme-code cleanup decisions-normalize [--dry-run]  Add status:active to decisions
   axme-code audit-kb [--all-repos] [--apply]         KB health report + LLM conflict analysis
+  axme-code stats [path]                  Worklog statistics (sessions, costs, safety blocks)
   axme-code help                          Show this help
 
 After setup, run 'claude' as usual. AXME tools are available automatically.`);
@@ -455,6 +456,32 @@ async function main() {
 
       const { resetKbAuditCounter } = await import("./storage/kb-audit.js");
       resetKbAuditCounter(targetPath);
+      break;
+    }
+
+    case "stats": {
+      const statsPath = resolve(args[1] || ".");
+      const { worklogStats } = await import("./storage/worklog.js");
+      const s = worklogStats(statsPath);
+      console.log(`AXME Code Stats for ${statsPath}\n`);
+      console.log(`Sessions:      ${s.totalSessions}`);
+      console.log(`Audits:        ${s.totalAudits}`);
+      console.log(`Total cost:    $${s.totalCostUsd.toFixed(2)}`);
+      console.log(`Safety blocks: ${s.safetyBlocks.length}`);
+      if (s.safetyBlocks.length > 0) {
+        console.log(`\nRecent safety blocks:`);
+        for (const b of s.safetyBlocks.slice(0, 10)) {
+          const ts = b.timestamp.replace("T", " ").slice(0, 19);
+          console.log(`  [${ts}] ${b.tool}: ${b.target.slice(0, 60)} - ${b.reason}`);
+        }
+      }
+      if (s.recentErrors.length > 0) {
+        console.log(`\nRecent errors:`);
+        for (const e of s.recentErrors.slice(0, 5)) {
+          const ts = e.timestamp.replace("T", " ").slice(0, 19);
+          console.log(`  [${ts}] ${e.error.slice(0, 100)}`);
+        }
+      }
       break;
     }
 
