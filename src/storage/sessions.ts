@@ -521,6 +521,11 @@ export function ensureAxmeSessionForClaude(
         transcriptPath,
         role: "main",
       });
+      // Always refresh ownerPpid — after VS Code reload the Claude Code
+      // PID changes but the old process may still be alive (different
+      // window or zombie). The MCP server matches by ownerPpid === OWN_PPID,
+      // so the mapping must point to the current Claude Code instance.
+      writeClaudeSessionMapping(projectPath, claudeSessionId, existing);
       return existing;
     }
     // Read-only tools (Read/Glob/Grep) should not create fresh sessions from
