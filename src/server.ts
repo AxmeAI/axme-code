@@ -133,6 +133,7 @@ function buildInstructions(): string {
     parts.push("Call axme_context at session start to load project knowledge base.");
   }
   parts.push("Save memories, decisions, and safety rules immediately when discovered during work.");
+  parts.push("SESSION CLOSE: when the user asks to close/end the session (any language), call axme_close_session with a detailed handoff and startup text. Then output the startup text to the user in chat for copy-paste into the next session.");
   parts.push("DECISION CONFLICT RULE: if two active decisions contradict each other, treat the NEWER one (by date) as authoritative. The older one is a candidate for supersede at next audit.");
   parts.push(
     `STORAGE ROOT: ${defaultProjectPath}/.axme-code — for any direct inspection of .axme-code/ files via Bash (ls, cat, grep, find), use this ABSOLUTE path. Do NOT use relative paths from your cwd; in a multi-repo workspace your cwd may point to a child repo with its own separate .axme-code/ storage. Every session's meta.json also contains an "origin" field with its absolute parent directory — read it to verify which storage a given session belongs to.`,
@@ -392,6 +393,79 @@ server.tool(
     const q = answerQuestion(pp(project_path), question_id, answer);
     if (!q) return { content: [{ type: "text" as const, text: `Question ${question_id} not found or not open.` }] };
     return { content: [{ type: "text" as const, text: `Answer recorded for ${q.id}. Status: [answered]` }] };
+  },
+);
+
+// --- axme_close_session ---
+server.tool(
+  "axme_close_session",
+  "Explicitly close the current session with a detailed handoff. Call when the user says 'close session' / 'end session' / 'закрывай сессию'. Writes enriched handoff, runs LLM audit synchronously, returns result. After calling this, output the startup_text to the user in chat for copy-paste into the next session.",
+  {
+    stopped_at: z.string().describe("What the session stopped at"),
+    summary: z.string().describe("2-5 bullet points of what was accomplished"),
+    in_progress: z.string().describe("Current state: branches, PRs, uncommitted work"),
+    prs: z.array(z.object({
+      url: z.string(),
+      title: z.string(),
+      status: z.string(),
+    })).optional().describe("PRs created/merged in this session"),
+    test_results: z.string().optional().describe("Test run summary"),
+    blockers: z.string().optional().describe("Blockers for next session"),
+    next_steps: z.string().describe("Concrete next steps for next session"),
+    dirty_branches: z.string().optional().describe("Branch names with state"),
+    startup_text: z.string().describe("Ready-to-paste startup text for the next session"),
+  },
+  async (args) => {
+    const sid = getOwnedSessionIdForLogging();
+    if (!sid) {
+      return { content: [{ type: "text" as const, text: "No active AXME session found." }] };
+    }
+
+    // 1. Write enriched handoff
+    const { writeHandoff } = await import("./storage/plans.js");
+    const handoff = {
+      stoppedAt: args.stopped_at,
+      summary: args.summary,
+      inProgress: args.in_progress,
+      prs: args.prs,
+      testResults: args.test_results,
+      blockers: args.blockers ?? "None",
+      next: args.next_steps,
+      dirtyBranches: args.dirty_branches ?? "None",
+      sessionId: sid,
+      date: new Date().toISOString().slice(0, 10),
+      source: "agent" as const,
+    };
+    writeHandoff(defaultProjectPath, handoff);
+
+    // 2. Run audit synchronously (same as detached worker but inline)
+    const { runSessionCleanup } = await import("./session-cleanup.js");
+    let auditResult: string;
+    try {
+      const result = await runSessionCleanup(defaultProjectPath, sid);
+      const parts = [`Audit: ${result.auditRan ? "ran" : "skipped"}`];
+      if (result.skipped) parts.push(`(${result.skipped})`);
+      if (result.auditRan) {
+        parts.push(`memories=${result.memories}, decisions=${result.decisions}, cost=$${result.costUsd.toFixed(2)}`);
+      }
+      parts.push(`handoff saved: yes`);
+      auditResult = parts.join(", ");
+    } catch (err) {
+      auditResult = `Audit error: ${err}`;
+    }
+
+    // 3. Return result + startup text
+    const lines = [
+      `Session ${sid.slice(0, 8)} closed.`,
+      auditResult,
+      "",
+      "Handoff written. Now output the startup_text below to the user in chat:",
+      "",
+      "---",
+      args.startup_text,
+      "---",
+    ];
+    return { content: [{ type: "text" as const, text: lines.join("\n") }] };
   },
 );
 

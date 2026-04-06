@@ -547,6 +547,9 @@ export async function runSessionCleanup(
       // workspace, handoff goes to workspace/.axme-code/plans/; if in a
       // single repo, it goes to that repo's .axme-code/plans/.
       if (audit.handoff) {
+        audit.handoff.sessionId = sessionId;
+        audit.handoff.date = new Date().toISOString().slice(0, 10);
+        if (!audit.handoff.source) audit.handoff.source = "auditor";
         writeHandoff(workspacePath, audit.handoff);
         result.handoffSaved = true;
       }
