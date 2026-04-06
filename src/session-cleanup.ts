@@ -223,7 +223,7 @@ export async function runSessionCleanup(
     return { ...base, skipped: "retry-cap" };
   }
 
-  const filesChanged = session.filesChanged ?? [];
+  let filesChanged = session.filesChanged ?? [];
 
   // Prefer the Claude Code transcript (filtered conversation turns) over the
   // worklog when available. Transcripts contain the actual user/assistant
@@ -253,6 +253,31 @@ export async function runSessionCleanup(
     bytesReadPerRef = parsed.bytesRead;
     if (parsed.allTurns.length > 0) {
       sessionTurns = parsed.allTurns;
+    }
+    // Supplement filesChanged with file paths extracted from Bash tool_use
+    // commands in the transcript. PostToolUse hook only tracks Edit/Write/
+    // NotebookEdit — Bash mutations (echo > file, sed -i, cp, mv, rm) are
+    // invisible without this supplementation.
+    if (parsed.allBashCommands.length > 0) {
+      const { extractBashWritePaths } = await import("./utils/bash-file-extract.js");
+      const bashPaths = new Set<string>();
+      for (const cmd of parsed.allBashCommands) {
+        for (const p of extractBashWritePaths(cmd)) bashPaths.add(p);
+      }
+      let added = 0;
+      for (const p of bashPaths) {
+        if (!session.filesChanged.includes(p)) {
+          session.filesChanged.push(p);
+          added++;
+        }
+      }
+      if (added > 0) {
+        filesChanged = session.filesChanged;
+        writeSession(workspacePath, session);
+        process.stderr.write(
+          `AXME audit ${sessionId}: +${added} files from Bash commands\n`,
+        );
+      }
     }
     // Observability: log how many bytes were skipped because they were
     // already audited. Useful to confirm the resume optimization is
@@ -286,7 +311,10 @@ export async function runSessionCleanup(
   const activityLength = sessionTurns
     ? sessionTurns.reduce((s, t) => s + t.content.length, 0)
     : (sessionEvents ?? "").length;
-  const hasActivity = activityLength > 50;
+  // filesChanged > 0 forces audit even without transcript — covers the scenario
+  // where hooks tracked file edits but the session closed before a Claude
+  // transcript was attached (e.g. early SIGKILL, no ensureAxmeSessionForClaude).
+  const hasActivity = activityLength > 50 || filesChanged.length > 0;
 
   // Detect whether the session was opened at a workspace root or a single repo.
   // This determines scope routing (per-repo vs workspace-level) for all writes.

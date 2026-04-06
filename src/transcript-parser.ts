@@ -92,6 +92,9 @@ export interface ParsedTranscriptSlice {
   bytesRead: number;
   /** Total file size in bytes at read time (for logging). */
   fileSize: number;
+  /** Raw bash command strings from Bash tool_use blocks. Used by session-cleanup
+   *  to supplement filesChanged with paths extracted from shell commands. */
+  bashCommands: string[];
 }
 
 /**
@@ -111,14 +114,14 @@ export interface ParsedTranscriptSlice {
  */
 export function parseTranscriptFromOffset(path: string, startOffset: number = 0): ParsedTranscriptSlice {
   if (!existsSync(path)) {
-    return { turns: [], endOffset: startOffset, bytesRead: 0, fileSize: 0 };
+    return { turns: [], endOffset: startOffset, bytesRead: 0, fileSize: 0, bashCommands: [] };
   }
 
   let buffer: Buffer;
   try {
     buffer = readFileSync(path);
   } catch {
-    return { turns: [], endOffset: startOffset, bytesRead: 0, fileSize: 0 };
+    return { turns: [], endOffset: startOffset, bytesRead: 0, fileSize: 0, bashCommands: [] };
   }
 
   const fileSize = buffer.length;
@@ -134,11 +137,12 @@ export function parseTranscriptFromOffset(path: string, startOffset: number = 0)
   // cheap; LLM context is what we are protecting.
   const slice = buffer.subarray(safeStart);
   if (slice.length === 0) {
-    return { turns: [], endOffset: safeStart, bytesRead: 0, fileSize };
+    return { turns: [], endOffset: safeStart, bytesRead: 0, fileSize, bashCommands: [] };
   }
 
   const content = slice.toString("utf-8");
   const turns: ConversationTurn[] = [];
+  const bashCommands: string[] = [];
   const lines = content.split("\n").filter(Boolean);
 
   for (const line of lines) {
@@ -196,12 +200,17 @@ export function parseTranscriptFromOffset(path: string, startOffset: number = 0)
           kind: "tool_use",
           content: `[${name}${shortInput ? ": " + shortInput : ""}]`,
         });
+        // Collect raw Bash commands for filesChanged supplementation
+        if (name === "Bash" && block.input?.command) {
+          bashCommands.push(String(block.input.command));
+        }
       }
     }
   }
 
   return {
     turns,
+    bashCommands,
     endOffset: fileSize,
     bytesRead: fileSize - safeStart,
     fileSize,
@@ -410,11 +419,13 @@ export function parseAndRenderTranscripts(
   endOffsets: Record<string, number>;
   /** Per-ref bytes consumed on this call (for observability). */
   bytesRead: Record<string, number>;
+  /** Aggregated raw bash commands across all refs. */
+  allBashCommands: string[];
 } {
   const endOffsets: Record<string, number> = {};
   const bytesRead: Record<string, number> = {};
   if (refs.length === 0) {
-    return { rendered: "", totalRaw: 0, totalFiltered: 0, allTurns: [], endOffsets, bytesRead };
+    return { rendered: "", totalRaw: 0, totalFiltered: 0, allTurns: [], endOffsets, bytesRead, allBashCommands: [] };
   }
 
   if (refs.length === 1) {
@@ -431,6 +442,7 @@ export function parseAndRenderTranscripts(
       allTurns: slice.turns,
       endOffsets,
       bytesRead,
+      allBashCommands: slice.bashCommands,
     };
   }
 
@@ -438,6 +450,7 @@ export function parseAndRenderTranscripts(
   let totalRaw = 0;
   let totalFiltered = 0;
   const allTurns: ConversationTurn[] = [];
+  const allBashCommands: string[] = [];
   for (const ref of refs) {
     const start = startOffsets?.[ref.id] ?? 0;
     const slice = parseTranscriptFromOffset(ref.transcriptPath, start);
@@ -454,12 +467,14 @@ export function parseAndRenderTranscripts(
     totalRaw += slice.fileSize;
     totalFiltered += rendered.length;
     allTurns.push(...slice.turns);
+    allBashCommands.push(...slice.bashCommands);
   }
   return {
     rendered: parts.join("\n"),
     totalRaw,
     totalFiltered,
     allTurns,
+    allBashCommands,
     endOffsets,
     bytesRead,
   };
