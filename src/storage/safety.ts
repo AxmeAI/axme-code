@@ -208,31 +208,77 @@ function isPrefixBoundaryMatch(cmd: string, prefix: string): boolean {
   return true;
 }
 
+/**
+ * Split a command string by chain operators (&&, ||, ;) respecting quotes.
+ * Does NOT split by | since pipe handling is done separately.
+ */
+function splitChainSegments(command: string): string[] {
+  const segments: string[] = [];
+  let current = "";
+  let inSingle = false;
+  let inDouble = false;
+  let i = 0;
+  while (i < command.length) {
+    const ch = command[i];
+    if (ch === "'" && !inDouble) { inSingle = !inSingle; current += ch; i++; continue; }
+    if (ch === '"' && !inSingle) { inDouble = !inDouble; current += ch; i++; continue; }
+    if (ch === "\\" && i + 1 < command.length) { current += ch + command[i + 1]; i += 2; continue; }
+    if (!inSingle && !inDouble) {
+      if ((ch === "&" && command[i + 1] === "&") || (ch === "|" && command[i + 1] === "|")) {
+        segments.push(current);
+        current = "";
+        i += 2;
+        continue;
+      }
+      if (ch === ";") {
+        segments.push(current);
+        current = "";
+        i++;
+        continue;
+      }
+    }
+    current += ch;
+    i++;
+  }
+  if (current.trim()) segments.push(current);
+  return segments;
+}
+
 export function checkBash(rules: SafetyRules, command: string): SafetyVerdict {
   const stripped = stripQuoted(command.trim());
-  const firstCmd = stripped.split("|")[0].trim();
-  const pipeNormalized = stripped.split("|").map(s => s.trim().split(/\s+/)[0]).join(" | ");
 
-  // Check deniedCommands per pipe segment so that `ls | shutdown` is caught
-  // even though "shutdown" doesn't appear at the start of the full command.
-  const segments = stripped.split("|").map(s => s.trim());
-  for (const denied of rules.bash.deniedCommands) {
-    for (const seg of segments) {
-      if (seg.includes(denied)) return { allowed: false, reason: `Denied command: ${denied}` };
-    }
-  }
-  for (const prefix of rules.bash.deniedPrefixes) {
-    if (isPrefixBoundaryMatch(firstCmd, prefix)) return { allowed: false, reason: `Denied prefix: ${prefix}` };
-    if (prefix.includes("|")) {
-      // Check if pipe-pattern appears anywhere in the pipe chain, not just from start.
-      // "curl | sh" should match in "cat | curl | sh".
-      if (pipeNormalized === prefix || isPrefixBoundaryMatch(pipeNormalized, prefix) ||
-          pipeNormalized.includes(prefix)) {
-        return { allowed: false, reason: `Denied prefix: ${prefix}` };
+  // Split by chain operators (&&, ||, ;) first, then check each chain
+  // segment including its pipe sub-segments. This prevents bypasses like
+  // "cd /path && npm publish" where the denied prefix is hidden behind cd.
+  const chainSegs = splitChainSegments(stripped);
+
+  for (const chainSeg of chainSegs) {
+    const trimChain = chainSeg.trim();
+    if (!trimChain) continue;
+
+    const pipeSegs = trimChain.split("|").map(s => s.trim());
+    const firstCmd = pipeSegs[0];
+    const pipeNormalized = pipeSegs.map(s => s.split(/\s+/)[0]).join(" | ");
+
+    // Check deniedCommands per pipe segment so that `ls | shutdown` is caught
+    for (const denied of rules.bash.deniedCommands) {
+      for (const seg of pipeSegs) {
+        if (seg.includes(denied)) return { allowed: false, reason: `Denied command: ${denied}` };
       }
-    } else {
-      for (const seg of stripped.split("|").map(s => s.trim())) {
-        if (isPrefixBoundaryMatch(seg, prefix)) return { allowed: false, reason: `Denied prefix: ${prefix}` };
+    }
+    for (const prefix of rules.bash.deniedPrefixes) {
+      if (isPrefixBoundaryMatch(firstCmd, prefix)) return { allowed: false, reason: `Denied prefix: ${prefix}` };
+      if (prefix.includes("|")) {
+        // Check if pipe-pattern appears anywhere in the pipe chain, not just from start.
+        // "curl | sh" should match in "cat | curl | sh".
+        if (pipeNormalized === prefix || isPrefixBoundaryMatch(pipeNormalized, prefix) ||
+            pipeNormalized.includes(prefix)) {
+          return { allowed: false, reason: `Denied prefix: ${prefix}` };
+        }
+      } else {
+        for (const seg of pipeSegs) {
+          if (isPrefixBoundaryMatch(seg, prefix)) return { allowed: false, reason: `Denied prefix: ${prefix}` };
+        }
       }
     }
   }
