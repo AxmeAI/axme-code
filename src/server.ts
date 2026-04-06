@@ -447,7 +447,7 @@ async function auditOrphansInBackground(): Promise<void> {
       // session_end / audit log when it completes.
       try {
         spawnDetachedAuditWorker(defaultProjectPath, orphan.id);
-        logEvent(defaultProjectPath, "session_orphan_closed", orphan.id, {
+        logEvent(defaultProjectPath, "session_orphan_audit_queued", orphan.id, {
           filesChanged: orphan.filesChanged.length,
           closedByPpid: OWN_PPID,
           workerSpawned: true,

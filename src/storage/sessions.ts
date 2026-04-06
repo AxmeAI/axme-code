@@ -771,8 +771,18 @@ export function attachClaudeSession(
   ref: { id: string; transcriptPath: string; role?: string },
 ): void {
   if (!ref.id || !ref.transcriptPath) return;
-  const session = loadSession(projectPath, axmeSessionId);
-  if (!session) return;
+  // Retry up to 3 times with 50ms delay — covers race on shutdown where
+  // meta.json is briefly unavailable due to concurrent write.
+  let session = loadSession(projectPath, axmeSessionId);
+  if (!session) {
+    for (let retry = 0; retry < 3 && !session; retry++) {
+      const { setTimeout: wait } = require("node:timers/promises");
+      // Sync sleep — hooks are short-lived subprocesses, blocking is OK.
+      try { require("child_process").execSync("sleep 0.05"); } catch {}
+      session = loadSession(projectPath, axmeSessionId);
+    }
+    if (!session) return;
+  }
   if (!session.claudeSessions) session.claudeSessions = [];
   if (session.claudeSessions.some(c => c.id === ref.id)) return;
   const entry: ClaudeSessionRef = {

@@ -10,6 +10,7 @@
 
 import {
   writeFileSync,
+  writeSync,
   readFileSync,
   appendFileSync,
   renameSync,
@@ -18,6 +19,9 @@ import {
   readdirSync,
   unlinkSync,
   statSync,
+  openSync,
+  fsyncSync,
+  closeSync,
 } from "node:fs";
 import { join, dirname } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -33,6 +37,10 @@ export function atomicWrite(filePath: string, content: string): void {
   const tmpPath = join(dir, `.tmp-${randomUUID()}`);
   try {
     writeFileSync(tmpPath, content, "utf-8");
+    // fsync before rename ensures content is on disk, not just in OS buffers.
+    // On crash between write and rename, the file is intact.
+    const fd = openSync(tmpPath, "r");
+    try { fsyncSync(fd); } finally { closeSync(fd); }
     renameSync(tmpPath, filePath);
   } catch (err) {
     // Clean up temp file on failure
@@ -48,7 +56,15 @@ export function atomicWrite(filePath: string, content: string): void {
 export function appendLine(filePath: string, line: string): void {
   const dir = dirname(filePath);
   mkdirSync(dir, { recursive: true });
-  appendFileSync(filePath, line + "\n", "utf-8");
+  // Use fd-based write + fsync for durability on SIGKILL.
+  const fd = openSync(filePath, "a");
+  try {
+    const buf = Buffer.from(line + "\n", "utf-8");
+    writeSync(fd, buf);
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
 }
 
 /**
