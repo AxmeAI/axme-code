@@ -562,7 +562,6 @@ export async function runSessionCleanup(
   closeSession(workspacePath, sessionId);
 
   logSessionEnd(workspacePath, sessionId, {
-    turns: session.turns,
     filesChanged,
     auditRan: result.auditRan,
   });

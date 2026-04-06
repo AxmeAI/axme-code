@@ -39,7 +39,7 @@ export function statusTool(projectPath: string): string {
   ];
 
   if (lastSession) {
-    lines.push(`Last session: ${lastSession.createdAt.slice(0, 19).replace("T", " ")} (${lastSession.turns} turns)`);
+    lines.push(`Last session: ${lastSession.createdAt.slice(0, 19).replace("T", " ")} (${lastSession.filesChanged.length} files changed)`);
   }
 
   if (events.length > 0) {

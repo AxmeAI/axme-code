@@ -7,6 +7,7 @@
 
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { homedir } from "node:os";
 import yaml from "js-yaml";
 import { atomicWrite, ensureDir, pathExists } from "./engine.js";
 import type { SafetyRules, GitRules, BashRules, FilesystemRules } from "../types.js";
@@ -243,10 +244,21 @@ export function checkGit(rules: SafetyRules, command: string): SafetyVerdict {
       return { allowed: false, reason: "Force push is not allowed" };
     }
   }
-  if (!rules.git.allowDirectPushToMain) {
-    for (const branch of rules.git.protectedBranches) {
-      if (stripped.includes(`push origin ${branch}`) || stripped.includes(`push upstream ${branch}`)) {
-        return { allowed: false, reason: `Direct push to ${branch} is not allowed` };
+  if (!rules.git.allowDirectPushToMain && stripped.startsWith("git push")) {
+    // Token-level match so that `git push origin main-feat-branch` is not
+    // falsely blocked by a substring `push origin main`. A real direct push
+    // to a protected branch has the branch name as its own argv token, or
+    // in colon-form refspec `src:dst` (e.g. `HEAD:main`).
+    const tokens = stripped.split(/\s+/);
+    const hit = rules.git.protectedBranches.find(branch =>
+      tokens.some(t => t === branch || t.endsWith(`:${branch}`))
+    );
+    if (hit) {
+      const hasRemoteToken = tokens.some((t, i) =>
+        (t === "origin" || t === "upstream" || t === "remote") && i >= 2
+      );
+      if (hasRemoteToken) {
+        return { allowed: false, reason: `Direct push to ${hit} is not allowed` };
       }
     }
   }
@@ -261,7 +273,7 @@ export function checkGit(rules: SafetyRules, command: string): SafetyVerdict {
  */
 export function checkFilePath(rules: SafetyRules, filePath: string, operation: "read" | "write"): SafetyVerdict {
   for (const denied of rules.filesystem.deniedPaths) {
-    const pattern = denied.replace("~", process.env.HOME ?? "");
+    const pattern = denied.replace("~", homedir());
     if (matchesPattern(filePath, pattern)) return { allowed: false, reason: `Path denied: ${denied}` };
   }
   if (operation === "write") {

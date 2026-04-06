@@ -17,7 +17,7 @@
  */
 
 import { join } from "node:path";
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync, readFileSync, rmSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { ensureDir, writeJson, readJson, pathExists, atomicWrite, removeFile, readSafe } from "./engine.js";
 import type { SessionMeta, ClaudeSessionRef } from "../types.js";
@@ -276,8 +276,9 @@ export function clearLegacyPendingAuditsDir(projectPath: string): void {
       removeFile(join(dir, entry));
     }
   } catch {}
-  // Best-effort rmdir via removeFile (no-op if not empty, which is fine).
-  try { removeFile(dir); } catch {}
+  // rmdir the now-empty directory. removeFile uses unlinkSync which fails on
+  // directories (EISDIR), so we use rmSync directly.
+  try { rmSync(dir, { recursive: false }); } catch {}
 }
 
 /**
@@ -555,7 +556,6 @@ export function createSession(projectPath: string): SessionMeta {
     id: randomUUID(),
     createdAt: new Date().toISOString(),
     closedAt: null,
-    turns: 0,
     filesChanged: [],
     // `origin` is the absolute path of the session's parent directory — the
     // directory that contains .axme-code/. Stored at creation time and never
@@ -705,9 +705,9 @@ export function getLastSession(projectPath: string): SessionMeta | null {
  * Called from the PostToolUse hook, which runs in a separate process from
  * the MCP server. If the session file cannot be read (transient I/O error
  * or missing), this function silently returns instead of creating a new
- * session — recreating would destroy the real session's turns counter and
- * filesChanged list. Losing a single filesChanged entry is a far better
- * tradeoff than resetting the session to turns=0.
+ * session — recreating would destroy the real session's filesChanged list.
+ * Losing a single filesChanged entry is a far better tradeoff than resetting
+ * the session to an empty filesChanged array.
  */
 export function trackFileChanged(projectPath: string, sessionId: string, filePath: string): void {
   const session = loadSession(projectPath, sessionId);
@@ -751,9 +751,3 @@ export function attachClaudeSession(
   writeSession(projectPath, session);
 }
 
-export function incrementTurns(projectPath: string, sessionId: string): void {
-  const session = loadSession(projectPath, sessionId);
-  if (!session) return;
-  session.turns++;
-  writeSession(projectPath, session);
-}

@@ -191,7 +191,6 @@ export interface SessionMeta {
   id: string;
   createdAt: string;
   closedAt: string | null;
-  turns: number;
   filesChanged: string[];
   /**
    * Absolute path to the directory where the MCP server was running when

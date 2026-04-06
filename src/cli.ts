@@ -249,10 +249,11 @@ function usage(): void {
   console.log(`AXME Code - MCP server for Claude Code CLI
 
 Usage:
-  axme-code setup [path]    Initialize project (LLM scan + .mcp.json + CLAUDE.md)
-  axme-code serve           Start MCP server (stdio transport)
-  axme-code status [path]   Show project status
-  axme-code help            Show this help
+  axme-code setup [path]                  Initialize project (LLM scan + .mcp.json + CLAUDE.md)
+  axme-code serve                         Start MCP server (stdio transport)
+  axme-code status [path]                 Show project status
+  axme-code cleanup legacy-artifacts [--dry-run]  Remove pre-PR#7 sessions/logs
+  axme-code help                          Show this help
 
 After setup, run 'claude' as usual. AXME tools are available automatically.`);
 }
@@ -402,6 +403,27 @@ async function main() {
         process.exit(1);
       }
       process.exit(0);
+    }
+
+    case "cleanup": {
+      const subCommand = args[1];
+      const dryRun = args.includes("--dry-run");
+      // Path is the first non-flag arg after subCommand, or "."
+      const pathArg = args.slice(2).find(a => !a.startsWith("--"));
+      const projectPath = resolve(pathArg || ".");
+
+      if (subCommand === "legacy-artifacts") {
+        const { cleanupLegacyArtifacts } = await import("./tools/cleanup.js");
+        console.log(`Cleaning legacy artifacts in ${projectPath}${dryRun ? " (dry run)" : ""}...`);
+        const result = cleanupLegacyArtifacts(projectPath, { dryRun, onProgress: console.log });
+        console.log(`\nSummary: ${result.sessionsDeleted} sessions, ${result.auditLogsDeleted} audit logs, ${result.legacyDirsRemoved.length} legacy dirs`);
+        if (result.backupPath) console.log(`Backup: ${result.backupPath}`);
+      } else {
+        console.error(`Unknown cleanup subcommand: ${subCommand}`);
+        console.error("Available: legacy-artifacts");
+        process.exit(1);
+      }
+      break;
     }
 
     case "help":
