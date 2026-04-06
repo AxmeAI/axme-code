@@ -33,8 +33,10 @@ Your task: clean up the .axme-code/ storage in the current project directory.
 
 ## Step 1: Audit decisions
 
-1. Read all decision files: Glob pattern ".axme-code/decisions/D-*.md"
-2. For each pair of decisions, determine if they are:
+1. Read the index file FIRST: ".axme-code/decisions/index.md" — it has a table of ALL decisions with id, title, enforce, source, date. This is ONE file read, not 75.
+2. From the index, identify CANDIDATE pairs that look like duplicates or contradictions (same topic, similar titles).
+3. ONLY THEN read the full decision files (D-NNN-slug.md) for those specific candidates to check body/reasoning.
+4. For each candidate pair, determine if they are:
    a) DUPLICATES — same topic, different wording. Keep the newer one (by date field), supersede the older.
    b) CONTRADICTIONS — same topic, conflicting rules. Check the actual code (Read/Grep relevant files) to determine which is current. Supersede the outdated one.
    c) INDEPENDENT — different topics. Leave both.
@@ -75,7 +77,7 @@ Your task: audit EACH repository's knowledge base independently.
 
 1. List all subdirectories that have .axme-code/ (use Glob or ls)
 2. For EACH repo, perform the full audit:
-   a) Read all .axme-code/decisions/D-*.md files
+   a) Read .axme-code/decisions/index.md FIRST (one file per repo, has all decisions in a table). Only read individual D-NNN files for candidate pairs.
    b) Find duplicates and contradictions among decisions
    c) Check actual code in that repo to verify which decisions are current
    d) Supersede outdated decisions (edit frontmatter: add status: superseded, supersededBy)
