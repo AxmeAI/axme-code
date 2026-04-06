@@ -10,7 +10,21 @@
  */
 
 /** Pseudo-paths that are never real files. */
-const IGNORED_PATHS = new Set(["/dev/null", "/dev/stdout", "/dev/stderr", "/dev/stdin", "-", ""]);
+const IGNORED_PATHS = new Set(["/dev/null", "/dev/stdout", "/dev/stderr", "/dev/stdin", "-", "", "/"]);
+
+/**
+ * Reject paths that are clearly not real file paths.
+ * Catches artifacts from segment splitting (e.g. "1:", "0:" from `2>&1`
+ * split by `[;&|]+`, or bare "/" from stray redirect matches).
+ */
+function isValidFilePath(p: string): boolean {
+  if (p.length < 2) return false;
+  // Reject fd-redirect artifacts: "0:", "1:", "2:", "&1", etc.
+  if (/^\d+:/.test(p) || /^&\d/.test(p)) return false;
+  // Must start with /, ., ~, or alphanumeric (relative path)
+  if (!/^[/.~a-zA-Z0-9]/.test(p)) return false;
+  return true;
+}
 
 /** Patterns that extract written-to file paths from bash commands. */
 const WRITE_PATTERNS: Array<{ regex: RegExp; group: number }> = [
@@ -67,6 +81,7 @@ export function extractBashWritePaths(command: string): string[] {
         if (IGNORED_PATHS.has(p)) continue;
         if (p.startsWith("$") || p.startsWith("-")) continue;
         if (p.includes("${")) continue;
+        if (!isValidFilePath(p)) continue;
         paths.add(p);
       }
     }

@@ -344,7 +344,7 @@ server.tool(
 // --- axme_ask_question ---
 server.tool(
   "axme_ask_question",
-  "Record an open question for the next session or KB audit. Use when you find ambiguity that needs user clarification.",
+  "Record a question that ONLY the user can answer - architectural choices, product decisions, ambiguous requirements. NOT for bugs, TODOs, tasks, or findings - those belong in the conversation or TODO list. Example: 'Should we support backwards compatibility with v1 API?' Anti-example: 'There is a bug in extractBashWritePaths' (that is a bug, not a question for the user).",
   {
     project_path: z.string().optional().describe("Absolute path to the project root (defaults to server cwd)"),
     question: z.string().describe("The question text"),
