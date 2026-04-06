@@ -12,7 +12,7 @@
 
 import { join } from "node:path";
 import { appendFileSync } from "node:fs";
-import { readWorklog, logSessionEnd, logError, logAuditComplete } from "./storage/worklog.js";
+import { readWorklog, logSessionEnd, logError, logAuditComplete, logCheckResult } from "./storage/worklog.js";
 import { saveScopedMemories, listMemories } from "./storage/memory.js";
 import { saveScopedDecisions, listDecisions, supersedeDecision, getDecision } from "./storage/decisions.js";
 import { saveScopedSafetyRule, loadSafetyRules, type SafetyRuleType } from "./storage/safety.js";
@@ -145,7 +145,7 @@ export interface SessionCleanupResult {
   worklogSummary: boolean;
   oracleRescanned: boolean;
   costUsd: number;
-  skipped?: "already-audited" | "not-found" | "no-storage" | "concurrent-audit" | "retry-cap";
+  skipped?: "already-audited" | "not-found" | "no-storage" | "concurrent-audit" | "retry-cap" | "ghost";
 }
 
 /**
@@ -452,7 +452,6 @@ export async function runSessionCleanup(
                 status: "saved",
                 reason: `superseded ${oldId} with ${newDecision.id}`,
               });
-              dSaved++;
             } catch {
               // Old decision not found — fall through to normal save
               newDecisions.push(d);
@@ -729,6 +728,8 @@ export async function runSessionCleanup(
   // Log structured audit result with cost and extraction counts.
   if (result.auditRan) {
     try {
+      const details = `${result.memories} mem, ${result.decisions} dec, ${result.safetyRules} safety`;
+      logCheckResult(workspacePath, sessionId, "auditor", "PASS", details);
       logAuditComplete(workspacePath, sessionId, {
         costUsd: result.costUsd,
         memories: result.memories,

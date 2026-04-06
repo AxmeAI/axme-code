@@ -93,6 +93,13 @@ export function logSafetyBlock(
   logEvent(projectPath, "safety_block", sessionId, { tool, target, rule, reason });
 }
 
+export function logCheckResult(
+  projectPath: string, sessionId: string,
+  agent: string, result: string, details: string,
+): void {
+  logEvent(projectPath, "check_result", sessionId, { agent, result, details });
+}
+
 export function logAuditComplete(
   projectPath: string, sessionId: string,
   data: { costUsd: number; memories: number; decisions: number; safety: number; durationMs: number },
