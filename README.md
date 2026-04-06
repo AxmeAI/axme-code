@@ -61,27 +61,22 @@ Each repo has its own knowledge base (`.axme-code/`). Workspace-level rules appl
 
 ---
 
+## Knowledge Categories
+
+| Category | What it stores | Example |
+|----------|---------------|---------|
+| **Oracle** | Project structure, tech stack, coding patterns, glossary | "Python 3.11, FastAPI, PostgreSQL" |
+| **Decisions** | Architectural decisions with enforcement levels (required/advisory) | "All deploys via GitHub Actions only" (required) |
+| **Memory** | Feedback from mistakes, validated patterns | "Never use sync httpx in async handlers" |
+| **Safety** | Protected branches, denied commands, filesystem restrictions | git push --force -> BLOCKED |
+| **Handoff** | Where work stopped, blockers, next steps | "PR#17 open, needs review" |
+| **Worklog** | Session history, audit results, events | Timeline of all sessions |
+
+---
+
 ## How It Works
 
 ![AXME Code Overview](docs/diagrams/axme-code-overview.png)
-
-AXME Code has three components:
-
-### 1. MCP Server (persistent, runs while VS Code is open)
-
-Provides tools for the agent to read and write the knowledge base. All writes go through MCP server code (atomicWrite, correct append) - the agent never writes storage files directly. This guarantees format consistency.
-
-### 2. Hooks (fire on every tool call)
-
-**pre-tool-use**: Checks every Bash command, git operation, and file access against safety rules. Blocks violations before they execute. Also creates/recovers session tracking.
-
-**post-tool-use**: Records which files the agent changed (for audit trail).
-
-### 3. Background Auditor (runs after session close)
-
-A detached process that reads the session transcript and catches anything the agent forgot to save. Two modes:
-- **Full extraction** - when the agent crashed or the user closed the window without formal close
-- **Verify-only** - when the agent completed the close checklist (lighter, cheaper)
 
 ### Session Flow
 
@@ -116,40 +111,38 @@ All data lives in `.axme-code/` in your project root (or workspace root for mult
   config.yaml       # Model settings, presets
 ```
 
-### Knowledge Categories
+---
 
-| Category | What it stores | Example |
-|----------|---------------|---------|
-| **Oracle** | Project structure, tech stack, coding patterns, glossary | "Python 3.11, FastAPI, PostgreSQL" |
-| **Decisions** | Architectural decisions with enforcement levels (required/advisory) | "All deploys via GitHub Actions only" (required) |
-| **Memory** | Feedback from mistakes, validated patterns | "Never use sync httpx in async handlers" |
-| **Safety** | Protected branches, denied commands, filesystem restrictions | git push --force -> BLOCKED |
-| **Handoff** | Where work stopped, blockers, next steps | "PR#17 open, needs review" |
-| **Worklog** | Session history, audit results, events | Timeline of all sessions |
+## Related
+
+| Repository | Description |
+|-----------|-------------|
+| [axme](https://github.com/AxmeAI/axme) | AXME platform - durable execution for AI agents |
 
 ---
 
-## Preset Bundles
+<details>
+<summary><strong>Components</strong></summary>
 
-During `axme-code setup`, preset bundles provide curated best-practice rules:
+AXME Code has three components:
 
-| Preset | What it adds |
-|--------|-------------|
-| **essential-safety** | Protected branches, no secrets in git, no force push, fail loudly |
-| **ai-agent-guardrails** | Verification requirements, no autonomous deploys, proof before done |
+### 1. MCP Server (persistent, runs while VS Code is open)
 
----
+Provides tools for the agent to read and write the knowledge base. All writes go through MCP server code (atomicWrite, correct append) - the agent never writes storage files directly. This guarantees format consistency.
 
-## Development
+### 2. Hooks (fire on every tool call)
 
-```bash
-npm install
-npm run build       # esbuild -> dist/server.js + dist/cli.mjs
-npm test            # Node.js test runner (requires Node 22+)
-npx tsc --noEmit    # TypeScript strict type check
-```
+**pre-tool-use**: Checks every Bash command, git operation, and file access against safety rules. Blocks violations before they execute. Also creates/recovers session tracking.
 
----
+**post-tool-use**: Records which files the agent changed (for audit trail).
+
+### 3. Background Auditor (runs after session close)
+
+A detached process that reads the session transcript and catches anything the agent forgot to save. Two modes:
+- **Full extraction** - when the agent crashed or the user closed the window without formal close
+- **Verify-only** - when the agent completed the close checklist (lighter, cheaper)
+
+</details>
 
 <details>
 <summary><strong>Available MCP Tools</strong></summary>
@@ -190,18 +183,18 @@ axme-code audit-session      # Run LLM audit on a session transcript
 
 </details>
 
+<details>
+<summary><strong>Preset Bundles</strong></summary>
+
+During `axme-code setup`, preset bundles provide curated best-practice rules:
+
+| Preset | What it adds |
+|--------|-------------|
+| **essential-safety** | Protected branches, no secrets in git, no force push, fail loudly |
+| **ai-agent-guardrails** | Verification requirements, no autonomous deploys, proof before done |
+
+</details>
+
 ---
 
-## Related
-
-| Repository | Description |
-|-----------|-------------|
-| [axme](https://github.com/AxmeAI/axme) | AXME platform - durable execution for AI agents |
-| [axme-cli](https://github.com/AxmeAI/axme-cli) | Command-line interface |
-| [axme-sdk-python](https://github.com/AxmeAI/axme-sdk-python) | Python SDK |
-| [axme-sdk-typescript](https://github.com/AxmeAI/axme-sdk-typescript) | TypeScript SDK |
-| [axme-docs](https://github.com/AxmeAI/axme-docs) | Documentation |
-
----
-
-hello@axme.ai | [Security](SECURITY.md) | [License](LICENSE)
+hello@axme.ai
