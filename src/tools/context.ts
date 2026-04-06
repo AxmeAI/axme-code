@@ -7,7 +7,7 @@
 
 import { oracleContext, showOracle, oracleExists, loadOracleFiles } from "../storage/oracle.js";
 import { decisionsContext, showDecisions, enforceableDecisionsContext, listDecisions } from "../storage/decisions.js";
-import { pathExists } from "../storage/engine.js";
+import { pathExists, readSafe } from "../storage/engine.js";
 import { join } from "node:path";
 import { AXME_CODE_DIR } from "../types.js";
 import { safetyContext, loadSafetyRules } from "../storage/safety.js";
@@ -185,6 +185,19 @@ export function getFullContext(projectPath: string, workspacePath?: string): str
     const qCtx = questionsContext(workspacePath ?? projectPath);
     if (qCtx) parts.push(qCtx);
   } catch {}
+
+  // Recent worklog: show last few narrative session summaries so the agent
+  // knows what happened in recent sessions without reading the full history.
+  const worklogPath = join(workspacePath ?? projectPath, AXME_CODE_DIR, "worklog.md");
+  const worklogContent = readSafe(worklogPath);
+  if (worklogContent.length > 20) {
+    // Extract last 5 entries (each starts with "## ")
+    const entries = worklogContent.split(/(?=^## )/m).filter(e => e.trim());
+    const recent = entries.slice(-5);
+    if (recent.length > 0) {
+      parts.push("# Recent Session History\n\n" + recent.join("\n"));
+    }
+  }
 
   return parts.join("\n\n");
 }
