@@ -399,16 +399,13 @@ server.tool(
 // --- axme_begin_close ---
 server.tool(
   "axme_begin_close",
-  "Start session close process. Call when user says 'close session' / 'end session' / '\u0437\u0430\u043A\u0440\u044B\u0432\u0430\u0439 \u0441\u0435\u0441\u0441\u0438\u044E'. Returns extraction checklist with dedup context. Follow the checklist, then call axme_finalize_close.",
+  "Start session close process. Call when user says 'close session' / 'end session' / '\u0437\u0430\u043A\u0440\u044B\u0432\u0430\u0439 \u0441\u0435\u0441\u0441\u0438\u044E'. Returns extraction checklist. Follow it, then call axme_finalize_close with everything.",
   {},
   async () => {
     const sid = getOwnedSessionIdForLogging();
     if (!sid) {
       return { content: [{ type: "text" as const, text: "No active AXME session found." }] };
     }
-
-    const { getCloseContext } = await import("./tools/context.js");
-    const dedupContext = getCloseContext(pp(), wp());
 
     const checklist = [
       `# Session Close Checklist (session ${sid.slice(0, 8)})`,
@@ -424,34 +421,47 @@ server.tool(
       "- If you worked in multiple repos: split items by repo, each gets the scope where it applies",
       "",
       "### What to extract:",
-      "1. **Memories** (feedback from user corrections, validated patterns) -> `axme_save_memory` for each",
-      "2. **Decisions** (policies user confirmed, architectural choices) -> `axme_save_decision` for each",
-      "3. **Safety rules** (user mandated bash_deny, fs_deny, git_protected_branch, etc.) -> `axme_update_safety` for each",
+      "- **Memories** (feedback from user corrections, validated patterns)",
+      "- **Decisions** (policies user confirmed, architectural choices)",
+      "- **Safety rules** (user mandated bash_deny, fs_deny, git_protected_branch, etc.)",
       "",
-      "## Step 2: Prepare Handoff",
+      "### Dedup & conflict check (MANDATORY for each item):",
+      "Before adding any item, check the TARGET repo's storage:",
+      "- Use `axme_search_memory` / `axme_decisions` / `axme_safety` for the target scope",
+      "- Or Grep directly in the target repo's .axme-code/ directory",
       "",
-      "Prepare the following data for `axme_finalize_close`:",
+      "**If duplicate found** (same concept, different wording): skip the item, do NOT add.",
+      "**If same topic but updated info**: use action `supersede` with the old slug/id.",
+      "**If direct contradiction with existing**: use action `supersede` on the older item (newer is authoritative).",
+      "**If unclear contradiction**: ask the user which to keep before adding.",
+      "**If you find an outdated item** (even unrelated to new ones): use action `remove` with its slug/id.",
+      "",
+      "## Step 2: Prepare Everything for `axme_finalize_close`",
+      "",
+      "Collect ALL data into a single `axme_finalize_close` call:",
+      "",
+      "### Extractions (arrays, can be empty):",
+      "- `memories`: [{action, type, title, description, body, keywords, scope}]",
+      "  - action: `add` | `remove` (slug required) | `supersede` (slug required + new data)",
+      "- `decisions`: [{action, title, decision, reasoning, enforce, scope}]",
+      "  - action: `add` | `remove` (id required) | `supersede` (id required + new data)",
+      "- `safety_rules`: [{action, rule_type, value}]",
+      "  - action: `add` | `remove`",
+      "",
+      "### Handoff:",
       "- `stopped_at`: what the session stopped at (single line)",
       "- `summary`: 2-5 bullet points of what was accomplished",
       "- `in_progress`: current state (branches, PRs, uncommitted work)",
-      "- `prs`: array of {url, title, status} for PRs created/merged",
-      "- `test_results`: test run summary (optional)",
-      "- `blockers`: blockers for next session (optional)",
+      "- `prs`: [{url, title, status}]",
+      "- `test_results`, `blockers`, `dirty_branches` (optional)",
       "- `next_steps`: concrete next steps",
-      "- `dirty_branches`: branch names with state (optional)",
-      "- `worklog_entry`: narrative summary of what happened in this session (5-15 lines markdown)",
-      "- `startup_text`: ready-to-paste text for next session start",
+      "- `worklog_entry`: narrative summary (5-15 lines markdown)",
+      "- `startup_text`: ready-to-paste text for next session",
       "",
-      "## Step 3: Finalize",
+      "## Step 3: Call `axme_finalize_close`",
       "",
-      "Call `axme_finalize_close` with all prepared data.",
-      "After it returns, output to the user: first the storage summary, then the startup_text.",
-      "",
-      "---",
-      "",
-      "## Dedup Context (existing knowledge - do NOT duplicate)",
-      "",
-      dedupContext,
+      "Pass everything in one call. MCP writes all files atomically.",
+      "After it returns, output to the user: storage summary, then startup_text.",
     ];
 
     return { content: [{ type: "text" as const, text: checklist.join("\n") }] };
@@ -461,8 +471,34 @@ server.tool(
 // --- axme_finalize_close ---
 server.tool(
   "axme_finalize_close",
-  "Finalize session close: writes handoff, worklog entry, sets agentClosed flag. Call after completing the extraction checklist from axme_begin_close.",
+  "Finalize session close: saves extractions, writes handoff + worklog, sets agentClosed flag. Call with ALL data after completing the checklist from axme_begin_close.",
   {
+    // --- Extractions ---
+    memories: z.array(z.object({
+      action: z.enum(["add", "remove", "supersede"]),
+      slug: z.string().optional().describe("Required for remove/supersede: slug of existing memory"),
+      type: z.enum(["feedback", "pattern"]).optional().describe("Required for add/supersede"),
+      title: z.string().optional().describe("Required for add/supersede"),
+      description: z.string().optional().describe("Required for add/supersede"),
+      body: z.string().optional(),
+      keywords: z.array(z.string()).optional(),
+      scope: z.array(z.string()).optional(),
+    })).optional().describe("Memories to add/remove/supersede"),
+    decisions: z.array(z.object({
+      action: z.enum(["add", "remove", "supersede"]),
+      id: z.string().optional().describe("Required for remove/supersede: decision ID (e.g. D-042)"),
+      title: z.string().optional().describe("Required for add/supersede"),
+      decision: z.string().optional().describe("Required for add/supersede"),
+      reasoning: z.string().optional().describe("Required for add/supersede"),
+      enforce: z.enum(["required", "advisory"]).optional(),
+      scope: z.array(z.string()).optional(),
+    })).optional().describe("Decisions to add/remove/supersede"),
+    safety_rules: z.array(z.object({
+      action: z.enum(["add", "remove"]),
+      rule_type: z.enum(["git_protected_branch", "bash_deny", "bash_allow", "fs_deny", "fs_readonly"]),
+      value: z.string(),
+    })).optional().describe("Safety rules to add/remove"),
+    // --- Handoff ---
     stopped_at: z.string().describe("What the session stopped at (single line)"),
     summary: z.string().describe("2-5 bullet points of what was accomplished"),
     in_progress: z.string().describe("Current state: branches, PRs, uncommitted work"),
@@ -485,8 +521,91 @@ server.tool(
     }
 
     const targetPath = defaultProjectPath;
+    const report: string[] = [];
 
-    // 1. Write enriched handoff
+    // 1. Process extractions
+    const { saveMemoryTool } = await import("./tools/memory-tools.js");
+    const { saveDecisionTool } = await import("./tools/decision-tools.js");
+    const { updateSafetyTool } = await import("./tools/safety-tools.js");
+    const { deleteMemory } = await import("./storage/memory.js");
+    const { supersedeDecision, revokeDecision } = await import("./storage/decisions.js");
+
+    // Memories
+    if (args.memories && args.memories.length > 0) {
+      for (const m of args.memories) {
+        try {
+          if (m.action === "add" && m.type && m.title && m.description) {
+            const result = saveMemoryTool(targetPath, {
+              type: m.type, title: m.title, description: m.description,
+              body: m.body, keywords: m.keywords, scope: m.scope,
+            }, sid);
+            report.push(`Memory added: ${result.slug}`);
+          } else if (m.action === "remove" && m.slug) {
+            deleteMemory(targetPath, m.slug);
+            report.push(`Memory removed: ${m.slug}`);
+          } else if (m.action === "supersede" && m.slug && m.type && m.title && m.description) {
+            deleteMemory(targetPath, m.slug);
+            const result = saveMemoryTool(targetPath, {
+              type: m.type, title: m.title, description: m.description,
+              body: m.body, keywords: m.keywords, scope: m.scope,
+            }, sid);
+            report.push(`Memory superseded: ${m.slug} -> ${result.slug}`);
+          }
+        } catch (err) {
+          report.push(`Memory error (${m.action} ${m.slug ?? m.title}): ${err}`);
+        }
+      }
+    }
+
+    // Decisions
+    if (args.decisions && args.decisions.length > 0) {
+      for (const d of args.decisions) {
+        try {
+          if (d.action === "add" && d.title && d.decision && d.reasoning) {
+            const result = saveDecisionTool(targetPath, {
+              title: d.title, decision: d.decision, reasoning: d.reasoning,
+              enforce: d.enforce, scope: d.scope,
+            });
+            report.push(`Decision added: ${result.id} - ${d.title}`);
+          } else if (d.action === "remove" && d.id) {
+            revokeDecision(targetPath, d.id, "Removed during session close by agent");
+            report.push(`Decision revoked: ${d.id}`);
+          } else if (d.action === "supersede" && d.id && d.title && d.decision && d.reasoning) {
+            const result = supersedeDecision(targetPath, d.id, {
+              title: d.title, slug: d.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 50),
+              decision: d.decision, reasoning: d.reasoning,
+              enforce: d.enforce ?? null, scope: d.scope,
+              date: new Date().toISOString().slice(0, 10),
+              source: "session" as const,
+              sessionId: sid,
+            });
+            report.push(`Decision superseded: ${d.id} -> ${result.newDecision.id} - ${d.title}`);
+          }
+        } catch (err) {
+          report.push(`Decision error (${d.action} ${d.id ?? d.title}): ${err}`);
+        }
+      }
+    }
+
+    // Safety rules
+    if (args.safety_rules && args.safety_rules.length > 0) {
+      for (const s of args.safety_rules) {
+        try {
+          if (s.action === "add") {
+            updateSafetyTool(targetPath, s.rule_type, s.value);
+            report.push(`Safety added: ${s.rule_type} = ${s.value}`);
+          } else if (s.action === "remove") {
+            const { removeSafetyRule } = await import("./storage/safety.js");
+            removeSafetyRule(targetPath, s.rule_type, s.value);
+            report.push(`Safety removed: ${s.rule_type} = ${s.value}`);
+          }
+        } catch (err) {
+          report.push(`Safety error (${s.action} ${s.rule_type}): ${err}`);
+        }
+      }
+    }
+
+    // 2. Write enriched handoff
     const { writeHandoff } = await import("./storage/plans.js");
     writeHandoff(targetPath, {
       stoppedAt: args.stopped_at,
@@ -502,7 +621,7 @@ server.tool(
       source: "agent" as const,
     });
 
-    // 2. Append worklog entry
+    // 3. Append worklog entry
     const { appendFileSync } = await import("node:fs");
     const { join } = await import("node:path");
     const { AXME_CODE_DIR } = await import("./types.js");
@@ -513,7 +632,7 @@ server.tool(
       appendFileSync(join(targetPath, AXME_CODE_DIR, "worklog.md"), worklogEntry);
     } catch {}
 
-    // 3. Set agentClosed flag on session meta
+    // 4. Set agentClosed flag
     const { loadSession, writeSession } = await import("./storage/sessions.js");
     const session = loadSession(targetPath, sid);
     if (session) {
@@ -521,21 +640,14 @@ server.tool(
       writeSession(targetPath, session);
     }
 
-    // 4. Build storage summary from recent worklog events
-    const { readWorklog } = await import("./storage/worklog.js");
-    const events = readWorklog(targetPath, { limit: 50 });
-    const sessionEvents = events.filter(e => e.sessionId === sid);
-    const memoriesSaved = sessionEvents.filter(e => e.type === "memory_saved").length;
-    const decisionsSaved = sessionEvents.filter(e => e.type === "decision_saved").length;
-
+    // 5. Build storage summary
     const summaryLines = [
       `Session ${shortId} closed.`,
       "",
       "## Storage Summary",
+      ...report.length > 0 ? report.map(r => `- ${r}`) : ["- No extractions"],
       `- Handoff: written to .axme-code/plans/handoff.md`,
       `- Worklog: entry appended to .axme-code/worklog.md`,
-      `- Memories saved this session: ${memoriesSaved}`,
-      `- Decisions saved this session: ${decisionsSaved}`,
       `- agentClosed: true`,
       "",
       "Output to the user: first the storage summary above, then the startup_text below.",
