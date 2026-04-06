@@ -199,8 +199,11 @@ function parseTestPlan(content: string): TestPlan {
     if (trimmed === "custom:") { flushItem(plan, currentSection, currentItem); currentSection = "custom"; currentItem = {}; continue; }
     if (!currentSection) continue;
     if (trimmed.startsWith("- name:")) { flushItem(plan, currentSection, currentItem); currentItem = { name: parseYamlValue(trimmed.slice(7)) }; continue; }
-    const colonIdx = trimmed.indexOf(":");
-    if (colonIdx > 0) { currentItem[trimmed.slice(0, colonIdx).trim()] = parseYamlValue(trimmed.slice(colonIdx + 1)); }
+    // Split on FIRST colon only. Previous indexOf(":") would break on values
+    // containing colons (e.g. command: curl http://host:8080). We look for the
+    // first unquoted colon that is preceded by a YAML key (word chars only).
+    const keyMatch = trimmed.match(/^(\w+):\s*(.*)/);
+    if (keyMatch) { currentItem[keyMatch[1]] = parseYamlValue(keyMatch[2]); }
   }
   flushItem(plan, currentSection, currentItem);
   return plan;

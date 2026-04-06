@@ -272,7 +272,11 @@ export async function initWorkspaceWithLLM(workspacePath: string, opts?: {
       }, { lineWidth: 120 });
       atomicWrite(join(workspacePath, AXME_CODE_DIR, "workspace.yaml"), wsYaml);
     }
-  } catch {}
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    workspaceResult.errors.push(`Phase 1 workspace init failed: ${msg}`);
+    opts?.onProgress?.(`Warning: workspace init failed: ${msg}`);
+  }
 
   // Phase 2: per-project init with concurrency limit
   const CONCURRENCY = 3; // max 3 repos scanning simultaneously
@@ -327,7 +331,11 @@ export async function initWorkspaceWithLLM(workspacePath: string, opts?: {
         }
       }
     }
-  } catch {}
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    workspaceResult.errors.push(`Phase 2 per-project init failed: ${msg}`);
+    opts?.onProgress?.(`Warning: per-project init failed: ${msg}`);
+  }
 
   return { workspaceResult, projectResults };
 }
