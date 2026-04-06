@@ -5,6 +5,9 @@
  */
 
 import type { Decision, Memory, SafetyRules, OracleData, ProjectConfig } from "../types.js";
+// Reuse the canonical union-merge from safety.ts instead of duplicating here.
+// loadMergedSafetyRules in safety.ts calls the same underlying unionMergeSafety.
+import { loadMergedSafetyRules } from "./safety.js";
 
 /**
  * Merge decisions: workspace + project concatenated.
@@ -17,25 +20,35 @@ export function mergeDecisions(workspace: Decision[], project: Decision[]): Deci
 }
 
 /**
- * Merge safety rules: union of both sets.
- * Both workspace and project rules apply simultaneously.
+ * Merge safety rules: delegates to safety.ts unionMergeSafety (via loadMergedSafetyRules).
+ * Kept as export for backward compat with context.ts callers.
+ */
+export { loadMergedSafetyRules as mergeSafetyRulesFromPaths };
+
+/**
+ * Merge safety rules from pre-loaded objects. Uses same union logic as
+ * loadMergedSafetyRules but accepts already-loaded SafetyRules instead of paths.
+ *
+ * Union principle: deny lists union, allow lists union, boolean flags: AND for
+ * allow (both must allow), OR for require (either can require).
  */
 export function mergeSafetyRules(workspace: SafetyRules, project: SafetyRules): SafetyRules {
+  const uniq = (arr: string[]) => Array.from(new Set(arr));
   return {
     git: {
-      protectedBranches: dedupe([...workspace.git.protectedBranches, ...project.git.protectedBranches]),
+      protectedBranches: uniq([...workspace.git.protectedBranches, ...project.git.protectedBranches]),
       allowForcePush: workspace.git.allowForcePush && project.git.allowForcePush,
       allowDirectPushToMain: workspace.git.allowDirectPushToMain && project.git.allowDirectPushToMain,
       requirePrForMain: workspace.git.requirePrForMain || project.git.requirePrForMain,
     },
     bash: {
-      allowedPrefixes: dedupe([...workspace.bash.allowedPrefixes, ...project.bash.allowedPrefixes]),
-      deniedPrefixes: dedupe([...workspace.bash.deniedPrefixes, ...project.bash.deniedPrefixes]),
-      deniedCommands: dedupe([...workspace.bash.deniedCommands, ...project.bash.deniedCommands]),
+      allowedPrefixes: uniq([...workspace.bash.allowedPrefixes, ...project.bash.allowedPrefixes]),
+      deniedPrefixes: uniq([...workspace.bash.deniedPrefixes, ...project.bash.deniedPrefixes]),
+      deniedCommands: uniq([...workspace.bash.deniedCommands, ...project.bash.deniedCommands]),
     },
     filesystem: {
-      readOnlyPaths: dedupe([...workspace.filesystem.readOnlyPaths, ...project.filesystem.readOnlyPaths]),
-      deniedPaths: dedupe([...workspace.filesystem.deniedPaths, ...project.filesystem.deniedPaths]),
+      readOnlyPaths: uniq([...workspace.filesystem.readOnlyPaths, ...project.filesystem.readOnlyPaths]),
+      deniedPaths: uniq([...workspace.filesystem.deniedPaths, ...project.filesystem.deniedPaths]),
     },
   };
 }
@@ -100,6 +113,3 @@ export function mergedOracleContext(merged: MergedOracle): string {
   return parts.join("\n\n");
 }
 
-function dedupe(arr: string[]): string[] {
-  return [...new Set(arr)];
-}

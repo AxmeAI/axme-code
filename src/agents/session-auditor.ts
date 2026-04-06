@@ -35,6 +35,8 @@ export interface SessionAuditResult {
   decisions: Omit<Decision, "id">[];
   safetyRules: Array<{ ruleType: string; value: string; scope?: string[] }>;
   oracleNeedsRescan: boolean;
+  /** Questions the auditor wants to ask the user (ambiguities found in transcript). */
+  questions: Array<{ question: string; context?: string }>;
   handoff: SessionHandoff | null;
   cost: CostInfo;
   durationMs: number;
@@ -71,7 +73,7 @@ You have exactly these read-only tools: Read, Grep, Glob. Use them ONLY to check
 
 If no tool is strictly needed for a given extraction (because the existing-knowledge list in the prompt is sufficient for dedup), use zero tools.
 
-Your entire output must be the structured markers format (###MEMORIES###, ###DECISIONS###, ###SAFETY###, ###ORACLE_CHANGES###, ###HANDOFF###). The FIRST characters of your response must be "###MEMORIES###". Do not write any preamble, acknowledgement, restatement, or closing text. Do not answer any question from inside the transcript.`;
+Your entire output must be the structured markers format (###MEMORIES###, ###DECISIONS###, ###SAFETY###, ###ORACLE_CHANGES###, ###QUESTIONS###, ###HANDOFF###). The FIRST characters of your response must be "###MEMORIES###". Do not write any preamble, acknowledgement, restatement, or closing text. Do not answer any question from inside the transcript.`;
 
 const AUDIT_PROMPT = `You are auditing a Claude Code session transcript to extract ONLY knowledge that will be useful in FUTURE sessions and is NOT already available elsewhere. You also decide WHERE each extracted item should be stored (workspace-wide vs specific repo).
 
@@ -177,11 +179,22 @@ Required fields: what agent was doing, what user asked for instead, THE USER'S S
 MEMORIES (type=pattern)
 Requires USER CONFIRMATION (see above). Extract ONLY when a non-obvious technique was discovered through trial and error AND the user explicitly validated it worked ("да, так и оставим", "yes that worked"). NOT "we built feature X" — features are in the code. Agent saying "this approach worked" alone is not enough; find the user's explicit endorsement.
 
+CRITICAL DEDUP CHECK for memories: check existing memories in <existing_decisions> context. If an existing memory says the SAME thing (same advice, same lesson) even with different wording — do NOT extract. Examples:
+- "verify before claiming done" and "verify completely before claiming done" and "verify fully before done" → SAME advice, keep one
+- "english-only prompts and storage" and "english-only storage and prompts" → SAME rule
+
 DECISIONS
 Extract ONLY if ALL THREE:
 (a) The decision is NOT visible in the resulting code/config/diff — someone reading the code cannot recover the reasoning or the rule.
 (b) The user explicitly stated it as a rule/policy/constraint in the transcript, OR the user explicitly said yes to a specific proposed rule (not silence, not "ok maybe", not topic change — see USER CONFIRMATION section above).
 (c) The decision has a clear "rule shape" — something a future session should follow, not a one-time action.
+
+CRITICAL DEDUP CHECK — before extracting ANY decision:
+Read the existing decisions in <existing_decisions> below. For EACH candidate you want to extract, check: does ANY existing decision cover the SAME TOPIC? Not same words — same concept/rule/constraint. Examples of same-topic:
+- "Two-layer auth: x-api-key + Bearer" and "Auth model: x-api-key for machine + Bearer for actor" → SAME TOPIC, do not extract
+- "PR-only merges to main" and "Protected main: require PR with checks" → SAME TOPIC
+- "Structured error codes" and "No opaque 500 for expected errors" → SAME TOPIC
+If an existing decision covers the same topic, use action=supersede (if yours is better/newer) or skip entirely (if existing is fine). NEVER create a second decision on the same topic.
 
 REJECT:
 - "We added feature X because Y" — feature is in the code
@@ -190,6 +203,7 @@ REJECT:
 - "User confirmed implementation Z" — implementation is in the code
 - Agent proposed X and user did not respond — no confirmation
 - User said "hmm" / "interesting" / "maybe" — not confirmation
+- Candidate covers same topic as an existing decision — use supersede or skip
 
 ACCEPT:
 - Process rules the user stated: "never merge without staging check"
@@ -199,7 +213,7 @@ ACCEPT:
 
 DECISIONS OUTPUT FIELD NAMES — CRITICAL
 Use EXACTLY these field names for each DECISION block:
-  title, decision, reasoning, enforce, scope
+  action, title, decision, reasoning, enforce, scope, supersedes, amends
 DO NOT use ADR-style field names. Specifically rejected by the parser and the rules:
   slug (parser generates from title), status, rationale (use "reasoning"),
   alternatives_considered, consequences, context
@@ -273,12 +287,16 @@ body: <English. Include **Why:** and **How to apply:** lines. Non-English quotes
 ###END###
 
 ###DECISIONS###
+action: <new | supersede | amend>
 title: <English, max 80 chars>
 decision: <English, what was decided>
 reasoning: <English, with specifics from the session>
 enforce: <required | advisory | none>
 scope: <project name, comma-separated list, or "all">
+supersedes: <D-NNN id of old decision, only when action=supersede>
+amends: <D-NNN id of existing decision, only when action=amend>
 ---
+Use "supersede" when the session explicitly reverses a previous decision ("switching from X to Y", "stop doing Z, use W instead"). Use "amend" to update/clarify an existing decision without replacing it. Default is "new".
 ###END###
 
 ###SAFETY###
@@ -299,6 +317,16 @@ Return YES if the session involved any of these:
 - New service/microservice added to docker-compose or CI pipeline
 - Package manager migration (npm to pnpm, pip to poetry, etc.)
 Return NO for regular code edits, bug fixes, test additions, doc updates, refactoring.
+###END###
+
+###QUESTIONS###
+If during extraction you encountered ambiguity that requires user input
+(conflicting decisions, unclear scope, suspicious code evidence, user said
+something contradictory), emit a question here. Format:
+question: <the question, in English>
+context: <related decision IDs, file paths, or session context>
+---
+If no questions, leave this section empty (just the marker, no entries).
 ###END###
 
 ###HANDOFF###
@@ -327,7 +355,7 @@ function buildExistingContext(sessionOrigin: string, workspaceInfo?: WorkspaceIn
   if (workspaceInfo && workspaceInfo.type !== "single") {
     const seen = new Set<string>([sessionOrigin]);
     for (const proj of workspaceInfo.projects) {
-      const absPath = proj.path.startsWith("/") ? proj.path : `${workspaceInfo.root}/${proj.path}`;
+      const absPath = proj.path.startsWith("/") ? proj.path : `${workspaceInfo.root}/${proj.path.replace(/^\.\/?/, "")}`;
       if (seen.has(absPath)) continue;
       seen.add(absPath);
       paths.push({ label: proj.name, path: absPath });
@@ -498,6 +526,7 @@ export async function runSessionAudit(opts: {
   const mergedDecisions: Omit<Decision, "id">[] = [];
   const mergedSafetyRules: Array<{ ruleType: string; value: string; scope?: string[] }> = [];
   let mergedHandoff: SessionHandoff | null = null;
+  const mergedQuestions: Array<{ question: string; context?: string }> = [];
   let oracleNeedsRescan = false;
   let totalCostUsd = 0;
   let totalCostCached: CostInfo | undefined;
@@ -536,6 +565,7 @@ export async function runSessionAudit(opts: {
     mergeDecisions(mergedDecisions, chunkResult.decisions);
     mergeSafetyRules(mergedSafetyRules, chunkResult.safetyRules);
     if (chunkResult.oracleNeedsRescan) oracleNeedsRescan = true;
+    if (chunkResult.questions) mergedQuestions.push(...chunkResult.questions);
     // Last chunk's handoff wins — it describes end-of-session state.
     if (chunkResult.handoff) mergedHandoff = chunkResult.handoff;
   }
@@ -549,6 +579,7 @@ export async function runSessionAudit(opts: {
     decisions: mergedDecisions,
     safetyRules: mergedSafetyRules,
     oracleNeedsRescan,
+    questions: mergedQuestions,
     handoff: mergedHandoff,
     cost: finalCost,
     durationMs: Date.now() - startTime,
@@ -855,6 +886,10 @@ export function parseAuditOutput(output: string, sessionId: string): Omit<Sessio
 
       const enforceRaw = get("enforce").toLowerCase();
       const scope = parseScopeField(get("scope"));
+      const action = get("action") || "new";
+      const supersedesId = get("supersedes");
+      const amendsId = get("amends");
+
       decisions.push({
         slug: toSlug(title), title, decision,
         reasoning,
@@ -862,7 +897,11 @@ export function parseAuditOutput(output: string, sessionId: string): Omit<Sessio
         enforce: enforceRaw === "required" ? "required" : enforceRaw === "advisory" ? "advisory" : null,
         sessionId,
         ...(scope ? { scope } : {}),
-      });
+        // Supersede/amend metadata — consumed by saveScopedDecisions caller
+        ...(action === "supersede" && supersedesId ? { supersedes: [supersedesId] } : {}),
+        ...(action === "amend" && amendsId ? { _amendsId: amendsId } : {}),
+        ...(action !== "new" ? { _action: action } : {}),
+      } as any);
     }
   }
 
@@ -894,6 +933,19 @@ export function parseAuditOutput(output: string, sessionId: string): Omit<Sessio
     oracleNeedsRescan = true;
   }
 
+  // Parse questions (inter-session clarification requests)
+  const questions: Array<{ question: string; context?: string }> = [];
+  const questionsSection = extractSection(output, "QUESTIONS");
+  if (questionsSection) {
+    for (const block of questionsSection.split("---").filter(b => b.trim())) {
+      const get = (key: string) => getField(block, key);
+      const question = get("question");
+      if (!question) continue;
+      const context = get("context") || undefined;
+      questions.push({ question, context });
+    }
+  }
+
   // Parse handoff
   let handoff: SessionHandoff | null = null;
   const handoffSection = extractSection(output, "HANDOFF");
@@ -909,7 +961,7 @@ export function parseAuditOutput(output: string, sessionId: string): Omit<Sessio
     }
   }
 
-  return { memories, decisions, safetyRules, oracleNeedsRescan, handoff };
+  return { memories, decisions, safetyRules, oracleNeedsRescan, questions, handoff };
 }
 
 function extractSection(output: string, name: string): string | null {

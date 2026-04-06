@@ -152,7 +152,7 @@ export interface FilesystemRules {
 export type WorklogEventType =
   | "session_start"
   | "session_end"
-  | "session_orphan_closed"
+  | "session_orphan_audit_queued"
   | "agent_turn"
   | "check_result"
   | "memory_saved"

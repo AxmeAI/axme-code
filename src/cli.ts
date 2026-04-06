@@ -253,6 +253,8 @@ Usage:
   axme-code serve                         Start MCP server (stdio transport)
   axme-code status [path]                 Show project status
   axme-code cleanup legacy-artifacts [--dry-run]  Remove pre-PR#7 sessions/logs
+  axme-code cleanup decisions-normalize [--dry-run]  Add status:active to decisions
+  axme-code audit-kb [--all-repos] [--apply]         KB health report + LLM conflict analysis
   axme-code help                          Show this help
 
 After setup, run 'claude' as usual. AXME tools are available automatically.`);
@@ -428,6 +430,31 @@ async function main() {
         console.error("Available: legacy-artifacts, decisions-normalize");
         process.exit(1);
       }
+      break;
+    }
+
+    case "audit-kb": {
+      // Determine target path: cwd, auto-detect workspace root if in sub-repo
+      let targetPath = resolve(".");
+      const ws = detectWorkspace(targetPath);
+      if (ws.type === "single") {
+        const parentWs = detectWorkspace(resolve(".."));
+        if (parentWs.type !== "single") targetPath = parentWs.root;
+      } else {
+        targetPath = ws.root;
+      }
+      const allRepos = args.includes("--all-repos");
+
+      console.log(`KB Audit: ${targetPath}${allRepos ? " (all repos)" : ""}`);
+      console.log(`Agent will read decisions + memories, check code, and update storage directly.\n`);
+
+      const { runKbAudit } = await import("./agents/kb-auditor.js");
+      const result = await runKbAudit({ targetPath, allRepos });
+
+      console.log(`\nDone: $${result.costUsd.toFixed(2)}, ${(result.durationMs / 1000).toFixed(0)}s`);
+
+      const { resetKbAuditCounter } = await import("./storage/kb-audit.js");
+      resetKbAuditCounter(targetPath);
       break;
     }
 

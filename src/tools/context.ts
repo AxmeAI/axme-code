@@ -17,6 +17,7 @@ import { testPlanContext } from "../storage/test-plan.js";
 import { plansContext } from "../storage/plans.js";
 import { listPendingAudits } from "../storage/sessions.js";
 import { detectWorkspace } from "../utils/workspace-detector.js";
+import { questionsContext } from "../storage/questions.js";
 
 /**
  * Build the authoritative "Storage root" header that is prepended to every
@@ -178,6 +179,12 @@ export function getFullContext(projectPath: string, workspacePath?: string): str
     ];
     parts.push(lines.join("\n"));
   }
+
+  // Open questions: show any pending questions from previous sessions/audits
+  try {
+    const qCtx = questionsContext(workspacePath ?? projectPath);
+    if (qCtx) parts.push(qCtx);
+  } catch {}
 
   return parts.join("\n\n");
 }

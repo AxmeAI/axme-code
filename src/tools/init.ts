@@ -231,8 +231,12 @@ export async function initProjectWithLLM(projectPath: string, opts?: {
     projectPath,
     created: !alreadyExists,
     oracle: { files: oracleFiles, llm: oracleLlm },
-    decisions: { count: listDecisions(projectPath).length, fromScan: scanDecisionCount, fromPresets: presetsDecisionCount },
-    memories: { count: listMemories(projectPath).length, fromPresets: presetsMemoryCount },
+    decisions: {
+      count: listDecisions(projectPath).length,
+      fromScan: listDecisions(projectPath).filter(d => d.source === "init-scan").length,
+      fromPresets: listDecisions(projectPath).filter(d => d.source === "preset").length,
+    },
+    memories: { count: listMemories(projectPath).length, fromPresets: listMemories(projectPath).filter(m => m.source === "preset").length },
     safety: { created: true, llm: safetyLlm, summary: safetySummary },
     config: configCreated,
     cost: totalCost,
@@ -272,7 +276,11 @@ export async function initWorkspaceWithLLM(workspacePath: string, opts?: {
       }, { lineWidth: 120 });
       atomicWrite(join(workspacePath, AXME_CODE_DIR, "workspace.yaml"), wsYaml);
     }
-  } catch {}
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    workspaceResult.errors.push(`Phase 1 workspace init failed: ${msg}`);
+    opts?.onProgress?.(`Warning: workspace init failed: ${msg}`);
+  }
 
   // Phase 2: per-project init with concurrency limit
   const CONCURRENCY = 3; // max 3 repos scanning simultaneously
@@ -327,7 +335,11 @@ export async function initWorkspaceWithLLM(workspacePath: string, opts?: {
         }
       }
     }
-  } catch {}
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    workspaceResult.errors.push(`Phase 2 per-project init failed: ${msg}`);
+    opts?.onProgress?.(`Warning: per-project init failed: ${msg}`);
+  }
 
   return { workspaceResult, projectResults };
 }

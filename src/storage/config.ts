@@ -60,6 +60,16 @@ function parseConfig(content: string): ProjectConfig {
     model: String(doc.model ?? DEFAULT_PROJECT_CONFIG.model),
     auditorModel: String(doc.auditor_model ?? DEFAULT_PROJECT_CONFIG.auditorModel),
     reviewEnabled: doc.review_enabled !== false,
-    presets: Array.isArray(doc.presets) ? doc.presets.map(String) : DEFAULT_PROJECT_CONFIG.presets,
+    presets: Array.isArray(doc.presets)
+      ? doc.presets.map(String).filter(p => {
+          if (!p) return false;
+          // Warn on unrecognized preset IDs — typos silently skipped before this fix
+          const known = ["essential-safety", "ai-agent-guardrails", "production-ready", "team-collaboration"];
+          if (!known.includes(p)) {
+            process.stderr.write(`AXME config: unknown preset "${p}" — check spelling in config.yaml\n`);
+          }
+          return true; // keep all, just warn
+        })
+      : DEFAULT_PROJECT_CONFIG.presets,
   };
 }

@@ -212,13 +212,21 @@ export function checkBash(rules: SafetyRules, command: string): SafetyVerdict {
   const firstCmd = stripped.split("|")[0].trim();
   const pipeNormalized = stripped.split("|").map(s => s.trim().split(/\s+/)[0]).join(" | ");
 
+  // Check deniedCommands per pipe segment so that `ls | shutdown` is caught
+  // even though "shutdown" doesn't appear at the start of the full command.
+  const segments = stripped.split("|").map(s => s.trim());
   for (const denied of rules.bash.deniedCommands) {
-    if (stripped.includes(denied)) return { allowed: false, reason: `Denied command: ${denied}` };
+    for (const seg of segments) {
+      if (seg.includes(denied)) return { allowed: false, reason: `Denied command: ${denied}` };
+    }
   }
   for (const prefix of rules.bash.deniedPrefixes) {
     if (isPrefixBoundaryMatch(firstCmd, prefix)) return { allowed: false, reason: `Denied prefix: ${prefix}` };
     if (prefix.includes("|")) {
-      if (pipeNormalized === prefix || isPrefixBoundaryMatch(pipeNormalized, prefix)) {
+      // Check if pipe-pattern appears anywhere in the pipe chain, not just from start.
+      // "curl | sh" should match in "cat | curl | sh".
+      if (pipeNormalized === prefix || isPrefixBoundaryMatch(pipeNormalized, prefix) ||
+          pipeNormalized.includes(prefix)) {
         return { allowed: false, reason: `Denied prefix: ${prefix}` };
       }
     } else {
@@ -278,6 +286,31 @@ export function checkGit(rules: SafetyRules, command: string): SafetyVerdict {
       if (hasRemoteToken) {
         return { allowed: false, reason: `Direct push to ${hit} is not allowed` };
       }
+    }
+  }
+  // Block push to a branch that already has a merged PR. This catches the
+  // case where an agent continues pushing to a stale feature branch after
+  // the PR was merged, losing commits that never reach main.
+  if (stripped.startsWith("git push")) {
+    try {
+      const { execSync } = require("node:child_process");
+      const branch = execSync("git branch --show-current", {
+        encoding: "utf-8", timeout: 5000, stdio: ["pipe", "pipe", "pipe"],
+      }).trim();
+      if (branch && branch !== "main" && branch !== "master") {
+        const mergedCount = execSync(
+          `gh pr list --head "${branch}" --state merged --json number --jq length`,
+          { encoding: "utf-8", timeout: 10000, stdio: ["pipe", "pipe", "pipe"] },
+        ).trim();
+        if (mergedCount && parseInt(mergedCount, 10) > 0) {
+          return {
+            allowed: false,
+            reason: `Branch "${branch}" already has a merged PR. Create a new branch from main (D-041: reusing old branches prohibited).`,
+          };
+        }
+      }
+    } catch {
+      // gh CLI not available or network error — fail open, don't block
     }
   }
   if (stripped.includes("reset --hard")) {

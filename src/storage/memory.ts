@@ -74,8 +74,13 @@ export function saveScopedMemories(
         }
       }
       // Fallback: if none of the listed repos exist, write to workspace root
-      // so the memory isn't silently dropped.
-      if (!writtenToRepo) saveMemory(workspacePath, m);
+      // so the memory isn't silently dropped. Warn so operators can spot typos.
+      if (!writtenToRepo) {
+        process.stderr.write(
+          `AXME: warning: scope repos ${JSON.stringify(scope)} not found in workspace, saving to workspace root\n`,
+        );
+        saveMemory(workspacePath, m);
+      }
       saved++;
     } else {
       saveMemory(projectPath, m);

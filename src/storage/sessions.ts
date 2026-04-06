@@ -215,7 +215,7 @@ export interface AuditLogExtraction {
   value?: string;
   scope?: string[];
   proposedRoutes: string[]; // e.g. ["workspace/.axme-code/memory/"]
-  status: "saved" | "deduped" | "dropped";
+  status: "saved" | "updated" | "deduped" | "dropped";
   reason?: string; // for deduped/dropped
 }
 
@@ -503,6 +503,9 @@ export function ensureAxmeSessionForClaude(
   projectPath: string,
   claudeSessionId: string,
   transcriptPath: string,
+  /** If set, stale mappings from read-only tools (Read/Glob/Grep) reuse
+   *  the existing session id instead of creating a fresh empty-tail session. */
+  toolName?: string,
 ): string {
   const existing = readClaudeSessionMapping(projectPath, claudeSessionId);
   if (existing) {
@@ -518,6 +521,13 @@ export function ensureAxmeSessionForClaude(
         transcriptPath,
         role: "main",
       });
+      return existing;
+    }
+    // Read-only tools (Read/Glob/Grep) should not create fresh sessions from
+    // stale mappings — that produces empty "tail" sessions with 0 extractions.
+    // Return the stale id instead; the next mutation tool will create a fresh one.
+    const READ_ONLY_TOOLS = ["Read", "Glob", "Grep"];
+    if (toolName && READ_ONLY_TOOLS.includes(toolName) && existing) {
       return existing;
     }
     // Stale mapping: log once and fall through to create a fresh session,
@@ -771,8 +781,18 @@ export function attachClaudeSession(
   ref: { id: string; transcriptPath: string; role?: string },
 ): void {
   if (!ref.id || !ref.transcriptPath) return;
-  const session = loadSession(projectPath, axmeSessionId);
-  if (!session) return;
+  // Retry up to 3 times with 50ms delay — covers race on shutdown where
+  // meta.json is briefly unavailable due to concurrent write.
+  let session = loadSession(projectPath, axmeSessionId);
+  if (!session) {
+    for (let retry = 0; retry < 3 && !session; retry++) {
+      const { setTimeout: wait } = require("node:timers/promises");
+      // Sync sleep — hooks are short-lived subprocesses, blocking is OK.
+      try { require("child_process").execSync("sleep 0.05"); } catch {}
+      session = loadSession(projectPath, axmeSessionId);
+    }
+    if (!session) return;
+  }
   if (!session.claudeSessions) session.claudeSessions = [];
   if (session.claudeSessions.some(c => c.id === ref.id)) return;
   const entry: ClaudeSessionRef = {

@@ -118,7 +118,7 @@ function handlePreToolUse(sessionOrigin: string, event: HookInput): void {
   // exists before any safety denial — we want the audit trail even for
   // blocked tool calls.
   if (event.session_id && event.transcript_path) {
-    ensureAxmeSessionForClaude(sessionOrigin, event.session_id, event.transcript_path);
+    ensureAxmeSessionForClaude(sessionOrigin, event.session_id, event.transcript_path, tool_name);
   }
 
   // Determine if the session origin is a workspace (multi-repo) or a single repo.

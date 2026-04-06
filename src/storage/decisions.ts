@@ -374,7 +374,16 @@ function parseDecisionFile(filePath: string): Decision | null {
   }
 }
 
+// In-process mutex for rebuildIndex: parallel addDecision calls in the same
+// Node process serialize their index rebuilds to avoid last-writer-wins on
+// index.md. Cross-process is already OK (O_EXCL on content files).
+let _rebuildQueue = Promise.resolve();
+
 function rebuildIndex(projectPath: string): void {
+  _rebuildQueue = _rebuildQueue.then(() => _rebuildIndexSync(projectPath)).catch(() => {});
+}
+
+function _rebuildIndexSync(projectPath: string): void {
   const decisions = listDecisions(projectPath);
   const dir = decisionsDir(projectPath);
   const lines = ["# Decision Log", ""];

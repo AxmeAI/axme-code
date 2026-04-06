@@ -71,7 +71,9 @@ function shortenToolInput(name: string, input: any): string {
       const keys = Object.keys(input).slice(0, 3);
       const pairs = keys.map(k => {
         const v = input[k];
-        const s = typeof v === "string" ? v.slice(0, 50) : JSON.stringify(v).slice(0, 50);
+        let s: string;
+        try { s = typeof v === "string" ? v.slice(0, 50) : JSON.stringify(v).slice(0, 50); }
+        catch { s = "[object]"; }
         return `${k}=${s}`;
       });
       return pairs.join(" ");
@@ -235,7 +237,9 @@ function escapeXml(s: string): string {
   return s
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
 }
 
 /**

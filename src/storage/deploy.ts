@@ -46,55 +46,8 @@ export function deployDir(projectPath: string): string {
   return join(projectPath, AXME_CODE_DIR, DEPLOY_DIR);
 }
 
-export function showChecklist(projectPath: string, env: "staging" | "production"): string {
-  const cl = readChecklist(projectPath, env);
-  if (!cl) return `No ${env} checklist found.`;
-  if (cl.items.length === 0) return `${env} checklist is empty.`;
-
-  const lines = [`# ${env.charAt(0).toUpperCase() + env.slice(1)} Deploy Checklist`, ""];
-  for (const item of cl.items) {
-    const req = item.required ? "[required]" : "[optional]";
-    lines.push(`${req} ${item.name}`);
-    lines.push(`  Command:  ${item.command}`);
-    lines.push(`  Expected: ${item.expected}`);
-    lines.push("");
-  }
-  return lines.join("\n");
-}
-
-export async function runChecklist(
-  projectPath: string, env: "staging" | "production",
-): Promise<{ results: ChecklistRunResult[]; allPassed: boolean }> {
-  const cl = readChecklist(projectPath, env);
-  if (!cl) throw new Error(`No ${env} checklist found.`);
-
-  const { execSync } = await import("node:child_process");
-  const results: ChecklistRunResult[] = [];
-
-  for (const item of cl.items) {
-    const start = Date.now();
-    let output = "";
-    let passed = false;
-    try {
-      output = execSync(item.command, { cwd: projectPath, encoding: "utf-8", timeout: 120_000, stdio: ["pipe", "pipe", "pipe"] }).trim();
-      if (item.expected === "exit 0" || item.expected === "success") passed = true;
-      else if (item.expected.startsWith("contains:")) passed = output.includes(item.expected.slice("contains:".length).trim());
-      else passed = true;
-    } catch (err: any) {
-      output = err.stderr?.toString?.() || err.message || "Command failed";
-    }
-    results.push({ item, passed, output: output.slice(0, 500), durationMs: Date.now() - start });
-  }
-
-  return { results, allPassed: results.every(r => r.passed || !r.item.required) };
-}
-
-export interface ChecklistRunResult {
-  item: ChecklistItem;
-  passed: boolean;
-  output: string;
-  durationMs: number;
-}
+// showChecklist, runChecklist, ChecklistRunResult removed — 0 usages in codebase.
+// Deploy gate will be re-implemented when the deploy pipeline is wired (PR#15+).
 
 export function defaultStagingItems(): ChecklistItem[] {
   return [
