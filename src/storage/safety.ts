@@ -286,6 +286,75 @@ export function checkBash(rules: SafetyRules, command: string): SafetyVerdict {
 }
 
 /**
+ * Detect the current git branch. Tries `git branch --show-current` in cwd,
+ * falls back to scanning child directories for .git repos.
+ * For `git push`, also parses branch from command tokens.
+ */
+function detectBranch(command?: string): string | null {
+  // For push commands, try parsing branch from "git push [-u] origin <branch>"
+  if (command?.startsWith("git push")) {
+    const tokens = command.split(/\s+/);
+    for (let i = 2; i < tokens.length; i++) {
+      if (tokens[i] === "origin" || tokens[i] === "upstream") {
+        const candidate = tokens[i + 1];
+        if (candidate && !candidate.startsWith("-") && !candidate.startsWith("+")) {
+          return candidate;
+        }
+      }
+    }
+  }
+  // Fall back to git branch --show-current
+  try {
+    return execSync("git branch --show-current", {
+      encoding: "utf-8", timeout: 5000, stdio: ["pipe", "pipe", "pipe"],
+    }).trim() || null;
+  } catch {
+    // Not in a git repo - try cwd subdirectories
+    const cwd = process.cwd();
+    try {
+      for (const entry of readdirSync(cwd)) {
+        const gitDir = join(cwd, entry, ".git");
+        if (existsSync(gitDir)) {
+          try {
+            const b = execSync("git branch --show-current", {
+              encoding: "utf-8", timeout: 5000,
+              stdio: ["pipe", "pipe", "pipe"],
+              cwd: join(cwd, entry),
+            }).trim();
+            if (b) return b;
+          } catch {}
+        }
+      }
+    } catch {}
+  }
+  return null;
+}
+
+/**
+ * Check if the current branch has a merged PR. Used by checkGit to block
+ * commit/add/push on stale branches.
+ */
+function checkMergedBranch(command: string): SafetyVerdict | null {
+  try {
+    const branch = detectBranch(command);
+    if (!branch || branch === "main" || branch === "master") return null;
+    const mergedCount = execSync(
+      `gh pr list --head "${branch}" --state merged --json number --jq length`,
+      { encoding: "utf-8", timeout: 10000, stdio: ["pipe", "pipe", "pipe"] },
+    ).trim();
+    if (mergedCount && parseInt(mergedCount, 10) > 0) {
+      return {
+        allowed: false,
+        reason: `Branch "${branch}" already has a merged PR. Create a new branch from main (D-041: reusing old branches prohibited).`,
+      };
+    }
+  } catch {
+    // gh CLI not available or network error - fail open
+  }
+  return null;
+}
+
+/**
  * Check if a git operation is safe.
  *
  * Force-push detection uses word-boundary matching to avoid false positives
@@ -335,75 +404,13 @@ export function checkGit(rules: SafetyRules, command: string): SafetyVerdict {
       }
     }
   }
-  // Block push to a branch that already has a merged PR. This catches the
-  // case where an agent continues pushing to a stale feature branch after
-  // the PR was merged, losing commits that never reach main.
-  //
-  // Two sources for the branch name (in priority order):
-  // 1. Parse from the command itself: `git push origin <branch>` -> <branch>
-  // 2. Fall back to `git branch --show-current` (only works inside a git repo)
-  //
-  // The CWD may be a workspace root (not a git repo), so we also try running
-  // git from child directories that contain .git.
-  if (stripped.startsWith("git push")) {
-    try {
-      // Parse branch from command: `git push [-u] origin <branch>`
-      let branch: string | null = null;
-      const pushTokens = stripped.split(/\s+/);
-      // Find the token after "origin"/"upstream" that looks like a branch name
-      for (let i = 2; i < pushTokens.length; i++) {
-        if (pushTokens[i] === "origin" || pushTokens[i] === "upstream") {
-          const candidate = pushTokens[i + 1];
-          if (candidate && !candidate.startsWith("-") && !candidate.startsWith("+")) {
-            branch = candidate;
-            break;
-          }
-        }
-      }
-
-      // Fall back to current branch if not found in command
-      if (!branch) {
-        try {
-          branch = execSync("git branch --show-current", {
-            encoding: "utf-8", timeout: 5000, stdio: ["pipe", "pipe", "pipe"],
-          }).trim() || null;
-        } catch {
-          // Not in a git repo - try cwd subdirectories
-          const cwd = process.cwd();
-          try {
-            const entries = readdirSync(cwd);
-            for (const entry of entries) {
-              const gitDir = join(cwd, entry, ".git");
-              if (existsSync(gitDir)) {
-                try {
-                  branch = execSync("git branch --show-current", {
-                    encoding: "utf-8", timeout: 5000,
-                    stdio: ["pipe", "pipe", "pipe"],
-                    cwd: join(cwd, entry),
-                  }).trim() || null;
-                  if (branch) break;
-                } catch {}
-              }
-            }
-          } catch {}
-        }
-      }
-
-      if (branch && branch !== "main" && branch !== "master") {
-        const mergedCount = execSync(
-          `gh pr list --head "${branch}" --state merged --json number --jq length`,
-          { encoding: "utf-8", timeout: 10000, stdio: ["pipe", "pipe", "pipe"] },
-        ).trim();
-        if (mergedCount && parseInt(mergedCount, 10) > 0) {
-          return {
-            allowed: false,
-            reason: `Branch "${branch}" already has a merged PR. Create a new branch from main (D-041: reusing old branches prohibited).`,
-          };
-        }
-      }
-    } catch {
-      // gh CLI not available or network error — fail open, don't block
-    }
+  // Block commit/push to a branch that already has a merged PR. This catches
+  // the case where an agent continues working on a stale feature branch after
+  // the PR was merged. Checking at commit time (not just push) prevents
+  // wasted work that would require cherry-pick to recover.
+  if (stripped.startsWith("git push") || stripped.startsWith("git commit") || stripped.startsWith("git add")) {
+    const verdict = checkMergedBranch(stripped);
+    if (verdict && !verdict.allowed) return verdict;
   }
   if (stripped.includes("reset --hard")) {
     return { allowed: false, reason: "git reset --hard is not allowed (destroys uncommitted work)" };
