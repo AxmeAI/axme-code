@@ -1,0 +1,36 @@
+graph LR
+    subgraph CC["Claude Code"]
+        A["Agent"]
+    end
+
+    subgraph AX["AXME Code"]
+        MCP["MCP Server"]
+        H["Hooks"]
+        AU["Auditor"]
+    end
+
+    subgraph KB[".axme-code/ Knowledge Base"]
+        O["Oracle\nstack, structure\npatterns, glossary"]
+        D["Decisions\nrules, policies\nenforce levels"]
+        M["Memory\nfeedback\npatterns"]
+        S["Safety Rules\ngit, bash, fs"]
+        HO["Handoff\nsession state\nnext steps"]
+        W["Worklog\nsession history"]
+    end
+
+    A -->|"reads KB at start"| MCP
+    A -->|"saves during work"| MCP
+    A -->|"close session"| MCP
+    MCP -->|"atomicWrite"| KB
+
+    H -->|"blocks dangerous\ncommands (100%)"| A
+    H -->|"reads rules"| S
+    AU -->|"catches missed\nitems after close"| KB
+
+    classDef agent fill:#d0f0d0,stroke:#4a4,stroke-width:2px,color:#000
+    classDef axme fill:#fff3e0,stroke:#e65100,stroke-width:2px,color:#000
+    classDef kb fill:#e0e8ff,stroke:#44c,stroke-width:1px,color:#000
+
+    class A agent
+    class MCP,H,AU axme
+    class O,D,M,S,HO,W kb
