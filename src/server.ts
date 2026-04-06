@@ -341,6 +341,60 @@ server.tool(
   },
 );
 
+// --- axme_ask_question ---
+server.tool(
+  "axme_ask_question",
+  "Record an open question for the next session or KB audit. Use when you find ambiguity that needs user clarification.",
+  {
+    project_path: z.string().optional().describe("Absolute path to the project root (defaults to server cwd)"),
+    question: z.string().describe("The question text"),
+    context: z.string().optional().describe("Related decision IDs, file paths, or other context"),
+  },
+  async ({ project_path, question, context }) => {
+    const { askQuestion } = await import("./storage/questions.js");
+    const sid = getOwnedSessionIdForLogging();
+    const q = askQuestion(pp(project_path), {
+      question,
+      context,
+      source: sid ? `session-${sid.slice(0, 8)}` : "manual",
+    });
+    return { content: [{ type: "text" as const, text: `Question recorded: ${q.id} [open]` }] };
+  },
+);
+
+// --- axme_list_open_questions ---
+server.tool(
+  "axme_list_open_questions",
+  "List open questions that need user answers. Show at session start if any exist.",
+  {
+    project_path: z.string().optional().describe("Absolute path to the project root (defaults to server cwd)"),
+  },
+  async ({ project_path }) => {
+    const { listQuestions } = await import("./storage/questions.js");
+    const open = listQuestions(pp(project_path), { status: "open" });
+    if (open.length === 0) return { content: [{ type: "text" as const, text: "No open questions." }] };
+    const lines = open.map(q => `- **${q.id}**: ${q.question}${q.context ? ` (${q.context})` : ""}`);
+    return { content: [{ type: "text" as const, text: `Open questions (${open.length}):\n\n${lines.join("\n")}` }] };
+  },
+);
+
+// --- axme_answer_question ---
+server.tool(
+  "axme_answer_question",
+  "Record the user's answer to an open question. Changes status from [open] to [answered].",
+  {
+    project_path: z.string().optional().describe("Absolute path to the project root (defaults to server cwd)"),
+    question_id: z.string().describe("Question ID (e.g. Q-001)"),
+    answer: z.string().describe("The user's answer"),
+  },
+  async ({ project_path, question_id, answer }) => {
+    const { answerQuestion } = await import("./storage/questions.js");
+    const q = answerQuestion(pp(project_path), question_id, answer);
+    if (!q) return { content: [{ type: "text" as const, text: `Question ${question_id} not found or not open.` }] };
+    return { content: [{ type: "text" as const, text: `Answer recorded for ${q.id}. Status: [answered]` }] };
+  },
+);
+
 // --- Start server ---
 async function main() {
   const transport = new StdioServerTransport();
