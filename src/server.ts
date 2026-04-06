@@ -20,10 +20,12 @@ import { detectWorkspace } from "./utils/workspace-detector.js";
 import {
   findOrphanSessions,
   listClaudeSessionMappings,
+  writeClaudeSessionMapping,
   clearClaudeSessionMapping,
   clearLegacyActiveSession,
   clearLegacyPendingAuditsDir,
   readClaudeSessionMapping,
+  isPidAlive,
 } from "./storage/sessions.js";
 import { logEvent } from "./storage/worklog.js";
 import { spawnDetachedAuditWorker } from "./audit-spawner.js";
@@ -58,13 +60,34 @@ clearLegacyPendingAuditsDir(defaultProjectPath);
 /**
  * Return the AXME session UUID owned by this MCP server for worklog purposes.
  * If there are multiple owned sessions (shouldn't happen normally), returns
- * the first one. If none, returns undefined — the caller should pass no
- * sessionId to the worklog.
+ * the first one.
+ *
+ * Session recovery: if no mapping matches OWN_PPID (e.g. after VS Code reload
+ * where a new Claude Code process spawned this MCP server but the old mapping
+ * still points to the previous PID), we adopt stale mappings whose ownerPpid
+ * is dead. This ensures MCP tools work without requiring a hook-triggering
+ * built-in tool call first.
  */
 function getOwnedSessionIdForLogging(): string | undefined {
-  const owned = listClaudeSessionMappings(defaultProjectPath)
-    .filter(m => m.ownerPpid === OWN_PPID);
-  return owned[0]?.axmeSessionId;
+  const all = listClaudeSessionMappings(defaultProjectPath);
+  const owned = all.filter(m => m.ownerPpid === OWN_PPID);
+  if (owned.length > 0) return owned[0].axmeSessionId;
+
+  // No mapping for our PID — check for stale mappings from dead Claude Code
+  // processes and adopt them. This handles VS Code reload where the old
+  // Claude Code process died but its mapping file persists.
+  for (const m of all) {
+    if (m.ownerPpid != null && !isPidAlive(m.ownerPpid)) {
+      writeClaudeSessionMapping(defaultProjectPath, m.claudeSessionId, m.axmeSessionId);
+      process.stderr.write(
+        `AXME: adopted stale mapping ${m.claudeSessionId.slice(0, 8)} ` +
+        `(old ppid=${m.ownerPpid}, new ppid=${OWN_PPID})\n`,
+      );
+      return m.axmeSessionId;
+    }
+  }
+
+  return undefined;
 }
 
 // Session cleanup is triggered by transport.onclose (see main() below) rather
