@@ -7,7 +7,7 @@
  *     and legacy directories.
  */
 
-import { readdirSync, readFileSync, mkdirSync, copyFileSync, rmSync } from "node:fs";
+import { readdirSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { pathExists, readJson, removeFile } from "../storage/engine.js";
 import { AXME_CODE_DIR } from "../types.js";

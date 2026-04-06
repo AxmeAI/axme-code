@@ -145,7 +145,7 @@ export interface SessionCleanupResult {
   worklogSummary: boolean;
   oracleRescanned: boolean;
   costUsd: number;
-  skipped?: "already-audited" | "not-found" | "no-storage" | "concurrent-audit" | "retry-cap";
+  skipped?: "already-audited" | "not-found" | "no-storage" | "concurrent-audit" | "retry-cap" | "ghost";
 }
 
 /**
@@ -452,7 +452,6 @@ export async function runSessionCleanup(
                 status: "saved",
                 reason: `superseded ${oldId} with ${newDecision.id}`,
               });
-              dSaved++;
             } catch {
               // Old decision not found — fall through to normal save
               newDecisions.push(d);
