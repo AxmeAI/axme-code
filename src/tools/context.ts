@@ -61,33 +61,16 @@ function buildStorageRootHeader(projectPath: string, workspacePath?: string): st
 export function getFullContext(projectPath: string, workspacePath?: string): string {
   const parts: string[] = [];
 
-  // Storage root header — always first so the agent sees it before anything
-  // else. Tells the agent the absolute path to use for direct file inspection.
+  // Storage root header
   parts.push(buildStorageRootHeader(projectPath, workspacePath));
 
-  // Oracle
-  const oracle = oracleContext(projectPath);
-  if (oracle) parts.push("# Project Oracle\n\n" + oracle);
-  if (workspacePath && workspacePath !== projectPath) {
-    const wsOracle = oracleContext(workspacePath);
-    if (wsOracle) parts.push("# Workspace Oracle\n\n" + wsOracle);
+  // Not initialized check
+  const storageDirExists = pathExists(join(projectPath, AXME_CODE_DIR));
+  if (!storageDirExists) {
+    return parts[0] + "\n\nProject not initialized. Ask the user to run 'axme-code setup' in terminal.";
   }
 
-  // Decisions (merged if workspace)
-  if (workspacePath && workspacePath !== projectPath) {
-    const wsDecisions = listDecisions(workspacePath);
-    const projDecisions = listDecisions(projectPath);
-    const merged = mergeDecisions(wsDecisions, projDecisions);
-    if (merged.length > 0) {
-      const lines = merged.map(d => `- **${d.id}: ${d.title}** [${d.enforce ?? "info"}] - ${d.decision}`);
-      parts.push(`## Project Decisions\n${lines.join("\n")}`);
-    }
-  } else {
-    const decisions = decisionsContext(projectPath);
-    if (decisions) parts.push(decisions);
-  }
-
-  // Safety (merged if workspace)
+  // Safety rules (small, always inline)
   if (workspacePath && workspacePath !== projectPath) {
     const wsRules = loadSafetyRules(workspacePath);
     const projRules = loadSafetyRules(projectPath);
@@ -102,60 +85,47 @@ export function getFullContext(projectPath: string, workspacePath?: string): str
     if (safety) parts.push(safety);
   }
 
-  // Memory (merged if workspace)
-  if (workspacePath && workspacePath !== projectPath) {
-    const wsMemories = listMemories(workspacePath);
-    const projMemories = listMemories(projectPath);
-    const merged = mergeMemories(wsMemories, projMemories);
-    if (merged.length > 0) {
-      const feedbacks = merged.filter(m => m.type === "feedback");
-      const patterns = merged.filter(m => m.type === "pattern");
-      const memParts: string[] = ["## Project Memories"];
-      if (feedbacks.length > 0) { memParts.push(`\n### Feedback (${feedbacks.length}):`); for (const m of feedbacks) memParts.push(`- **${m.title}**: ${m.description}`); }
-      if (patterns.length > 0) { memParts.push(`\n### Patterns (${patterns.length}):`); for (const m of patterns) memParts.push(`- **${m.title}**: ${m.description}`); }
-      parts.push(memParts.join("\n"));
-    }
-  } else {
-    const memory = allMemoryContext(projectPath);
-    if (memory) parts.push(memory);
-  }
-
-  // Test plan
-  const tests = testPlanContext(projectPath);
-  if (tests) parts.push(tests);
-
-  // Active plans
-  const plans = plansContext(projectPath);
-  if (plans) parts.push(plans);
-
-  // Previous session handoff - shows next session what was done and what to do next
+  // Previous session handoff (small, always inline)
   const handoff = handoffContext(workspacePath ?? projectPath);
   if (handoff) parts.push(handoff);
 
-  // "parts" always has at least the Storage root header — so detect
-  // "not initialized" by checking absence of any real content modules.
-  const storageDirExists = pathExists(join(projectPath, AXME_CODE_DIR));
-  if (!storageDirExists) {
-    return parts[0] + "\n\nProject not initialized. Ask the user to run 'axme-code setup' in terminal.";
+  // Last worklog entry (just 1, not 5)
+  const worklogPath = join(workspacePath ?? projectPath, AXME_CODE_DIR, "worklog.md");
+  const worklogContent = readSafe(worklogPath);
+  if (worklogContent.length > 20) {
+    const entries = worklogContent.split(/(?=^## )/m).filter(e => e.trim());
+    const last = entries.slice(-1);
+    if (last.length > 0) {
+      parts.push("# Last Session\n\n" + last[0]);
+    }
   }
 
-  // Check if LLM init was done (LLM-scanned oracle has rich content, deterministic has minimal)
+  // Test plan (small)
+  const tests = testPlanContext(projectPath);
+  if (tests) parts.push(tests);
+
+  // Active plans (small)
+  const plans = plansContext(projectPath);
+  if (plans) parts.push(plans);
+
+  // Open questions
+  try {
+    const qCtx = questionsContext(workspacePath ?? projectPath);
+    if (qCtx) parts.push(qCtx);
+  } catch {}
+
+  // LLM init warning
   const decisions = listDecisions(projectPath);
   const llmDecisions = decisions.filter(d => d.source === "init-scan");
   if (llmDecisions.length === 0 && oracleExists(projectPath)) {
     const files = loadOracleFiles(projectPath);
     const oracleIsMinimal = files && files.stack.length < 200 && !files.patterns.includes("CLAUDE.md");
     if (oracleIsMinimal) {
-      parts.push("\n---\n**WARNING:** This project was initialized with deterministic scan only (no LLM). Oracle and decisions may be incomplete. Ask the user to run `axme-code setup " + projectPath + "` in terminal for deep LLM scan.");
+      parts.push("**WARNING:** This project was initialized with deterministic scan only (no LLM). Run `axme-code setup " + projectPath + "` for deep LLM scan.");
     }
   }
 
-  // Pending audits warning: check BOTH the current project AND the workspace
-  // root (if different), so the agent sees audits running at either level.
-  // listPendingAudits derives state from SessionMeta.auditStatus and already
-  // filters out stale "pending" entries older than AUDIT_STALE_TIMEOUT_MS
-  // (crashed auditors), so the returned list represents genuinely in-flight
-  // audits only.
+  // Pending audits warning
   const pendingProject = listPendingAudits(projectPath);
   const pendingWorkspace = workspacePath && workspacePath !== projectPath
     ? listPendingAudits(workspacePath)
@@ -168,40 +138,28 @@ export function getFullContext(projectPath: string, workspacePath?: string): str
     const lines = [
       "## ⚠️ Pending audits (knowledge base may be incomplete)",
       "",
-      `${allPending.length} previous session audit(s) are still running. Their extracted memories, decisions, and handoff notes are NOT yet reflected in the knowledge base above.`,
-      "",
-      "Pending:",
+      `${allPending.length} previous session audit(s) are still running.`,
       ...allPending.map(p => {
         const startedAgo = Math.round((Date.now() - new Date(p.startedAt).getTime()) / 1000);
         return `- session ${p.sessionId.slice(0, 8)} at ${p.location} level, started ${startedAgo}s ago, phase=${p.phase}`;
       }),
       "",
-      "**Agent action required**: tell the user about the pending audit(s) and offer two options:",
-      "  1. Wait a few minutes and re-run `axme_context` to pick up the fresh knowledge before proceeding.",
-      "  2. Add a TODO to check back in N minutes and continue in parallel until then, re-checking `axme_context` periodically until the pending list is empty.",
-      "Keep the TODO open until all pending audits are gone.",
+      "**Action**: tell the user, then either wait and re-run `axme_context`, or add a TODO to re-check periodically.",
     ];
     parts.push(lines.join("\n"));
   }
 
-  // Open questions: show any pending questions from previous sessions/audits
-  try {
-    const qCtx = questionsContext(workspacePath ?? projectPath);
-    if (qCtx) parts.push(qCtx);
-  } catch {}
-
-  // Recent worklog: show last few narrative session summaries so the agent
-  // knows what happened in recent sessions without reading the full history.
-  const worklogPath = join(workspacePath ?? projectPath, AXME_CODE_DIR, "worklog.md");
-  const worklogContent = readSafe(worklogPath);
-  if (worklogContent.length > 20) {
-    // Extract last 5 entries (each starts with "## ")
-    const entries = worklogContent.split(/(?=^## )/m).filter(e => e.trim());
-    const recent = entries.slice(-5);
-    if (recent.length > 0) {
-      parts.push("# Recent Session History\n\n" + recent.join("\n"));
-    }
-  }
+  // Parallel loading instructions
+  parts.push([
+    "## Load Full Knowledge Base",
+    "",
+    "Call these three tools **in parallel** now to load the complete knowledge base:",
+    "1. `axme_oracle` - project stack, structure, patterns, glossary",
+    "2. `axme_decisions` - architectural decisions with enforce levels",
+    "3. `axme_memories` - feedback and validated patterns",
+    "",
+    "**IMPORTANT**: if any tool output is truncated or saved to a file, use the Read tool to read the full file content into your context. Do not proceed with partial data.",
+  ].join("\n"));
 
   return parts.join("\n\n");
 }

@@ -7,11 +7,13 @@
  * - Defaults project_path/workspace_path in all tools from cwd
  */
 
+import { join } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
 import { getFullContext, getOracle, getDecisions } from "./tools/context.js";
+import { allMemoryContext } from "./storage/memory.js";
 import { saveMemoryTool, searchMemoryTool } from "./tools/memory-tools.js";
 import { saveDecisionTool } from "./tools/decision-tools.js";
 import { updateSafetyTool, showSafetyTool } from "./tools/safety-tools.js";
@@ -149,23 +151,23 @@ function buildInstructions(): string {
   ];
   if (isWorkspace) {
     parts.push(`Workspace: ${defaultWorkspacePath} (${serverWorkspace.type}, ${serverWorkspace.projects.length} projects).`);
-    parts.push("Call axme_context at session start to load workspace overview.");
+    parts.push("Call axme_context at session start to load workspace overview. It returns compact meta and instructions to call axme_oracle, axme_decisions, axme_memories in parallel.");
     parts.push("Each repo has its own .axme-code/ storage initialized during setup.");
     parts.push("Before working with any specific repo, call axme_context with that repo's path.");
   } else {
-    parts.push("Call axme_context at session start to load project knowledge base.");
+    parts.push("Call axme_context at session start. It returns compact meta and instructions to call axme_oracle, axme_decisions, axme_memories in parallel.");
   }
+  parts.push("TRUNCATED OUTPUT RULE: if ANY MCP tool output is truncated or saved to a file (you see 'Output too large' or 'saved to file'), you MUST use the Read tool to read the full file content into your context. Do not proceed with partial data.");
   parts.push("Save memories, decisions, and safety rules immediately when discovered during work.");
   parts.push("SESSION CLOSE: when the user asks to close/end the session (any language), call axme_begin_close to get the close checklist. Follow it: extract memories/decisions/safety (choosing correct scope for each), prepare handoff data, then call axme_finalize_close with everything. After finalize, output to the user: storage summary (what saved where), then startup_text.");
   parts.push("DECISION CONFLICT RULE: if two active decisions contradict each other, treat the NEWER one (by date) as authoritative. The older one is a candidate for supersede at next audit.");
   parts.push(
-    `STORAGE ROOT: ${defaultProjectPath}/.axme-code — for any direct inspection of .axme-code/ files via Bash (ls, cat, grep, find), use this ABSOLUTE path. Do NOT use relative paths from your cwd; in a multi-repo workspace your cwd may point to a child repo with its own separate .axme-code/ storage. Every session's meta.json also contains an "origin" field with its absolute parent directory — read it to verify which storage a given session belongs to.`,
+    `STORAGE ROOT: ${defaultProjectPath}/.axme-code — for any direct inspection of .axme-code/ files via Bash (ls, cat, grep, find), use this ABSOLUTE path. Do NOT use relative paths from your cwd; in a multi-repo workspace your cwd may point to a child repo with its own separate .axme-code/ storage.`,
   );
   parts.push(
-    "IMPORTANT: if axme_context output contains a '## ⚠️ Pending audits' section, " +
+    "IMPORTANT: if axme_context output contains a 'Pending audits' section, " +
       "a previous session's audit is still running and the knowledge base is incomplete. " +
-      "You MUST tell the user, offer to either wait and re-run axme_context or track with a TODO, " +
-      "and re-check axme_context periodically until the pending list is empty before relying on the knowledge base.",
+      "Tell the user, offer to wait and re-run axme_context or track with a TODO.",
   );
   return parts.join(" ");
 }
@@ -179,6 +181,24 @@ const server = new McpServer(
 
 function pp(project_path?: string): string {
   return project_path || defaultProjectPath;
+}
+
+/**
+ * Resolve project_path from scope when project_path is not explicitly provided.
+ * If scope contains a specific repo name (not "all"), resolve to workspace/repo-name.
+ * Falls back to pp() default behavior.
+ */
+function ppWithScope(project_path?: string, scope?: string[]): string {
+  if (project_path) return project_path;
+  if (isWorkspace && scope && scope.length > 0) {
+    const repoScope = scope.find(s => s !== "all");
+    if (repoScope) {
+      const match = serverWorkspace.projects.find(p => p.name === repoScope);
+      if (match) return join(defaultProjectPath, match.path);
+    }
+    // scope: ["all"] or no match -> workspace root
+  }
+  return defaultProjectPath;
 }
 
 function wp(workspace_path?: string): string | undefined {
@@ -228,6 +248,36 @@ server.tool(
   },
 );
 
+// --- axme_memories ---
+server.tool(
+  "axme_memories",
+  "Show all project memories (feedback + patterns). Call at session start alongside axme_oracle and axme_decisions.",
+  {
+    project_path: z.string().optional().describe("Absolute path to the project root (defaults to server cwd)"),
+    workspace_path: z.string().optional().describe("Absolute path to workspace root (for merged workspace + project memories)"),
+  },
+  async ({ project_path, workspace_path }) => {
+    const wsPath = wp(workspace_path);
+    const projPath = pp(project_path);
+    if (wsPath && wsPath !== projPath) {
+      const { listMemories } = await import("./storage/memory.js");
+      const { mergeMemories } = await import("./storage/workspace-merge.js");
+      const wsMemories = listMemories(wsPath);
+      const projMemories = listMemories(projPath);
+      const merged = mergeMemories(wsMemories, projMemories);
+      if (merged.length === 0) return { content: [{ type: "text" as const, text: "No memories recorded." }] };
+      const feedbacks = merged.filter(m => m.type === "feedback");
+      const patterns = merged.filter(m => m.type === "pattern");
+      const parts: string[] = ["## Project Memories"];
+      if (feedbacks.length > 0) { parts.push(`\n### Feedback (${feedbacks.length}):`); for (const m of feedbacks) parts.push(`- **${m.title}**: ${m.description}`); }
+      if (patterns.length > 0) { parts.push(`\n### Patterns (${patterns.length}):`); for (const m of patterns) parts.push(`- **${m.title}**: ${m.description}`); }
+      return { content: [{ type: "text" as const, text: parts.join("\n") }] };
+    }
+    const text = allMemoryContext(projPath);
+    return { content: [{ type: "text" as const, text: text || "No memories recorded." }] };
+  },
+);
+
 // --- axme_save_memory ---
 server.tool(
   "axme_save_memory",
@@ -244,8 +294,9 @@ server.tool(
   async ({ project_path, type, title, description, body, keywords, scope }) => {
 
     const sid = getOwnedSessionIdForLogging();
-    const result = saveMemoryTool(pp(project_path), { type, title, description, body, keywords, scope }, sid);
-    return { content: [{ type: "text" as const, text: `Memory saved: ${result.slug} (${type})` }] };
+    const resolved = ppWithScope(project_path, scope);
+    const result = saveMemoryTool(resolved, { type, title, description, body, keywords, scope }, sid);
+    return { content: [{ type: "text" as const, text: `Memory saved: ${result.slug} (${type}) -> ${resolved}` }] };
   },
 );
 
@@ -280,8 +331,9 @@ server.tool(
   },
   async ({ project_path, title, decision, reasoning, enforce, scope }) => {
 
-    const result = saveDecisionTool(pp(project_path), { title, decision, reasoning, enforce, scope });
-    return { content: [{ type: "text" as const, text: `Decision saved: ${result.id} - ${title}` }] };
+    const resolved = ppWithScope(project_path, scope);
+    const result = saveDecisionTool(resolved, { title, decision, reasoning, enforce, scope });
+    return { content: [{ type: "text" as const, text: `Decision saved: ${result.id} - ${title} -> ${resolved}` }] };
   },
 );
 
@@ -558,7 +610,8 @@ server.tool(
       for (const m of args.memories) {
         try {
           if (m.action === "add" && m.type && m.title && m.description) {
-            const result = saveMemoryTool(targetPath, {
+            const mPath = ppWithScope(undefined, m.scope);
+            const result = saveMemoryTool(mPath, {
               type: m.type, title: m.title, description: m.description,
               body: m.body, keywords: m.keywords, scope: m.scope,
             }, sid);
@@ -568,7 +621,8 @@ server.tool(
             report.push(`Memory removed: ${m.slug}`);
           } else if (m.action === "supersede" && m.slug && m.type && m.title && m.description) {
             deleteMemory(targetPath, m.slug);
-            const result = saveMemoryTool(targetPath, {
+            const mPath = ppWithScope(undefined, m.scope);
+            const result = saveMemoryTool(mPath, {
               type: m.type, title: m.title, description: m.description,
               body: m.body, keywords: m.keywords, scope: m.scope,
             }, sid);
@@ -585,7 +639,8 @@ server.tool(
       for (const d of args.decisions) {
         try {
           if (d.action === "add" && d.title && d.decision && d.reasoning) {
-            const result = saveDecisionTool(targetPath, {
+            const dPath = ppWithScope(undefined, d.scope);
+            const result = saveDecisionTool(dPath, {
               title: d.title, decision: d.decision, reasoning: d.reasoning,
               enforce: d.enforce, scope: d.scope,
             });
@@ -594,7 +649,8 @@ server.tool(
             revokeDecision(targetPath, d.id, "Removed during session close by agent");
             report.push(`Decision revoked: ${d.id}`);
           } else if (d.action === "supersede" && d.id && d.title && d.decision && d.reasoning) {
-            const result = supersedeDecision(targetPath, d.id, {
+            const dPath = ppWithScope(undefined, d.scope);
+            const result = supersedeDecision(dPath, d.id, {
               title: d.title, slug: d.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 50),
               decision: d.decision, reasoning: d.reasoning,
               enforce: d.enforce ?? null, scope: d.scope,
