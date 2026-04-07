@@ -149,44 +149,13 @@ function handlePreToolUse(sessionOrigin: string, event: HookInput): void {
       const rules = loadRulesForBash();
       verdict = checkBash(rules, command);
       if (!verdict.allowed) break;
-      // Track effective cwd through cd/pushd segments, then check each git
-      // segment with the correct cwd. If cwd cannot be determined (variables,
-      // subshells), block with instruction to use git -C.
-      // If chain contains git checkout (branch switch), skip merged-PR check
-      // because the hook runs BEFORE execution - current branch will change.
+      // Split chained commands and check each git segment independently.
+      // No cwd tracking needed - #!axme gate carries repo/PR explicitly.
       const segments = splitCommandSegments(command);
-      const hasCheckout = segments.some(s => /^\s*git\s+(checkout|switch)\b/.test(s.trim()));
-      let effectiveCwd = process.cwd();
-      let cwdResolved = true;
       for (const seg of segments) {
         const trimmed = seg.trim();
-        // Track cd/pushd
-        const cdMatch = trimmed.match(/^(?:cd|pushd)\s+["']?([^\s"']+)["']?$/);
-        if (cdMatch) {
-          const target = cdMatch[1];
-          if (target.includes("$") || target.includes("`")) {
-            cwdResolved = false;
-          } else {
-            const { resolve: pathResolve } = require("node:path");
-            const expanded = target.startsWith("~") ? target.replace("~", process.env.HOME || "") : target;
-            effectiveCwd = pathResolve(effectiveCwd, expanded);
-          }
-          continue;
-        }
-        // Check git segments
         if (/^\s*git\b/.test(trimmed)) {
-          // Parse git -C override
-          const cFlagMatch = trimmed.match(/git\s+-C\s+["']?([^\s"']+)["']?/);
-          let gitCwd = effectiveCwd;
-          if (cFlagMatch) {
-            const { resolve: pathResolve } = require("node:path");
-            gitCwd = pathResolve(effectiveCwd, cFlagMatch[1]);
-          } else if (!cwdResolved) {
-            verdict = { allowed: false, reason: `Cannot determine target directory for git command. Use explicit path: git -C /absolute/path ${trimmed.replace(/^git\s+/, '')}` };
-            break;
-          }
-          // Skip merged-PR check if chain includes checkout (branch will change)
-          verdict = checkGit(rules, trimmed, gitCwd, hasCheckout);
+          verdict = checkGit(rules, trimmed);
           if (!verdict.allowed) break;
         }
       }
