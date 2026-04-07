@@ -18,6 +18,7 @@ import { plansContext, handoffContext } from "../storage/plans.js";
 import { listPendingAudits } from "../storage/sessions.js";
 import { detectWorkspace } from "../utils/workspace-detector.js";
 import { questionsContext } from "../storage/questions.js";
+import { backlogContext } from "../storage/backlog.js";
 
 /**
  * Build the authoritative "Storage root" header that is prepended to every
@@ -107,6 +108,12 @@ export function getFullContextSections(projectPath: string, workspacePath?: stri
   // Active plans (small)
   const plans = plansContext(projectPath);
   if (plans) parts.push(plans);
+
+  // Backlog summary
+  try {
+    const bl = backlogContext(workspacePath ?? projectPath);
+    if (bl) parts.push(bl);
+  } catch {}
 
   // Open questions
   try {

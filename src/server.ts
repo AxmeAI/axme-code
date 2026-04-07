@@ -448,6 +448,66 @@ server.tool(
   },
 );
 
+// --- axme_backlog ---
+server.tool(
+  "axme_backlog",
+  "List or read backlog items. Persistent cross-session task tracking.",
+  {
+    project_path: z.string().optional().describe("Absolute path to the project root (defaults to server cwd)"),
+    status: z.enum(["open", "in-progress", "done", "blocked"]).optional().describe("Filter by status. Omit to show all."),
+    id: z.string().optional().describe("Get a specific item by ID (e.g. B-001) or slug."),
+  },
+  async ({ project_path, status, id }) => {
+    const { showBacklog, getBacklogItem } = await import("./storage/backlog.js");
+    const resolved = pp(project_path);
+    if (id) {
+      const item = getBacklogItem(resolved, id);
+      if (!item) return { content: [{ type: "text" as const, text: `Backlog item "${id}" not found.` }] };
+      const tags = item.tags.length > 0 ? `\nTags: ${item.tags.join(", ")}` : "";
+      const notes = item.notes ? `\n\n## Notes\n${item.notes}` : "";
+      return { content: [{ type: "text" as const, text: `# ${item.id}: ${item.title}\n\nStatus: ${item.status} | Priority: ${item.priority} | Created: ${item.created} | Updated: ${item.updated}${tags}\n\n${item.description}${notes}` }] };
+    }
+    return { content: [{ type: "text" as const, text: showBacklog(resolved, status as any) }] };
+  },
+);
+
+// --- axme_backlog_add ---
+server.tool(
+  "axme_backlog_add",
+  "Add a new backlog item. Use for tasks, features, bugs that should persist across sessions.",
+  {
+    project_path: z.string().optional().describe("Absolute path to the project root (defaults to server cwd)"),
+    title: z.string().describe("Short title for the backlog item"),
+    description: z.string().describe("Detailed description of the task/feature/bug"),
+    priority: z.enum(["high", "medium", "low"]).optional().describe("Priority level (default: medium)"),
+    tags: z.array(z.string()).optional().describe("Tags for categorization"),
+  },
+  async ({ project_path, title, description, priority, tags }) => {
+    const { addBacklogItem } = await import("./storage/backlog.js");
+    const item = addBacklogItem(pp(project_path), { title, description, priority: priority as any, tags });
+    return { content: [{ type: "text" as const, text: `Backlog item created: ${item.id} - ${item.title} (${item.priority})` }] };
+  },
+);
+
+// --- axme_backlog_update ---
+server.tool(
+  "axme_backlog_update",
+  "Update a backlog item status, priority, or add notes.",
+  {
+    project_path: z.string().optional().describe("Absolute path to the project root (defaults to server cwd)"),
+    id: z.string().describe("Item ID (e.g. B-001) or slug"),
+    status: z.enum(["open", "in-progress", "done", "blocked"]).optional().describe("New status"),
+    priority: z.enum(["high", "medium", "low"]).optional().describe("New priority"),
+    notes: z.string().optional().describe("Additional notes to append"),
+  },
+  async ({ project_path, id, status, priority, notes }) => {
+    const { updateBacklogItem } = await import("./storage/backlog.js");
+    const item = updateBacklogItem(pp(project_path), id, { status: status as any, priority: priority as any, notes });
+    if (!item) return { content: [{ type: "text" as const, text: `Backlog item "${id}" not found.` }] };
+    return { content: [{ type: "text" as const, text: `Updated ${item.id}: ${item.title} -> ${item.status} (${item.priority})` }] };
+  },
+);
+
 // --- axme_status ---
 server.tool(
   "axme_status",
