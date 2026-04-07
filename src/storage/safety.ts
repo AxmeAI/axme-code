@@ -319,16 +319,33 @@ export function checkBash(rules: SafetyRules, command: string): SafetyVerdict {
  * falls back to scanning child directories for .git repos.
  * For `git push`, also parses branch from command tokens.
  */
-function detectBranch(command?: string): string | null {
-  // Extract cd target if command starts with "cd /path && ..."
-  let gitCwd: string | undefined;
-  if (command) {
-    const cdMatch = command.match(/^cd\s+["']?([^\s"'&]+)["']?\s*&&/);
-    if (cdMatch) gitCwd = cdMatch[1];
+/**
+ * Extract the working directory a git command will execute in.
+ * Handles: cd /path && ..., cd /path; ..., pushd /path && ..., git -C /path
+ */
+function extractGitCwd(command: string): string | undefined {
+  // 1. cd/pushd with any separator (&&, ;, \n)
+  const cdMatch = command.match(/(?:^|\n)\s*(?:cd|pushd)\s+["']?([^\s"';&]+)["']?\s*[;&]/);
+  if (cdMatch) return cdMatch[1];
+
+  // 2. git -C /path (can appear multiple times, take last)
+  const cMatches = [...command.matchAll(/git\s+(?:-C\s+["']?([^\s"']+)["']?\s*)+/g)];
+  if (cMatches.length > 0) {
+    const last = cMatches[cMatches.length - 1];
+    const allC = [...last[0].matchAll(/-C\s+["']?([^\s"']+)["']?/g)];
+    if (allC.length > 0) return allC[allC.length - 1][1];
   }
+
+  return undefined;
+}
+
+function detectBranch(command?: string): string | null {
+  const gitCwd = command ? extractGitCwd(command) : undefined;
+
   // For push commands, try parsing branch from "git push [-u] origin <branch>"
-  const gitCmd = command?.includes("git push") ? command.slice(command.indexOf("git push")) : command;
-  if (gitCmd?.startsWith("git push")) {
+  const pushIdx = command?.indexOf("git push");
+  if (pushIdx != null && pushIdx >= 0) {
+    const gitCmd = command!.slice(pushIdx);
     const tokens = gitCmd.split(/\s+/);
     for (let i = 2; i < tokens.length; i++) {
       if (tokens[i] === "origin" || tokens[i] === "upstream") {
@@ -339,32 +356,17 @@ function detectBranch(command?: string): string | null {
       }
     }
   }
-  // Fall back to git branch --show-current (using cd target if found)
+
+  // Run git branch --show-current in the target directory
   try {
     return execSync("git branch --show-current", {
       encoding: "utf-8", timeout: 5000, stdio: ["pipe", "pipe", "pipe"],
       ...(gitCwd ? { cwd: gitCwd } : {}),
     }).trim() || null;
   } catch {
-    // Not in a git repo - try cwd subdirectories
-    const cwd = process.cwd();
-    try {
-      for (const entry of readdirSync(cwd)) {
-        const gitDir = join(cwd, entry, ".git");
-        if (existsSync(gitDir)) {
-          try {
-            const b = execSync("git branch --show-current", {
-              encoding: "utf-8", timeout: 5000,
-              stdio: ["pipe", "pipe", "pipe"],
-              cwd: join(cwd, entry),
-            }).trim();
-            if (b) return b;
-          } catch {}
-        }
-      }
-    } catch {}
+    // Target dir is not a git repo and no cd detected - cannot determine branch
+    return null;
   }
-  return null;
 }
 
 /**
