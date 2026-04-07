@@ -342,7 +342,9 @@ function parseDecisionFile(filePath: string): Decision | null {
     const enforceRaw = get("enforce");
     const scopeRaw = get("scope");
 
-    const decisionMatch = body.match(/#\s+.*?\n\n([\s\S]*?)(?=\n## Reasoning)/m);
+    // Try to split body into decision + reasoning. If no ## Reasoning section, entire body after title is the decision.
+    const decisionMatch = body.match(/#\s+.*?\n\n([\s\S]*?)(?=\n## Reasoning)/m)
+      ?? body.match(/#\s+.*?\n\n([\s\S]*)/m);
     const reasoningMatch = body.match(/## Reasoning\n\n([\s\S]*)/m);
 
     const statusRaw = get("status");

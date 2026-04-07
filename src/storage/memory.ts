@@ -259,7 +259,9 @@ function parseMemoryFile(filePath: string): Memory | null {
     const keywordsRaw = get("keywords");
     const scopeRaw = get("scope");
 
-    const descMatch = body.match(/#\s+.*?\n\n([\s\S]*?)(?=\n## Details)/m);
+    // Try to split body into description + details. If no ## Details section, entire body after title is the description.
+    const descMatch = body.match(/#\s+.*?\n\n([\s\S]*?)(?=\n## Details)/m)
+      ?? body.match(/#\s+.*?\n\n([\s\S]*)/m);
     const detailsMatch = body.match(/## Details\n\n([\s\S]*)/m);
 
     return {
