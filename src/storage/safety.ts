@@ -381,8 +381,9 @@ function checkMergedBranch(command: string, cwd?: string): SafetyVerdict | null 
  * and the `+refspec` form (`git push origin +main`) are all recognized;
  * `-fixes` and similar substrings are not.
  */
-export function checkGit(rules: SafetyRules, command: string, cwd?: string): SafetyVerdict {
-  const stripped = stripQuoted(command.trim());
+export function checkGit(rules: SafetyRules, command: string, cwd?: string, skipMergedCheck?: boolean): SafetyVerdict {
+  // Strip "git -C <path>" so startsWith checks work: "git -C foo commit" -> "git commit"
+  const stripped = stripQuoted(command.trim()).replace(/^(git\s+)(?:-C\s+\S+\s+)+/, "$1");
   if (!rules.git.allowForcePush && stripped.startsWith("git push")) {
     // Split the push command into argv-ish tokens and inspect them as whole
     // words rather than scanning for substrings. This avoids the bug where
@@ -423,7 +424,8 @@ export function checkGit(rules: SafetyRules, command: string, cwd?: string): Saf
     }
   }
   // Block commit/push to a branch that already has a merged PR.
-  if (stripped.startsWith("git push") || stripped.startsWith("git commit") || stripped.startsWith("git add")) {
+  // Skip if the command chain includes git checkout (branch will change before commit).
+  if (!skipMergedCheck && (stripped.startsWith("git push") || stripped.startsWith("git commit") || stripped.startsWith("git add"))) {
     const verdict = checkMergedBranch(stripped, cwd);
     if (verdict && !verdict.allowed) return verdict;
   }
