@@ -253,7 +253,7 @@ Usage:
   axme-code status [path]                 Show project status
   axme-code cleanup legacy-artifacts [--dry-run]  Remove pre-PR#7 sessions/logs
   axme-code cleanup decisions-normalize [--dry-run]  Add status:active to decisions
-  axme-code audit-kb [--all-repos] [--apply]         KB health report + LLM conflict analysis
+  axme-code audit-kb [path] [--all-repos]             KB audit: dedup, conflicts, compaction
   axme-code stats [path]                  Worklog statistics (sessions, costs, safety blocks)
   axme-code help                          Show this help
 
@@ -443,14 +443,22 @@ async function main() {
     }
 
     case "audit-kb": {
-      // Determine target path: cwd, auto-detect workspace root if in sub-repo
-      let targetPath = resolve(".");
-      const ws = detectWorkspace(targetPath);
-      if (ws.type === "single") {
-        const parentWs = detectWorkspace(resolve(".."));
-        if (parentWs.type !== "single") targetPath = parentWs.root;
+      // Parse path argument: first non-flag arg after "audit-kb"
+      const kbPathArg = args.slice(1).find(a => !a.startsWith("--"));
+      let targetPath: string;
+      if (kbPathArg) {
+        // Explicit path: use as-is (audit that specific repo/dir)
+        targetPath = resolve(kbPathArg);
       } else {
-        targetPath = ws.root;
+        // No path: auto-detect workspace root from cwd
+        targetPath = resolve(".");
+        const ws = detectWorkspace(targetPath);
+        if (ws.type === "single") {
+          const parentWs = detectWorkspace(resolve(".."));
+          if (parentWs.type !== "single") targetPath = parentWs.root;
+        } else {
+          targetPath = ws.root;
+        }
       }
       const allRepos = args.includes("--all-repos");
 
