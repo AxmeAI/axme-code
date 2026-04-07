@@ -403,6 +403,25 @@ async function main() {
       process.stderr.write(
         `axme-code audit-session: workspace=${workspacePath} session=${sessionId} pid=${process.pid}\n`,
       );
+      // Register signal handlers so SIGTERM/SIGINT (OOM killer, manual kill)
+      // updates audit status before exit. SIGKILL is uncatchable - handled
+      // by 15-minute stale timeout in runSessionCleanup.
+      const signalCleanup = (signal: string) => {
+        process.stderr.write(`axme-code audit-session: received ${signal}, cleaning up\n`);
+        try {
+          const { loadSession, writeSession } = require("./storage/sessions.js");
+          const s = loadSession(workspacePath, sessionId);
+          if (s && s.auditStatus === "pending") {
+            s.auditStatus = "failed";
+            s.lastAuditError = `killed by ${signal}`;
+            s.auditFinishedAt = new Date().toISOString();
+            writeSession(workspacePath, s);
+          }
+        } catch {}
+        process.exit(1);
+      };
+      process.on("SIGTERM", () => signalCleanup("SIGTERM"));
+      process.on("SIGINT", () => signalCleanup("SIGINT"));
       try {
         const { runSessionCleanup } = await import("./session-cleanup.js");
         const result = await runSessionCleanup(workspacePath, sessionId);

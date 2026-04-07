@@ -31,6 +31,8 @@ import {
   clearLegacyPendingAuditsDir,
   readClaudeSessionMapping,
   isPidAlive,
+  loadSession,
+  closeSession,
 } from "./storage/sessions.js";
 import { logEvent } from "./storage/worklog.js";
 import { spawnDetachedAuditWorker } from "./audit-spawner.js";
@@ -138,10 +140,40 @@ async function cleanupAndExit(reason: string): Promise<void> {
   try {
     const mappings = listClaudeSessionMappings(defaultProjectPath);
     const owned = mappings.filter(m => m.ownerPpid === OWN_PPID);
+
+    // Deduplicate: group AXME sessions by Claude session ID.
+    // Multiple AXME sessions can share the same Claude session (race condition
+    // from parallel hooks). Only audit one per Claude session — the newest.
+    const claudeToAxme = new Map<string, { axmeId: string; createdAt: number }[]>();
+    for (const m of owned) {
+      const session = loadSession(defaultProjectPath, m.axmeSessionId);
+      if (!session) continue;
+      for (const ref of session.claudeSessions ?? []) {
+        const list = claudeToAxme.get(ref.id) ?? [];
+        list.push({ axmeId: m.axmeSessionId, createdAt: Date.parse(session.createdAt) || 0 });
+        claudeToAxme.set(ref.id, list);
+      }
+    }
+    const toAudit = new Set<string>();
+    const toSkip = new Set<string>();
+    for (const [, entries] of claudeToAxme) {
+      entries.sort((a, b) => b.createdAt - a.createdAt); // newest first
+      toAudit.add(entries[0].axmeId);
+      for (let i = 1; i < entries.length; i++) toSkip.add(entries[i].axmeId);
+    }
+    // Mark duplicates as done so they don't linger
+    for (const skipId of toSkip) {
+      try { closeSession(defaultProjectPath, skipId); } catch {}
+    }
+
     process.stderr.write(
-      `AXME cleanup (${reason}): ${owned.length} owned session(s) of ${mappings.length} total — spawning detached audit workers\n`,
+      `AXME cleanup (${reason}): ${owned.length} owned, ${toAudit.size} to audit, ${toSkip.size} deduped\n`,
     );
     for (const m of owned) {
+      if (!toAudit.has(m.axmeSessionId)) {
+        try { clearClaudeSessionMapping(defaultProjectPath, m.claudeSessionId); } catch {}
+        continue;
+      }
       try {
         spawnDetachedAuditWorker(defaultProjectPath, m.axmeSessionId);
       } catch (err) {
