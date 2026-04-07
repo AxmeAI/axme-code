@@ -28,12 +28,12 @@ Launches as a stdio process when VS Code opens. Lives for the entire window life
 
 | Tool | Purpose |
 |------|---------|
-| `axme_context` | Loads everything: oracle + decisions + safety + memory + plans + handoff. Called at session start. |
+| `axme_context` | Compact meta (safety, handoff, worklog) + instructions to load full KB in parallel |
+| `axme_oracle` | Stack + structure + patterns + glossary |
 | `axme_decisions` | List active decisions with enforce levels |
+| `axme_memories` | All memories (feedback + patterns) |
 | `axme_save_decision` | Agent saves a new architectural decision (with slug-based dedup) |
 | `axme_save_memory` | Agent saves feedback/pattern (mistakes, approaches) |
-| `axme_search_memory` | Keyword search across memories |
-| `axme_oracle` | Stack + structure + patterns + glossary |
 | `axme_safety` | Current safety rules (git, bash, filesystem) |
 | `axme_update_safety` | Add a new safety rule |
 | `axme_status` | Project status (sessions, decisions count, etc.) |

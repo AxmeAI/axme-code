@@ -320,9 +320,16 @@ export function checkBash(rules: SafetyRules, command: string): SafetyVerdict {
  * For `git push`, also parses branch from command tokens.
  */
 function detectBranch(command?: string): string | null {
+  // Extract cd target if command starts with "cd /path && ..."
+  let gitCwd: string | undefined;
+  if (command) {
+    const cdMatch = command.match(/^cd\s+["']?([^\s"'&]+)["']?\s*&&/);
+    if (cdMatch) gitCwd = cdMatch[1];
+  }
   // For push commands, try parsing branch from "git push [-u] origin <branch>"
-  if (command?.startsWith("git push")) {
-    const tokens = command.split(/\s+/);
+  const gitCmd = command?.includes("git push") ? command.slice(command.indexOf("git push")) : command;
+  if (gitCmd?.startsWith("git push")) {
+    const tokens = gitCmd.split(/\s+/);
     for (let i = 2; i < tokens.length; i++) {
       if (tokens[i] === "origin" || tokens[i] === "upstream") {
         const candidate = tokens[i + 1];
@@ -332,10 +339,11 @@ function detectBranch(command?: string): string | null {
       }
     }
   }
-  // Fall back to git branch --show-current
+  // Fall back to git branch --show-current (using cd target if found)
   try {
     return execSync("git branch --show-current", {
       encoding: "utf-8", timeout: 5000, stdio: ["pipe", "pipe", "pipe"],
+      ...(gitCwd ? { cwd: gitCwd } : {}),
     }).trim() || null;
   } catch {
     // Not in a git repo - try cwd subdirectories
@@ -437,7 +445,8 @@ export function checkGit(rules: SafetyRules, command: string): SafetyVerdict {
   // the case where an agent continues working on a stale feature branch after
   // the PR was merged. Checking at commit time (not just push) prevents
   // wasted work that would require cherry-pick to recover.
-  if (stripped.startsWith("git push") || stripped.startsWith("git commit") || stripped.startsWith("git add")) {
+  // Also handles "cd /path && git ..." patterns.
+  if (stripped.includes("git push") || stripped.includes("git commit") || stripped.includes("git add")) {
     const verdict = checkMergedBranch(stripped);
     if (verdict && !verdict.allowed) return verdict;
   }
