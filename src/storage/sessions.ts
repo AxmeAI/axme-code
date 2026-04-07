@@ -17,7 +17,7 @@
  */
 
 import { join, resolve } from "node:path";
-import { readdirSync, readFileSync, rmSync } from "node:fs";
+import { readdirSync, readFileSync, rmSync, openSync, closeSync, unlinkSync, statSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { ensureDir, writeJson, readJson, pathExists, atomicWrite, removeFile, readSafe } from "./engine.js";
 import { logSessionStart } from "./worklog.js";
@@ -479,6 +479,53 @@ export function clearLegacyActiveSession(projectPath: string): void {
 }
 
 /**
+ * Filesystem lock for session creation to prevent parallel hooks from
+ * creating duplicate AXME sessions for the same Claude session.
+ *
+ * Uses O_EXCL (atomic create-or-fail) as a cross-process mutex.
+ * On contention: spin-wait up to 500ms, then re-read the mapping.
+ * Stale lock (>5s) auto-cleaned to handle crashed lock holders.
+ */
+const LOCK_STALE_MS = 5_000;
+const LOCK_WAIT_MS = 500;
+const LOCK_POLL_MS = 50;
+
+function sessionLockPath(projectPath: string, claudeSessionId: string): string {
+  return join(activeSessionsDir(projectPath), `${claudeSessionId}.lock`);
+}
+
+function acquireLock(projectPath: string, claudeSessionId: string): boolean {
+  const lp = sessionLockPath(projectPath, claudeSessionId);
+  ensureDir(activeSessionsDir(projectPath));
+  try {
+    // Clean stale lock from crashed process
+    try {
+      const st = statSync(lp);
+      if (Date.now() - st.mtimeMs > LOCK_STALE_MS) unlinkSync(lp);
+    } catch {}
+    const fd = openSync(lp, "wx");
+    closeSync(fd);
+    return true;
+  } catch {
+    return false; // EEXIST or other - graceful degradation
+  }
+}
+
+function releaseLock(projectPath: string, claudeSessionId: string): void {
+  try { unlinkSync(sessionLockPath(projectPath, claudeSessionId)); } catch {}
+}
+
+function waitForLock(projectPath: string, claudeSessionId: string): boolean {
+  const deadline = Date.now() + LOCK_WAIT_MS;
+  while (Date.now() < deadline) {
+    if (acquireLock(projectPath, claudeSessionId)) return true;
+    const start = Date.now();
+    while (Date.now() - start < LOCK_POLL_MS) { /* spin */ }
+  }
+  return false;
+}
+
+/**
  * Ensure an AXME session exists for the given Claude session. Lazy-created
  * on the first hook call that knows its Claude session_id.
  *
@@ -535,14 +582,40 @@ export function ensureAxmeSessionForClaude(
     if (toolName && READ_ONLY_TOOLS.includes(toolName) && existing) {
       return existing;
     }
-    // Stale mapping: log once and fall through to create a fresh session,
-    // which will overwrite the mapping file below.
-    process.stderr.write(
-      `AXME: stale mapping for Claude session ${claudeSessionId} → ` +
-        `AXME ${existing} (audited=${existingSession?.auditedAt ?? "no"}, ` +
-        `pid=${existingSession?.pid ?? "?"}). Creating fresh AXME session.\n`,
-    );
+    // Stale mapping: acquire lock to prevent parallel hooks from each
+    // creating a new session. Only the lock winner creates; others re-read.
+    const gotLock = waitForLock(projectPath, claudeSessionId);
+    try {
+      // Re-check inside lock — another process may have won the race
+      const recheck = readClaudeSessionMapping(projectPath, claudeSessionId);
+      if (recheck && recheck !== existing) {
+        const recheckSession = loadSession(projectPath, recheck);
+        if (recheckSession && !recheckSession.auditedAt &&
+            (recheckSession.pid == null || isPidAlive(recheckSession.pid))) {
+          attachClaudeSession(projectPath, recheck, { id: claudeSessionId, transcriptPath, role: "main" });
+          return recheck;
+        }
+      }
+      // We won the race (or lock timed out) — create fresh session
+      process.stderr.write(
+        `AXME: stale mapping for Claude session ${claudeSessionId} → ` +
+          `AXME ${existing} (audited=${existingSession?.auditedAt ?? "no"}, ` +
+          `pid=${existingSession?.pid ?? "?"}). Creating fresh AXME session.\n`,
+      );
+      const axmeSession = createSession(projectPath);
+      try { logSessionStart(projectPath, axmeSession.id); } catch {}
+      writeClaudeSessionMapping(projectPath, claudeSessionId, axmeSession.id);
+      attachClaudeSession(projectPath, axmeSession.id, {
+        id: claudeSessionId,
+        transcriptPath,
+        role: "main",
+      });
+      return axmeSession.id;
+    } finally {
+      if (gotLock) releaseLock(projectPath, claudeSessionId);
+    }
   }
+  // No existing mapping — first time for this Claude session
   const axmeSession = createSession(projectPath);
   try { logSessionStart(projectPath, axmeSession.id); } catch {}
   writeClaudeSessionMapping(projectPath, claudeSessionId, axmeSession.id);

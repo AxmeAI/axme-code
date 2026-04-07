@@ -31,6 +31,7 @@ import {
   MAX_AUDIT_ATTEMPTS,
   isRetryableError,
   RETRYABLE_MAX_ATTEMPTS,
+  listSessions,
   type AuditLog,
   type AuditLogExtraction,
   type AuditLogResumeInfo,
@@ -230,6 +231,26 @@ export async function runSessionCleanup(
     session.auditAttempts = 0;
   }
 
+  // Dedup 2b: cross-session concurrent-audit protection.
+  // Multiple AXME sessions can share the same Claude session ID (parallel hook
+  // race condition). If another AXME session with the same Claude transcript
+  // is already pending audit (not stale), skip to avoid duplicate LLM calls.
+  const myClaudeIds = new Set((session.claudeSessions ?? []).map((c: any) => c.id));
+  if (myClaudeIds.size > 0) {
+    const allSessions = listSessions(workspacePath);
+    for (const other of allSessions) {
+      if (other.id === sessionId) continue;
+      if (other.auditStatus !== "pending" || !other.auditStartedAt) continue;
+      const startedMs = Date.parse(other.auditStartedAt);
+      if (!Number.isFinite(startedMs) || Date.now() - startedMs > AUDIT_STALE_TIMEOUT_MS) continue;
+      const otherClaudeIds = new Set((other.claudeSessions ?? []).map((c: any) => c.id));
+      const overlap = [...myClaudeIds].some(id => otherClaudeIds.has(id));
+      if (overlap) {
+        return { ...base, skipped: "concurrent-audit" };
+      }
+    }
+  }
+
   // Dedup 3: retry cap. If the session already used up its audit attempts
   // and still has no auditedAt, do NOT retry — it either hit a deterministic
   // failure (too-large prompt, parser rejection) or a bug that needs manual
@@ -387,6 +408,7 @@ export async function runSessionCleanup(
       // Audit log failure is non-fatal.
     }
 
+    let auditLogFinalized = false;
     try {
       const { runSessionAudit } = await import("./agents/session-auditor.js");
 
@@ -707,6 +729,7 @@ export async function runSessionCleanup(
             safetyDeduped: sDeduped,
           },
         });
+        auditLogFinalized = true;
       }
     } catch (err) {
       // Audit failure is non-fatal for the caller (we still close the session),
@@ -721,6 +744,20 @@ export async function runSessionCleanup(
           durationMs: Date.now() - auditStartMs,
           error: err instanceof Error ? err.message : String(err),
         });
+        auditLogFinalized = true;
+      }
+    } finally {
+      // Safety net: if neither success nor catch finalized the audit log
+      // (e.g., process received SIGTERM mid-LLM-call), mark it failed.
+      if (!auditLogFinalized && auditLogPath) {
+        try {
+          updateAuditLog(auditLogPath, {
+            phase: "failed",
+            finishedAt: new Date().toISOString(),
+            durationMs: Date.now() - auditStartMs,
+            error: "audit worker terminated unexpectedly",
+          });
+        } catch {}
       }
     }
   }
