@@ -3,7 +3,6 @@
 **Persistent memory, decisions, and safety guardrails for Claude Code.**
 
 [![Alpha](https://img.shields.io/badge/status-alpha-orange)]()
-[![npm](https://img.shields.io/npm/v/@axme/code)](https://www.npmjs.com/package/@axme/code)
 [![GitHub Release](https://img.shields.io/github/v/release/AxmeAI/axme-code)](https://github.com/AxmeAI/axme-code/releases)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
@@ -27,19 +26,13 @@ AXME Code fixes all of this. You just work with Claude Code as usual - AXME Code
 
 **Requires [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (CLI or VS Code extension).**
 
-### Option A: npm (recommended)
-
-```bash
-npm install -g @axme/code
-```
-
-### Option B: Native binary (no Node.js required)
-
 ```bash
 curl -fsSL https://raw.githubusercontent.com/AxmeAI/axme-code/main/install.sh | bash
 ```
 
 Or specify a version: `curl -fsSL ... | bash -s v0.1.0`
+
+Installs to `~/.local/bin/axme-code`. Auto-updates in background.
 
 ### Setup
 

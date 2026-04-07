@@ -1,4 +1,8 @@
 import { build } from "esbuild";
+import { readFileSync } from "fs";
+
+const pkg = JSON.parse(readFileSync("package.json", "utf-8"));
+const define = { __VERSION__: JSON.stringify(pkg.version) };
 
 // MCP server (main entry)
 await build({
@@ -10,6 +14,7 @@ await build({
   packages: "external",
   outfile: "dist/server.js",
   sourcemap: true,
+  define,
 });
 
 // CLI entry (setup command)
@@ -23,6 +28,7 @@ await build({
   outfile: "dist/cli.mjs",
   sourcemap: true,
   banner: { js: "" },
+  define,
 });
 
 // Create bin wrapper
