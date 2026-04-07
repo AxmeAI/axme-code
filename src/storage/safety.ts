@@ -329,7 +329,11 @@ export function checkBash(rules: SafetyRules, command: string): SafetyVerdict {
  * Returns null if no #!axme marker found.
  */
 export function parseAxmeGate(command: string): { pr: string; repo: string } | null {
-  const match = command.match(/#!axme\s+(.*)/);
+  // Use the LAST occurrence of #!axme (the suffix), not one inside a commit message.
+  const lastIdx = command.lastIndexOf("#!axme");
+  if (lastIdx === -1) return null;
+  const suffix = command.slice(lastIdx);
+  const match = suffix.match(/^#!axme\s+(.*)/);
   if (!match) return null;
   const pairs = match[1].trim();
   const prMatch = pairs.match(/\bpr=(\S+)/);
@@ -400,7 +404,7 @@ function checkAxmeGate(fullCommand: string): SafetyVerdict | null {
  * and the `+refspec` form (`git push origin +main`) are all recognized;
  * `-fixes` and similar substrings are not.
  */
-export function checkGit(rules: SafetyRules, command: string, cwd?: string, skipMergedCheck?: boolean): SafetyVerdict {
+export function checkGit(rules: SafetyRules, command: string, _cwd?: string, skipMergedCheck?: boolean): SafetyVerdict {
   // Strip "git -C <path>" so startsWith checks work: "git -C foo commit" -> "git commit"
   const stripped = stripQuoted(command.trim()).replace(/^(git\s+)(?:-C\s+\S+\s+)+/, "$1");
   if (!rules.git.allowForcePush && stripped.startsWith("git push")) {
