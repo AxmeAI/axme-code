@@ -210,7 +210,7 @@ describe("checkGit - commands not requiring gate", () => {
     "git stash pop",
     "git merge --no-ff feat/x",
     "git rebase main",
-    "git tag v1.0.0",
+    // "git tag v1.0.0" - now blocked by D-028 (tested separately)
     "git remote -v",
     "git rev-parse HEAD",
     "git cherry-pick abc123",
@@ -375,6 +375,49 @@ describe("checkGit - skipMergedCheck flag", () => {
 
   it("still enforces direct-to-main even with skip flag", () => {
     const v = checkGit(defaultRules, "git push origin main", undefined, true);
+    assert.equal(v.allowed, false);
+  });
+
+  it("still blocks git tag even with skip flag", () => {
+    const v = checkGit(defaultRules, "git tag v1.0.0", undefined, true);
+    assert.equal(v.allowed, false);
+  });
+});
+
+// ===== checkGit - git tag blocked =====
+
+describe("checkGit - git tag blocked (D-028)", () => {
+  it("blocks git tag v1.0.0", () => {
+    const v = checkGit(defaultRules, "git tag v1.0.0");
+    assert.equal(v.allowed, false);
+    assert.ok(v.reason!.includes("tag"));
+    assert.ok(v.reason!.includes("publish"));
+  });
+
+  it("blocks git tag -a v1.0.0", () => {
+    const v = checkGit(defaultRules, 'git tag -a v1.0.0 -m "release"');
+    assert.equal(v.allowed, false);
+  });
+
+  it("blocks git tag with message", () => {
+    const v = checkGit(defaultRules, 'git tag -m "Release v2" v2.0.0');
+    assert.equal(v.allowed, false);
+  });
+
+  it("blocks git tag --delete (still a tag operation)", () => {
+    const v = checkGit(defaultRules, "git tag --delete v1.0.0");
+    assert.equal(v.allowed, false);
+  });
+
+  it("blocks git tag -l (list) is also blocked", () => {
+    // Even listing is blocked via checkGit since it starts with "git tag"
+    // This is conservative - agent can use gh CLI to view releases instead
+    const v = checkGit(defaultRules, "git tag -l");
+    assert.equal(v.allowed, false);
+  });
+
+  it("blocks git -C path tag", () => {
+    const v = checkGit(defaultRules, "git -C /repo tag v1.0.0");
     assert.equal(v.allowed, false);
   });
 });
