@@ -284,18 +284,18 @@ Use these exact markers. Empty sections MUST still include the header with nothi
 slug: <kebab-case, max 60 chars>
 type: <feedback | pattern>
 title: <English, max 80 chars>
-description: <English, 1-2 sentences>
+description: <English, 1-2 sentences: what happened + specific action/command/rule. Must be self-contained - this is the ONLY field shown in context, so include all essential info here.>
 keywords: <English, 3-7 comma-separated>
 scope: <project name or "all">
-body: <English. Include **Why:** and **How to apply:** lines. Non-English quotes OK inline as evidence>
+body: <Optional archive detail. Keep short or omit - description must carry all meaning.>
 ---
 ###END###
 
 ###DECISIONS###
 action: <new | supersede | amend>
 title: <English, max 80 chars>
-decision: <English, what was decided>
-reasoning: <English, with specifics from the session>
+decision: <English, 2-3 sentences: what was decided + why. Must be self-contained - this is the ONLY field shown in context.>
+reasoning: <Optional archive detail. Keep short or omit - decision field must carry all meaning.>
 enforce: <required | advisory | none>
 scope: <project name, comma-separated list, or "all">
 supersedes: <D-NNN id of old decision, only when action=supersede>

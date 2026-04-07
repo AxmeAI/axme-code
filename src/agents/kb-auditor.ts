@@ -58,13 +58,28 @@ Your task: clean up the .axme-code/ storage in the current project directory.
 2. Find duplicates (same advice, different wording) — delete the older file, keep the newer.
 3. Find stale memories that contradict current code — delete them.
 
+## Step 3: Compact all entries
+
+For EVERY decision and memory file, rewrite to be more concise:
+
+**Decisions**: the "decision" body must be 2-3 sentences containing WHAT was decided + WHY. Remove verbose reasoning that repeats the body. If "## Reasoning" section adds unique info not in body, merge it into body. Then clear the reasoning section.
+
+**Memories**: the "description" field (line after # Title) must be 1-2 sentences containing the rule + specific action/command. If "## Details" section adds unique info not in description, merge it into description. Then remove the ## Details section.
+
+Compact format rules:
+- Keep all essential meaning — commands, specific values, error codes, concrete rules
+- Remove filler words, narrative context, incident storytelling
+- Do NOT remove: specific commands, file paths, error codes, concrete thresholds
+- DO remove: "User said...", "Agent did X then Y then Z", step-by-step incident narrative
+- Target: each entry readable as a standalone rule without needing context
+
 ## Rules
 
 - ALWAYS check code before deciding which decision is current. Use Read/Grep to verify.
 - When in doubt, keep both and move on. Only supersede/revoke when evidence is clear.
-- Work through ALL decisions systematically, not just a sample.
-- After all changes, report what you did: how many superseded, revoked, deleted.
-- Do NOT create new decisions or memories. Only clean up existing ones.
+- Work through ALL decisions and memories systematically, not just a sample.
+- After all changes, report what you did: how many superseded, revoked, deleted, compacted.
+- Do NOT create new decisions or memories. Only clean up and compact existing ones.
 `;
 
 const KB_AUDIT_PROMPT_ALL_REPOS = `You are a knowledge base auditor for AXME Code workspace.
@@ -96,12 +111,13 @@ USE SUB-AGENTS (Agent tool) to parallelize — you can launch one agent per repo
 - DUPLICATES: same topic different wording → keep newer (by date), supersede older
 - CONTRADICTIONS: same topic conflicting content → Read/Grep code to determine current → supersede outdated
 - STALE: decision/memory contradicts current code → revoke with evidence
+- COMPACT: rewrite every decision body to 2-3 sentences (what+why). Rewrite every memory description to 1-2 sentences (rule+specific action). Merge Details/Reasoning sections into main field, then remove them.
 - When in doubt, keep both. Only act on clear evidence.
-- Do NOT create new decisions or memories. Only clean up.
+- Do NOT create new decisions or memories. Only clean up and compact.
 
 ## After all repos done
 
-Report summary: which repos had changes, how many decisions superseded/revoked, how many memories cleaned.
+Report summary: which repos had changes, how many decisions superseded/revoked/compacted, how many memories cleaned/compacted.
 `;
 
 /**

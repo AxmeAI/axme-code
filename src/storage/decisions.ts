@@ -277,11 +277,8 @@ export function showDecisions(projectPath: string): string {
   if (decisions.length === 0) return "No decisions recorded.";
   return decisions.map(d => {
     const badge = d.enforce ? ` [${d.enforce}]` : "";
-    const lines = [`## ${d.id}: ${d.title}${badge}`, "", d.decision];
-    if (d.reasoning) lines.push("", `**Reasoning:** ${d.reasoning}`);
-    lines.push("", `*Source: ${d.source}, ${d.date}*`);
-    return lines.join("\n");
-  }).join("\n\n---\n\n");
+    return `- **${d.id}: ${d.title}**${badge} - ${d.decision}`;
+  }).join("\n");
 }
 
 export function toSlug(text: string): string {
