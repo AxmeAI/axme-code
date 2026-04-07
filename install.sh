@@ -70,7 +70,7 @@ main() {
   download_url="https://github.com/${REPO}/releases/download/${version}/axme-code-${platform}"
 
   tmp="$(mktemp)"
-  trap 'rm -f "$tmp"' EXIT
+  trap 'rm -f "${tmp:-}"' EXIT INT TERM
 
   download "$download_url" "$tmp"
 
