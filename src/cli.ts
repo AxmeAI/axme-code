@@ -264,8 +264,9 @@ async function main() {
   switch (command) {
     case "setup": {
       const projectPath = resolve(args[1] || ".");
+      const hasGitDir = existsSync(join(projectPath, ".git"));
       const ws = detectWorkspace(projectPath);
-      const isWorkspace = ws.type !== "single";
+      const isWorkspace = hasGitDir ? false : ws.type !== "single";
 
       if (isWorkspace) {
         console.log(`Initializing AXME Code workspace in ${projectPath} (${ws.type}, ${ws.projects.length} projects)...`);

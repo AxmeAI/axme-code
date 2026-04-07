@@ -8,6 +8,7 @@
  */
 
 import { join } from "node:path";
+import { existsSync } from "node:fs";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
@@ -40,8 +41,9 @@ import { spawnDetachedAuditWorker } from "./audit-spawner.js";
 // --- Server state (detected at startup from cwd) ---
 
 const serverCwd = process.cwd();
+const serverHasGit = existsSync(join(serverCwd, ".git"));
 const serverWorkspace = detectWorkspace(serverCwd);
-const isWorkspace = serverWorkspace.type !== "single";
+const isWorkspace = serverHasGit ? false : serverWorkspace.type !== "single";
 const defaultProjectPath = serverCwd;
 const defaultWorkspacePath = isWorkspace ? serverCwd : null;
 

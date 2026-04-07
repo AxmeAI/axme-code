@@ -9,6 +9,7 @@ import { oracleContext, showOracle, oracleExists, loadOracleFiles } from "../sto
 import { decisionsContext, showDecisions, enforceableDecisionsContext, listDecisions } from "../storage/decisions.js";
 import { pathExists, readSafe } from "../storage/engine.js";
 import { join } from "node:path";
+import { existsSync } from "node:fs";
 import { AXME_CODE_DIR } from "../types.js";
 import { safetyContext, loadSafetyRules } from "../storage/safety.js";
 import { allMemoryContext, listMemories } from "../storage/memory.js";
@@ -35,7 +36,8 @@ import { backlogContext } from "../storage/backlog.js";
  */
 function buildStorageRootHeader(projectPath: string, workspacePath?: string): string {
   const ws = detectWorkspace(projectPath);
-  const isWorkspace = ws.type !== "single" || (workspacePath != null && workspacePath !== projectPath);
+  const hasGit = existsSync(join(projectPath, ".git"));
+  const isWorkspace = hasGit ? false : (ws.type !== "single" || (workspacePath != null && workspacePath !== projectPath));
   const sessionType = isWorkspace ? "workspace (multi-repo)" : "single-repo";
   const storageRoot = join(projectPath, AXME_CODE_DIR);
   const lines = [
