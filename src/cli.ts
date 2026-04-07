@@ -245,7 +245,7 @@ function writeBootstrapToAxmeMemory(projectPath: string, isWorkspace: boolean, r
 }
 
 function usage(): void {
-  console.log(`AXME Code - MCP server for Claude Code CLI
+  console.log(`AXME Code - Persistent memory, decisions, and safety guardrails for Claude Code
 
 Usage:
   axme-code setup [path]                  Initialize project (LLM scan + .mcp.json + CLAUDE.md)
