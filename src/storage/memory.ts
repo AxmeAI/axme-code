@@ -182,22 +182,27 @@ export function memoryContext(projectPath: string, keywords: string[]): string {
 }
 
 export function allMemoryContext(projectPath: string): string {
+  return getMemorySections(projectPath).join("\n");
+}
+
+/** Return memories as array of sections (for pagination). */
+export function getMemorySections(projectPath: string): string[] {
   const all = listMemories(projectPath);
-  if (all.length === 0) return "";
+  if (all.length === 0) return [];
 
   const feedbacks = all.filter(m => m.type === "feedback");
   const patterns = all.filter(m => m.type === "pattern");
-  const parts: string[] = ["## Project Memories"];
+  const sections: string[] = [];
 
   if (feedbacks.length > 0) {
-    parts.push(`\n### Feedback (${feedbacks.length}):`);
-    for (const m of feedbacks) parts.push(`- **${m.title}**: ${m.description}`);
+    sections.push(`### Feedback (${feedbacks.length}):\n` +
+      feedbacks.map(m => `- **${m.title}**: ${m.description}`).join("\n"));
   }
   if (patterns.length > 0) {
-    parts.push(`\n### Patterns (${patterns.length}):`);
-    for (const m of patterns) parts.push(`- **${m.title}**: ${m.description}`);
+    sections.push(`### Patterns (${patterns.length}):\n` +
+      patterns.map(m => `- **${m.title}**: ${m.description}`).join("\n"));
   }
-  return parts.join("\n");
+  return sections;
 }
 
 export function showMemories(projectPath: string, type?: MemoryType): string {

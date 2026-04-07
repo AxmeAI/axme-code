@@ -55,10 +55,10 @@ function buildStorageRootHeader(projectPath: string, workspacePath?: string): st
 }
 
 /**
- * Get full project context (oracle + decisions + safety + memory + test plan + plans).
+ * Get full project context as array of logical sections (for pagination).
  * When workspacePath provided, merges workspace + project data.
  */
-export function getFullContext(projectPath: string, workspacePath?: string): string {
+export function getFullContextSections(projectPath: string, workspacePath?: string): string[] {
   const parts: string[] = [];
 
   // Storage root header
@@ -67,7 +67,7 @@ export function getFullContext(projectPath: string, workspacePath?: string): str
   // Not initialized check
   const storageDirExists = pathExists(join(projectPath, AXME_CODE_DIR));
   if (!storageDirExists) {
-    return parts[0] + "\n\nProject not initialized. Ask the user to run 'axme-code setup' in terminal.";
+    return [parts[0] + "\n\nProject not initialized. Ask the user to run 'axme-code setup' in terminal."];
   }
 
   // Safety rules (small, always inline)
@@ -161,7 +161,12 @@ export function getFullContext(projectPath: string, workspacePath?: string): str
     "**IMPORTANT**: if any tool output is truncated or saved to a file, use the Read tool to read the full file content into your context. Do not proceed with partial data.",
   ].join("\n"));
 
-  return parts.join("\n\n");
+  return parts;
+}
+
+/** Legacy joined output (for backward compat where needed). */
+export function getFullContext(projectPath: string, workspacePath?: string): string {
+  return getFullContextSections(projectPath, workspacePath).join("\n\n");
 }
 
 export function getOracle(projectPath: string): string {

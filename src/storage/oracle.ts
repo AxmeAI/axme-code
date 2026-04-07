@@ -62,15 +62,20 @@ export function oracleContext(projectPath: string): string {
  * Format oracle for display.
  */
 export function showOracle(projectPath: string): string {
+  return getOracleSections(projectPath).join("\n\n---\n\n");
+}
+
+/** Return oracle as array of sections (for pagination). */
+export function getOracleSections(projectPath: string): string[] {
   const files = loadOracleFiles(projectPath);
-  if (!files) return "Oracle not initialized. Run axme_init first.";
+  if (!files) return ["Oracle not initialized. Run axme_init first."];
 
   const sections: string[] = [];
   if (files.stack) sections.push("# Stack\n\n" + files.stack);
   if (files.structure) sections.push("# Structure\n\n" + files.structure);
   if (files.patterns) sections.push("# Patterns\n\n" + files.patterns);
   if (files.glossary) sections.push("# Glossary\n\n" + files.glossary);
-  return sections.join("\n\n---\n\n");
+  return sections;
 }
 
 export function oracleExists(projectPath: string): boolean {
