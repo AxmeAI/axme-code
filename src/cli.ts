@@ -87,7 +87,7 @@ ${PENDING_AUDITS_GUIDANCE}${STORAGE_PATH_GUIDANCE}
 Do not defer - save when discovered.
 
 ### Available AXME Tools
-axme_context, axme_save_memory, axme_search_memory, axme_save_decision,
+axme_context, axme_oracle, axme_decisions, axme_memories, axme_save_memory, axme_save_decision,
 axme_update_safety, axme_safety, axme_status, axme_worklog, axme_workspace
 `;
 
@@ -107,7 +107,7 @@ ${PENDING_AUDITS_GUIDANCE}${STORAGE_PATH_GUIDANCE}
 - For cross-project findings: include scope parameter (e.g. scope: ["all"])
 
 ### Available AXME Tools
-axme_context, axme_save_memory, axme_search_memory, axme_save_decision,
+axme_context, axme_oracle, axme_decisions, axme_memories, axme_save_memory, axme_save_decision,
 axme_update_safety, axme_safety, axme_status, axme_worklog, axme_workspace
 `;
 

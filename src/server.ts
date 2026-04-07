@@ -13,6 +13,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 
 import { getFullContext, getOracle, getDecisions } from "./tools/context.js";
+import { allMemoryContext } from "./storage/memory.js";
 import { saveMemoryTool, searchMemoryTool } from "./tools/memory-tools.js";
 import { saveDecisionTool } from "./tools/decision-tools.js";
 import { updateSafetyTool, showSafetyTool } from "./tools/safety-tools.js";
@@ -150,23 +151,23 @@ function buildInstructions(): string {
   ];
   if (isWorkspace) {
     parts.push(`Workspace: ${defaultWorkspacePath} (${serverWorkspace.type}, ${serverWorkspace.projects.length} projects).`);
-    parts.push("Call axme_context at session start to load workspace overview.");
+    parts.push("Call axme_context at session start to load workspace overview. It returns compact meta and instructions to call axme_oracle, axme_decisions, axme_memories in parallel.");
     parts.push("Each repo has its own .axme-code/ storage initialized during setup.");
     parts.push("Before working with any specific repo, call axme_context with that repo's path.");
   } else {
-    parts.push("Call axme_context at session start to load project knowledge base.");
+    parts.push("Call axme_context at session start. It returns compact meta and instructions to call axme_oracle, axme_decisions, axme_memories in parallel.");
   }
+  parts.push("TRUNCATED OUTPUT RULE: if ANY MCP tool output is truncated or saved to a file (you see 'Output too large' or 'saved to file'), you MUST use the Read tool to read the full file content into your context. Do not proceed with partial data.");
   parts.push("Save memories, decisions, and safety rules immediately when discovered during work.");
   parts.push("SESSION CLOSE: when the user asks to close/end the session (any language), call axme_begin_close to get the close checklist. Follow it: extract memories/decisions/safety (choosing correct scope for each), prepare handoff data, then call axme_finalize_close with everything. After finalize, output to the user: storage summary (what saved where), then startup_text.");
   parts.push("DECISION CONFLICT RULE: if two active decisions contradict each other, treat the NEWER one (by date) as authoritative. The older one is a candidate for supersede at next audit.");
   parts.push(
-    `STORAGE ROOT: ${defaultProjectPath}/.axme-code — for any direct inspection of .axme-code/ files via Bash (ls, cat, grep, find), use this ABSOLUTE path. Do NOT use relative paths from your cwd; in a multi-repo workspace your cwd may point to a child repo with its own separate .axme-code/ storage. Every session's meta.json also contains an "origin" field with its absolute parent directory — read it to verify which storage a given session belongs to.`,
+    `STORAGE ROOT: ${defaultProjectPath}/.axme-code — for any direct inspection of .axme-code/ files via Bash (ls, cat, grep, find), use this ABSOLUTE path. Do NOT use relative paths from your cwd; in a multi-repo workspace your cwd may point to a child repo with its own separate .axme-code/ storage.`,
   );
   parts.push(
-    "IMPORTANT: if axme_context output contains a '## ⚠️ Pending audits' section, " +
+    "IMPORTANT: if axme_context output contains a 'Pending audits' section, " +
       "a previous session's audit is still running and the knowledge base is incomplete. " +
-      "You MUST tell the user, offer to either wait and re-run axme_context or track with a TODO, " +
-      "and re-check axme_context periodically until the pending list is empty before relying on the knowledge base.",
+      "Tell the user, offer to wait and re-run axme_context or track with a TODO.",
   );
   return parts.join(" ");
 }
@@ -244,6 +245,36 @@ server.tool(
   async ({ project_path }) => {
 
     return { content: [{ type: "text" as const, text: getDecisions(pp(project_path)) }] };
+  },
+);
+
+// --- axme_memories ---
+server.tool(
+  "axme_memories",
+  "Show all project memories (feedback + patterns). Call at session start alongside axme_oracle and axme_decisions.",
+  {
+    project_path: z.string().optional().describe("Absolute path to the project root (defaults to server cwd)"),
+    workspace_path: z.string().optional().describe("Absolute path to workspace root (for merged workspace + project memories)"),
+  },
+  async ({ project_path, workspace_path }) => {
+    const wsPath = wp(workspace_path);
+    const projPath = pp(project_path);
+    if (wsPath && wsPath !== projPath) {
+      const { listMemories } = await import("./storage/memory.js");
+      const { mergeMemories } = await import("./storage/workspace-merge.js");
+      const wsMemories = listMemories(wsPath);
+      const projMemories = listMemories(projPath);
+      const merged = mergeMemories(wsMemories, projMemories);
+      if (merged.length === 0) return { content: [{ type: "text" as const, text: "No memories recorded." }] };
+      const feedbacks = merged.filter(m => m.type === "feedback");
+      const patterns = merged.filter(m => m.type === "pattern");
+      const parts: string[] = ["## Project Memories"];
+      if (feedbacks.length > 0) { parts.push(`\n### Feedback (${feedbacks.length}):`); for (const m of feedbacks) parts.push(`- **${m.title}**: ${m.description}`); }
+      if (patterns.length > 0) { parts.push(`\n### Patterns (${patterns.length}):`); for (const m of patterns) parts.push(`- **${m.title}**: ${m.description}`); }
+      return { content: [{ type: "text" as const, text: parts.join("\n") }] };
+    }
+    const text = allMemoryContext(projPath);
+    return { content: [{ type: "text" as const, text: text || "No memories recorded." }] };
   },
 );
 
