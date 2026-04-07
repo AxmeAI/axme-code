@@ -152,7 +152,10 @@ function handlePreToolUse(sessionOrigin: string, event: HookInput): void {
       // Track effective cwd through cd/pushd segments, then check each git
       // segment with the correct cwd. If cwd cannot be determined (variables,
       // subshells), block with instruction to use git -C.
+      // If chain contains git checkout (branch switch), skip merged-PR check
+      // because the hook runs BEFORE execution - current branch will change.
       const segments = splitCommandSegments(command);
+      const hasCheckout = segments.some(s => /^\s*git\s+(checkout|switch)\b/.test(s.trim()));
       let effectiveCwd = process.cwd();
       let cwdResolved = true;
       for (const seg of segments) {
@@ -182,7 +185,8 @@ function handlePreToolUse(sessionOrigin: string, event: HookInput): void {
             verdict = { allowed: false, reason: `Cannot determine target directory for git command. Use explicit path: git -C /absolute/path ${trimmed.replace(/^git\s+/, '')}` };
             break;
           }
-          verdict = checkGit(rules, trimmed, gitCwd);
+          // Skip merged-PR check if chain includes checkout (branch will change)
+          verdict = checkGit(rules, trimmed, gitCwd, hasCheckout);
           if (!verdict.allowed) break;
         }
       }
