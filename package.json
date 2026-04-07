@@ -34,5 +34,6 @@
     "url": "https://github.com/AxmeAI/axme-code.git"
   },
   "license": "MIT",
-  "keywords": ["mcp", "claude-code", "ai-agent", "developer-tools"]
+  "keywords": ["mcp", "claude-code", "ai-agent", "developer-tools"],
+  "files": ["dist", "README.md", "LICENSE"]
 }
