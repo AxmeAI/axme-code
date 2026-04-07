@@ -62,16 +62,29 @@ Your task: clean up the .axme-code/ storage in the current project directory.
 
 For EVERY decision and memory file, rewrite to be more concise:
 
-**Decisions**: the "decision" body must be 2-3 sentences containing WHAT was decided + WHY. Remove verbose reasoning that repeats the body. If "## Reasoning" section adds unique info not in body, merge it into body. Then clear the reasoning section.
+**Decisions**: the body paragraph (between "# Title" and "## Reasoning" or end of file) must be EXACTLY 2-3 sentences: what was decided + why. If body is longer, rewrite it shorter. If "## Reasoning" exists and adds info not in body, merge that info into the 2-3 sentence body, then DELETE the entire "## Reasoning" section (the heading and all text below it). Final file must have NO "## Reasoning" heading.
 
-**Memories**: the "description" field (line after # Title) must be 1-2 sentences containing the rule + specific action/command. If "## Details" section adds unique info not in description, merge it into description. Then remove the ## Details section.
+**Memories**: the description paragraph (between "# Title" and "## Details" or end of file) must be EXACTLY 1-2 sentences: the rule + specific action/command/value. If description is longer, rewrite it shorter. If "## Details" exists and adds info not in description, merge that info into the 1-2 sentence description, then DELETE the entire "## Details" section. Final file must have NO "## Details" heading.
 
-Compact format rules:
-- Keep all essential meaning — commands, specific values, error codes, concrete rules
-- Remove filler words, narrative context, incident storytelling
-- Do NOT remove: specific commands, file paths, error codes, concrete thresholds
-- DO remove: "User said...", "Agent did X then Y then Z", step-by-step incident narrative
-- Target: each entry readable as a standalone rule without needing context
+### Target format examples
+
+DECISION file after compaction (2 sentences, what+why, no ## Reasoning section):
+
+  # Google Cloud Pub/Sub for async gateway-to-agent-core communication
+
+  Every intent lifecycle transition publishes to the "intent-lifecycle" Pub/Sub topic; agent-core receives via push subscription with idempotency tables for dedup. Decouples gateway from synchronous calls and provides at-least-once durable delivery.
+
+MEMORY file after compaction (1 sentence, rule+specific action, no ## Details section):
+
+  # Always verify PR merge status before adding new commits
+
+  Before committing new work, run "gh pr view <num>" to check if the branch's PR was merged; if merged, checkout main, pull, and create a fresh branch instead of pushing to the old one.
+
+Compact rules:
+- STRICT: decisions = 2-3 sentences, memories = 1-2 sentences. Not more.
+- Keep: specific commands, file paths, error codes, concrete values
+- Remove: filler, narrative, "User said...", "Agent did..."
+- After editing, verify NO leftover "## Reasoning" or "## Details" headings remain in the file
 
 ## Rules
 
@@ -111,7 +124,7 @@ USE SUB-AGENTS (Agent tool) to parallelize — you can launch one agent per repo
 - DUPLICATES: same topic different wording → keep newer (by date), supersede older
 - CONTRADICTIONS: same topic conflicting content → Read/Grep code to determine current → supersede outdated
 - STALE: decision/memory contradicts current code → revoke with evidence
-- COMPACT: rewrite every decision body to 2-3 sentences (what+why). Rewrite every memory description to 1-2 sentences (rule+specific action). Merge Details/Reasoning sections into main field, then remove them.
+- COMPACT: rewrite every decision body to EXACTLY 2-3 sentences (what+why), delete "## Reasoning" section entirely. Rewrite every memory description to EXACTLY 1-2 sentences (rule+specific action), delete "## Details" section entirely.
 - When in doubt, keep both. Only act on clear evidence.
 - Do NOT create new decisions or memories. Only clean up and compact.
 
@@ -151,7 +164,7 @@ export async function runKbAudit(opts: {
         for (const block of content) {
           // Stream thinking and text responses to stderr for visibility
           if (block.type === "thinking" && block.thinking) {
-            process.stderr.write(`\x1b[2m[thinking] ${String(block.thinking).slice(0, 200)}...\x1b[0m\n`);
+            process.stderr.write(`\x1b[2m[thinking] ${String(block.thinking)}\x1b[0m\n`);
           }
           if (block.type === "text" && block.text) {
             resultText += block.text;
