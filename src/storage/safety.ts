@@ -320,33 +320,13 @@ export function checkBash(rules: SafetyRules, command: string): SafetyVerdict {
  * For `git push`, also parses branch from command tokens.
  */
 /**
- * Extract the working directory a git command will execute in.
- * Handles: cd /path && ..., cd /path; ..., pushd /path && ..., git -C /path
+ * Detect the current git branch in the given directory.
+ * For push commands, also parses branch from "git push origin <branch>".
  */
-function extractGitCwd(command: string): string | undefined {
-  // 1. cd/pushd with any separator (&&, ;, \n)
-  const cdMatch = command.match(/(?:^|\n)\s*(?:cd|pushd)\s+["']?([^\s"';&]+)["']?\s*[;&]/);
-  if (cdMatch) return cdMatch[1];
-
-  // 2. git -C /path (can appear multiple times, take last)
-  const cMatches = [...command.matchAll(/git\s+(?:-C\s+["']?([^\s"']+)["']?\s*)+/g)];
-  if (cMatches.length > 0) {
-    const last = cMatches[cMatches.length - 1];
-    const allC = [...last[0].matchAll(/-C\s+["']?([^\s"']+)["']?/g)];
-    if (allC.length > 0) return allC[allC.length - 1][1];
-  }
-
-  return undefined;
-}
-
-function detectBranch(command?: string): string | null {
-  const gitCwd = command ? extractGitCwd(command) : undefined;
-
-  // For push commands, try parsing branch from "git push [-u] origin <branch>"
-  const pushIdx = command?.indexOf("git push");
-  if (pushIdx != null && pushIdx >= 0) {
-    const gitCmd = command!.slice(pushIdx);
-    const tokens = gitCmd.split(/\s+/);
+function detectBranch(command: string, cwd?: string): string | null {
+  // For push commands, try parsing branch from tokens
+  if (command.startsWith("git push")) {
+    const tokens = command.split(/\s+/);
     for (let i = 2; i < tokens.length; i++) {
       if (tokens[i] === "origin" || tokens[i] === "upstream") {
         const candidate = tokens[i + 1];
@@ -357,14 +337,13 @@ function detectBranch(command?: string): string | null {
     }
   }
 
-  // Run git branch --show-current in the target directory
+  // Run git branch --show-current in the resolved cwd
   try {
     return execSync("git branch --show-current", {
       encoding: "utf-8", timeout: 5000, stdio: ["pipe", "pipe", "pipe"],
-      ...(gitCwd ? { cwd: gitCwd } : {}),
+      ...(cwd ? { cwd } : {}),
     }).trim() || null;
   } catch {
-    // Target dir is not a git repo and no cd detected - cannot determine branch
     return null;
   }
 }
@@ -373,9 +352,9 @@ function detectBranch(command?: string): string | null {
  * Check if the current branch has a merged PR. Used by checkGit to block
  * commit/add/push on stale branches.
  */
-function checkMergedBranch(command: string): SafetyVerdict | null {
+function checkMergedBranch(command: string, cwd?: string): SafetyVerdict | null {
   try {
-    const branch = detectBranch(command);
+    const branch = detectBranch(command, cwd);
     if (!branch || branch === "main" || branch === "master") return null;
     const mergedCount = execSync(
       `gh pr list --head "${branch}" --state merged --json number --jq length`,
@@ -402,7 +381,7 @@ function checkMergedBranch(command: string): SafetyVerdict | null {
  * and the `+refspec` form (`git push origin +main`) are all recognized;
  * `-fixes` and similar substrings are not.
  */
-export function checkGit(rules: SafetyRules, command: string): SafetyVerdict {
+export function checkGit(rules: SafetyRules, command: string, cwd?: string): SafetyVerdict {
   const stripped = stripQuoted(command.trim());
   if (!rules.git.allowForcePush && stripped.startsWith("git push")) {
     // Split the push command into argv-ish tokens and inspect them as whole
@@ -443,13 +422,9 @@ export function checkGit(rules: SafetyRules, command: string): SafetyVerdict {
       }
     }
   }
-  // Block commit/push to a branch that already has a merged PR. This catches
-  // the case where an agent continues working on a stale feature branch after
-  // the PR was merged. Checking at commit time (not just push) prevents
-  // wasted work that would require cherry-pick to recover.
-  // Also handles "cd /path && git ..." patterns.
-  if (stripped.includes("git push") || stripped.includes("git commit") || stripped.includes("git add")) {
-    const verdict = checkMergedBranch(stripped);
+  // Block commit/push to a branch that already has a merged PR.
+  if (stripped.startsWith("git push") || stripped.startsWith("git commit") || stripped.startsWith("git add")) {
+    const verdict = checkMergedBranch(stripped, cwd);
     if (verdict && !verdict.allowed) return verdict;
   }
   if (stripped.includes("reset --hard")) {

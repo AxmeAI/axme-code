@@ -149,12 +149,40 @@ function handlePreToolUse(sessionOrigin: string, event: HookInput): void {
       const rules = loadRulesForBash();
       verdict = checkBash(rules, command);
       if (!verdict.allowed) break;
-      // Only apply git checks to command segments that actually invoke git,
-      // not to text arguments that happen to contain "git" (e.g. PR body text).
-      for (const seg of splitCommandSegments(command)) {
-        const trimSeg = seg.trim();
-        if (/^\s*git\b/.test(trimSeg)) {
-          verdict = checkGit(rules, trimSeg);
+      // Track effective cwd through cd/pushd segments, then check each git
+      // segment with the correct cwd. If cwd cannot be determined (variables,
+      // subshells), block with instruction to use git -C.
+      const segments = splitCommandSegments(command);
+      let effectiveCwd = process.cwd();
+      let cwdResolved = true;
+      for (const seg of segments) {
+        const trimmed = seg.trim();
+        // Track cd/pushd
+        const cdMatch = trimmed.match(/^(?:cd|pushd)\s+["']?([^\s"']+)["']?$/);
+        if (cdMatch) {
+          const target = cdMatch[1];
+          if (target.includes("$") || target.includes("`")) {
+            cwdResolved = false;
+          } else {
+            const { resolve: pathResolve } = require("node:path");
+            const expanded = target.startsWith("~") ? target.replace("~", process.env.HOME || "") : target;
+            effectiveCwd = pathResolve(effectiveCwd, expanded);
+          }
+          continue;
+        }
+        // Check git segments
+        if (/^\s*git\b/.test(trimmed)) {
+          // Parse git -C override
+          const cFlagMatch = trimmed.match(/git\s+-C\s+["']?([^\s"']+)["']?/);
+          let gitCwd = effectiveCwd;
+          if (cFlagMatch) {
+            const { resolve: pathResolve } = require("node:path");
+            gitCwd = pathResolve(effectiveCwd, cFlagMatch[1]);
+          } else if (!cwdResolved) {
+            verdict = { allowed: false, reason: `Cannot determine target directory for git command. Use explicit path: git -C /absolute/path ${trimmed.replace(/^git\s+/, '')}` };
+            break;
+          }
+          verdict = checkGit(rules, trimmed, gitCwd);
           if (!verdict.allowed) break;
         }
       }
