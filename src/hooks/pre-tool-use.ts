@@ -151,12 +151,11 @@ function handlePreToolUse(sessionOrigin: string, event: HookInput): void {
       if (!verdict.allowed) break;
       // Only apply git checks to command segments that actually invoke git,
       // not to text arguments that happen to contain "git" (e.g. PR body text).
-      for (const seg of splitCommandSegments(command)) {
-        const trimSeg = seg.trim();
-        if (/^\s*git\b/.test(trimSeg)) {
-          verdict = checkGit(rules, trimSeg);
-          if (!verdict.allowed) break;
-        }
+      // Pass the full command to checkGit so it can extract cd/pushd target
+      // for branch detection (e.g. "cd /path && git commit").
+      const hasGitSegment = splitCommandSegments(command).some(seg => /^\s*git\b/.test(seg.trim()));
+      if (hasGitSegment) {
+        verdict = checkGit(rules, command);
       }
       break;
     }
