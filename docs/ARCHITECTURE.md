@@ -1,4 +1,4 @@
-1# AXME Code - Architecture
+# AXME Code - Architecture
 
 ## Overview
 
@@ -9,7 +9,7 @@ AXME Code is an MCP server plugin for Claude Code. Its purpose is to **accumulat
 ```
 +---------------------------------------------+
 |  MCP Server (persistent, stdio)             |  <- lives as long as VS Code window is open
-|  11 tools: axme_context, axme_decisions,    |
+|  19 tools: axme_context, axme_decisions,    |
 |  axme_save_memory, axme_oracle, ...         |
 +---------------------------------------------+
 |  Hooks (pre-tool-use, post-tool-use,        |  <- fire on EVERY Claude Code tool call,
@@ -36,6 +36,9 @@ Launches as a stdio process when VS Code opens. Lives for the entire window life
 | `axme_save_memory` | Agent saves feedback/pattern (mistakes, approaches) |
 | `axme_safety` | Current safety rules (git, bash, filesystem) |
 | `axme_update_safety` | Add a new safety rule |
+| `axme_backlog` | List or read backlog items (persistent cross-session task tracking) |
+| `axme_backlog_add` | Add a new backlog item with priority and tags |
+| `axme_backlog_update` | Update backlog item status, priority, or append notes |
 | `axme_status` | Project status (sessions, decisions count, etc.) |
 | `axme_worklog` | Event log (session starts, audit results) |
 | `axme_workspace` | List all repos in workspace |
@@ -243,32 +246,97 @@ The agent has full conversation context and produces higher-quality extractions 
 
 ---
 
+## Git Commit/Push Gate (`#!axme` protocol)
+
+Every `git commit` and `git push` command must end with a metadata suffix:
+
+```
+git commit -m "fix bug" #!axme pr=42 repo=AxmeAI/axme-code
+git push origin feat/foo #!axme pr=none repo=AxmeAI/axme-code
+```
+
+The `pre-tool-use` hook:
+1. Checks for the `#!axme` suffix — blocks the command if missing (returns format instruction)
+2. Parses `pr=<number>` and verifies via `gh pr view` that the PR is not already merged
+3. If the PR is merged, blocks the command (prevents committing to stale branches)
+
+This replaces all prior cwd/branch detection. The agent explicitly provides repo and PR number, eliminating cwd bugs, network inference, and fail-open errors.
+
+---
+
+## Backlog (persistent cross-session task tracking)
+
+Each repo has its own backlog in `.axme-code/backlog/`. Items persist across sessions (unlike TODOs which are session-scoped).
+
+Tools: `axme_backlog` (list/read), `axme_backlog_add` (create), `axme_backlog_update` (status/priority/notes).
+
+Items have: ID (B-001..B-NNN), title, status (open/in-progress/done/blocked), priority (high/medium/low), tags, notes, timestamps.
+
+---
+
+## Open Questions (inter-session protocol)
+
+The auditor may find ambiguities during transcript analysis. Instead of guessing, it records a question in `.axme-code/open-questions.md`. The next session's `axme_context` surfaces these questions to the agent, which presents them to the user.
+
+Lifecycle: `[open]` → `[answered]` (user responds via `axme_answer_question`) → `[applied]` (action taken) → `[archived]`.
+
+Tools: `axme_ask_question`, `axme_list_open_questions`, `axme_answer_question`.
+
+---
+
+## Context Pagination
+
+`axme_context` returns a compact overview (~10-15K chars): storage root header, safety rules, handoff, backlog summary, open questions, and instructions to call three tools in parallel:
+
+1. `axme_oracle` — stack, structure, patterns, glossary
+2. `axme_decisions` — all decisions with enforce levels
+3. `axme_memories` — feedback and patterns
+
+Each sub-call returns ~15-25K chars (fits tool output limits). The server tracks which context paths were already delivered in the session and avoids duplicating workspace-level data when repo-level calls follow.
+
+---
+
+## Test Suite
+
+413 tests across 88 suites. Run with Node.js built-in test runner:
+
+```bash
+npm test   # node --test --experimental-strip-types test/*.test.ts
+```
+
+Coverage includes: storage engine, sessions, safety hooks, decisions, memory, oracle detection, transcript parser, workspace merge, plans, worklog, backlog, questions, config, presets.
+
+---
+
 ## Storage Layout
 
 ```
 .axme-code/
 |-- oracle/              # stack.md, structure.md, patterns.md, glossary.md
-|-- decisions/           # D-001-*.md ... D-075-*.md (YAML frontmatter)
+|-- decisions/           # D-001-*.md ... D-NNN-*.md (YAML frontmatter)
 |-- memory/
 |   |-- feedback/        # Mistakes and corrections
 |   +-- patterns/        # Successful approaches
 |-- safety/
 |   +-- rules.yaml       # git + bash + filesystem rules
+|-- backlog/             # B-001-*.md ... persistent cross-session task tracking
 |-- sessions/            # Per-session meta.json
 |-- active-sessions/     # Claude session -> AXME session mapping
 |-- audited-offsets/     # Resume byte offsets per transcript
 |-- audit-logs/          # Per-audit telemetry JSON
 |-- audit-worker-logs/   # Worker stderr output
 |-- plans/
-|   |-- handoff.md       # What to pass to next session (Source: agent or auditor)
-|   |-- handoff-<id>.md  # Versioned handoff per session (last 5 kept)
+|   |-- handoff-<id>.md  # Per-session handoff (last 5 kept, Source: agent or auditor)
 |   +-- <id>-<slug>.md   # Active plans with steps
+|-- open-questions.md    # Inter-session questions (auditor -> user -> agent)
 |-- worklog.jsonl        # Append-only structured event log
 |-- worklog.md           # Narrative session summaries (written by finalize_close + auditor)
 +-- config.yaml          # Model settings, presets, review config
 ```
 
 Each repo in a workspace has its own `.axme-code/` with separate decisions, oracle, and safety rules. The workspace-level `.axme-code/` stores cross-repo items and sessions.
+
+**Repo mode vs workspace mode**: When the MCP server cwd has `.git/` (is a git repo), it operates in repo mode — no parent workspace auto-detection, all storage goes to repo `.axme-code/`. Workspace mode only activates when cwd IS the workspace root (no `.git/`, has workspace markers).
 
 ---
 

@@ -26,7 +26,8 @@ graph TD
         Dec["decisions/\nD-001 .. D-NNN\nadd / supersede / revoke"]
         Mem["memory/\nfeedback/ + patterns/"]
         Safe["safety/\nrules.yaml\ngit + bash + fs"]
-        Hand["plans/\nhandoff.md\nSource: agent"]
+        Backlog["backlog/\nB-001 .. B-NNN\ncross-session tasks"]
+        Hand["plans/\nhandoff-id.md\nSource: agent"]
         WLog["worklog.jsonl\nworklog.md"]
         Sess["sessions/\nmeta.json\nagentClosed flag"]
     end
@@ -65,7 +66,7 @@ graph TD
     classDef mcp fill:#e0ffd0,stroke:#4a4,stroke-width:1px,color:#000
 
     class Pre,Post hook
-    class Oracle,Dec,Mem,Safe,Hand,WLog,Sess store
+    class Oracle,Dec,Mem,Safe,Backlog,Hand,WLog,Sess store
     class Agent agent
     class Full,Verify audit
     class Context,Save,Begin,Finalize,SessMgr mcp
