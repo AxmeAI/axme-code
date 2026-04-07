@@ -1,7 +1,7 @@
 {
   "name": "@axme/code",
   "version": "0.1.0",
-  "description": "AXME Code - MCP server plugin for Claude Code CLI. Project knowledge, testing, review, and memory tools.",
+  "description": "Persistent memory, decisions, and safety guardrails for Claude Code",
   "type": "module",
   "main": "./dist/server.js",
   "bin": {
