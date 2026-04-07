@@ -320,56 +320,75 @@ export function checkBash(rules: SafetyRules, command: string): SafetyVerdict {
  * For `git push`, also parses branch from command tokens.
  */
 /**
- * Detect the current git branch in the given directory.
- * For push commands, also parses branch from "git push origin <branch>".
+ * Parse #!axme gate metadata from a command string.
+ *
+ * Format: `git commit -m "msg" #!axme pr=37 repo=AxmeAI/axme-code`
+ * The `#!axme` marker is a bash comment (shell ignores it), but the hook
+ * sees the full command before execution and parses the metadata.
+ *
+ * Returns null if no #!axme marker found.
  */
-function detectBranch(command: string, cwd?: string): string | null {
-  // For push commands, try parsing branch from tokens
-  if (command.startsWith("git push")) {
-    const tokens = command.split(/\s+/);
-    for (let i = 2; i < tokens.length; i++) {
-      if (tokens[i] === "origin" || tokens[i] === "upstream") {
-        const candidate = tokens[i + 1];
-        if (candidate && !candidate.startsWith("-") && !candidate.startsWith("+")) {
-          return candidate;
-        }
-      }
-    }
-  }
+export function parseAxmeGate(command: string): { pr: string; repo: string } | null {
+  const match = command.match(/#!axme\s+(.*)/);
+  if (!match) return null;
+  const pairs = match[1].trim();
+  const prMatch = pairs.match(/\bpr=(\S+)/);
+  const repoMatch = pairs.match(/\brepo=(\S+)/);
+  if (!prMatch || !repoMatch) return null;
+  return { pr: prMatch[1], repo: repoMatch[1] };
+}
 
-  // Run git branch --show-current in the resolved cwd
-  try {
-    return execSync("git branch --show-current", {
-      encoding: "utf-8", timeout: 5000, stdio: ["pipe", "pipe", "pipe"],
-      ...(cwd ? { cwd } : {}),
-    }).trim() || null;
-  } catch {
-    return null;
-  }
+const AXME_GATE_INSTRUCTION =
+  'BLOCKED: git commit/push requires #!axme safety metadata. ' +
+  'Retry with: `<your command> #!axme pr=<PR_NUMBER|none> repo=<OWNER/REPO>` ' +
+  '(pr=none if no PR created yet).';
+
+/**
+ * Check if a PR is merged via gh CLI. Returns true if merged, false otherwise.
+ * Throws on network/CLI errors (caller decides fail-open vs fail-closed).
+ */
+function isPrMerged(prNumber: string, repo: string): boolean {
+  const result = execSync(
+    `gh pr view ${prNumber} --repo "${repo}" --json state --jq .state`,
+    { encoding: "utf-8", timeout: 10000, stdio: ["pipe", "pipe", "pipe"] },
+  ).trim();
+  return result === "MERGED";
 }
 
 /**
- * Check if the current branch has a merged PR. Used by checkGit to block
- * commit/add/push on stale branches.
+ * Verify #!axme gate on git commit/push commands.
+ * - No gate marker -> BLOCK with format instruction
+ * - pr=none -> ALLOW (new branch, no PR yet)
+ * - pr=<number> -> check if merged, block if so
+ * - gh check fails -> BLOCK (fail-closed)
  */
-function checkMergedBranch(command: string, cwd?: string): SafetyVerdict | null {
+function checkAxmeGate(fullCommand: string): SafetyVerdict | null {
+  const gate = parseAxmeGate(fullCommand);
+  if (!gate) {
+    return { allowed: false, reason: AXME_GATE_INSTRUCTION };
+  }
+  if (gate.pr === "none") {
+    return null; // no PR yet, allowed
+  }
+  const prNum = parseInt(gate.pr, 10);
+  if (isNaN(prNum)) {
+    return { allowed: false, reason: `Invalid PR number "${gate.pr}". Use pr=<number> or pr=none.` };
+  }
   try {
-    const branch = detectBranch(command, cwd);
-    if (!branch || branch === "main" || branch === "master") return null;
-    const mergedCount = execSync(
-      `gh pr list --head "${branch}" --state merged --json number --jq length`,
-      { encoding: "utf-8", timeout: 10000, stdio: ["pipe", "pipe", "pipe"] },
-    ).trim();
-    if (mergedCount && parseInt(mergedCount, 10) > 0) {
+    if (isPrMerged(gate.pr, gate.repo)) {
       return {
         allowed: false,
-        reason: `Branch "${branch}" already has a merged PR. Create a new branch from main (D-041: reusing old branches prohibited).`,
+        reason: `BLOCKED: PR #${gate.pr} in ${gate.repo} is already merged. Create a new branch from main.`,
       };
     }
   } catch {
-    // gh CLI not available or network error - fail open
+    // gh failed (network, CLI missing) - fail CLOSED for safety
+    return {
+      allowed: false,
+      reason: `Cannot verify PR #${gate.pr} status (gh CLI error). Check manually: gh pr view ${gate.pr} --repo ${gate.repo} --json state`,
+    };
   }
-  return null;
+  return null; // PR is open, allowed
 }
 
 /**
@@ -423,10 +442,12 @@ export function checkGit(rules: SafetyRules, command: string, cwd?: string, skip
       }
     }
   }
-  // Block commit/push to a branch that already has a merged PR.
+  // Require #!axme gate metadata on git commit and git push.
+  // The gate carries PR number and repo so the server can verify merge status
+  // without guessing cwd, branch, or remote. See D-086.
   // Skip if the command chain includes git checkout (branch will change before commit).
-  if (!skipMergedCheck && (stripped.startsWith("git push") || stripped.startsWith("git commit") || stripped.startsWith("git add"))) {
-    const verdict = checkMergedBranch(stripped, cwd);
+  if (!skipMergedCheck && (stripped.startsWith("git push") || stripped.startsWith("git commit"))) {
+    const verdict = checkAxmeGate(command); // use original command (with #!axme comment)
     if (verdict && !verdict.allowed) return verdict;
   }
   if (stripped.includes("reset --hard")) {
