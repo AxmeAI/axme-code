@@ -44,9 +44,11 @@ const DEFAULT_BASH_RULES: BashRules = {
     "rm -rf /", "chmod 777", "curl | sh", "curl | bash", "wget | sh",
     // Destructive git (also enforced by checkGit, belt-and-suspenders)
     "git push --force", "git checkout -- .", "git clean -f",
-    // Agent guardrails - publish/release must be human-initiated
+    // Agent guardrails - publish/release/tag must be human-initiated
     "gh workflow run deploy-prod", "gh release create",
     "npm publish", "twine upload", "docker push",
+    "dotnet nuget push", "mvn deploy",
+    "git tag",
   ],
   deniedCommands: ["shutdown", "reboot", "halt", "poweroff", "mkfs", "dd if="],
 };
@@ -456,6 +458,11 @@ export function checkGit(rules: SafetyRules, command: string, _cwd?: string, ski
   }
   if (stripped.includes("reset --hard")) {
     return { allowed: false, reason: "git reset --hard is not allowed (destroys uncommitted work)" };
+  }
+  // Block git tag creation - tags trigger publish workflows.
+  // Agent must prepare release and provide commands to user. See D-028.
+  if (stripped.startsWith("git tag")) {
+    return { allowed: false, reason: "Agent must not create git tags (they trigger publish workflows). Prepare the release and provide the tag command to the user." };
   }
   return { allowed: true };
 }
