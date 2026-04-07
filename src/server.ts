@@ -14,7 +14,7 @@ import { z } from "zod";
 
 import { getFullContext, getOracle, getDecisions } from "./tools/context.js";
 import { allMemoryContext } from "./storage/memory.js";
-import { saveMemoryTool, searchMemoryTool } from "./tools/memory-tools.js";
+import { saveMemoryTool } from "./tools/memory-tools.js";
 import { saveDecisionTool } from "./tools/decision-tools.js";
 import { updateSafetyTool, showSafetyTool } from "./tools/safety-tools.js";
 import { statusTool, worklogTool } from "./tools/status.js";
@@ -49,6 +49,12 @@ const defaultWorkspacePath = isWorkspace ? serverCwd : null;
 // id (i.e., the same Claude Code instance that spawned us). At disconnect,
 // we close all of them.
 const OWN_PPID = process.ppid;
+
+// Track which context paths have been delivered in this MCP session.
+// Used by axme_oracle/decisions/memories to avoid duplicating workspace
+// data when a repo-level call follows a workspace-level call.
+// Key format: "oracle:<path>", "decisions:<path>", "memories:<path>"
+const deliveredContext = new Set<string>();
 
 // Clean up any legacy .axme-code/active-session single-file marker from
 // older versions. It is stale by definition after the switch to per-Claude
@@ -230,8 +236,15 @@ server.tool(
     project_path: z.string().optional().describe("Absolute path to the project root (defaults to server cwd)"),
   },
   async ({ project_path }) => {
-
-    return { content: [{ type: "text" as const, text: getOracle(pp(project_path)) }] };
+    const resolved = pp(project_path);
+    deliveredContext.add("oracle:" + resolved);
+    // If requesting repo oracle and workspace oracle was already delivered, return repo-only
+    if (isWorkspace && defaultWorkspacePath && resolved !== defaultWorkspacePath
+        && deliveredContext.has("oracle:" + defaultWorkspacePath)) {
+      return { content: [{ type: "text" as const, text: getOracle(resolved) + "\n\n*(Workspace oracle already loaded)*" }] };
+    }
+    // If workspace call and repo exists, return workspace only (repo loaded separately)
+    return { content: [{ type: "text" as const, text: getOracle(resolved) }] };
   },
 );
 
@@ -243,8 +256,14 @@ server.tool(
     project_path: z.string().optional().describe("Absolute path to the project root (defaults to server cwd)"),
   },
   async ({ project_path }) => {
-
-    return { content: [{ type: "text" as const, text: getDecisions(pp(project_path)) }] };
+    const resolved = pp(project_path);
+    deliveredContext.add("decisions:" + resolved);
+    // If requesting repo decisions and workspace decisions already delivered, return repo-only
+    if (isWorkspace && defaultWorkspacePath && resolved !== defaultWorkspacePath
+        && deliveredContext.has("decisions:" + defaultWorkspacePath)) {
+      return { content: [{ type: "text" as const, text: getDecisions(resolved) + "\n\n*(Workspace decisions already loaded)*" }] };
+    }
+    return { content: [{ type: "text" as const, text: getDecisions(resolved) }] };
   },
 );
 
@@ -254,26 +273,36 @@ server.tool(
   "Show all project memories (feedback + patterns). Call at session start alongside axme_oracle and axme_decisions.",
   {
     project_path: z.string().optional().describe("Absolute path to the project root (defaults to server cwd)"),
-    workspace_path: z.string().optional().describe("Absolute path to workspace root (for merged workspace + project memories)"),
   },
-  async ({ project_path, workspace_path }) => {
-    const wsPath = wp(workspace_path);
-    const projPath = pp(project_path);
-    if (wsPath && wsPath !== projPath) {
+  async ({ project_path }) => {
+    const resolved = pp(project_path);
+    deliveredContext.add("memories:" + resolved);
+
+    // If requesting repo memories and workspace memories already delivered: repo-only
+    if (isWorkspace && defaultWorkspacePath && resolved !== defaultWorkspacePath
+        && deliveredContext.has("memories:" + defaultWorkspacePath)) {
+      const text = allMemoryContext(resolved);
+      return { content: [{ type: "text" as const, text: (text || "No repo-specific memories.") + "\n\n*(Workspace memories already loaded)*" }] };
+    }
+
+    // If requesting repo memories but workspace NOT yet delivered: merged (workspace + repo)
+    if (isWorkspace && defaultWorkspacePath && resolved !== defaultWorkspacePath) {
       const { listMemories } = await import("./storage/memory.js");
       const { mergeMemories } = await import("./storage/workspace-merge.js");
-      const wsMemories = listMemories(wsPath);
-      const projMemories = listMemories(projPath);
+      const wsMemories = listMemories(defaultWorkspacePath);
+      const projMemories = listMemories(resolved);
       const merged = mergeMemories(wsMemories, projMemories);
       if (merged.length === 0) return { content: [{ type: "text" as const, text: "No memories recorded." }] };
       const feedbacks = merged.filter(m => m.type === "feedback");
       const patterns = merged.filter(m => m.type === "pattern");
-      const parts: string[] = ["## Project Memories"];
+      const parts: string[] = ["## Project Memories (workspace + repo merged)"];
       if (feedbacks.length > 0) { parts.push(`\n### Feedback (${feedbacks.length}):`); for (const m of feedbacks) parts.push(`- **${m.title}**: ${m.description}`); }
       if (patterns.length > 0) { parts.push(`\n### Patterns (${patterns.length}):`); for (const m of patterns) parts.push(`- **${m.title}**: ${m.description}`); }
       return { content: [{ type: "text" as const, text: parts.join("\n") }] };
     }
-    const text = allMemoryContext(projPath);
+
+    // Workspace call or single-repo: return as-is
+    const text = allMemoryContext(resolved);
     return { content: [{ type: "text" as const, text: text || "No memories recorded." }] };
   },
 );
@@ -297,23 +326,6 @@ server.tool(
     const resolved = ppWithScope(project_path, scope);
     const result = saveMemoryTool(resolved, { type, title, description, body, keywords, scope }, sid);
     return { content: [{ type: "text" as const, text: `Memory saved: ${result.slug} (${type}) -> ${resolved}` }] };
-  },
-);
-
-// --- axme_search_memory ---
-server.tool(
-  "axme_search_memory",
-  "Search project memories by keywords. Returns relevant feedback and patterns.",
-  {
-    project_path: z.string().optional().describe("Absolute path to the project root (defaults to server cwd)"),
-    query: z.string().describe("Search query (keywords)"),
-  },
-  async ({ project_path, query }) => {
-
-    const result = searchMemoryTool(pp(project_path), query);
-    if (result.count === 0) return { content: [{ type: "text" as const, text: "No matching memories found." }] };
-    const lines = result.results.map(m => `- **${m.title}** [${m.type}]: ${m.description}`);
-    return { content: [{ type: "text" as const, text: `Found ${result.count} memories:\n\n${lines.join("\n")}` }] };
   },
 );
 
