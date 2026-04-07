@@ -22,16 +22,26 @@ AXME Code fixes all of this. You just work with Claude Code as usual - AXME Code
 
 ## Quick Start
 
+### Option A: npm (recommended)
+
 ```bash
-# Install globally
 npm install -g @axme/code
+```
 
-# Initialize in your project (or workspace root for multi-repo)
-cd your-project
+### Option B: Native binary (no Node.js required)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/AxmeAI/axme-code/main/install.sh | bash
+```
+
+Or specify a version: `curl -fsSL ... | bash -s v0.1.0`
+
+### Setup
+
+```bash
+cd your-project          # or workspace root for multi-repo
 axme-code setup
-
-# That's it. Use Claude Code as usual:
-claude
+claude                   # that's it - use Claude Code as usual
 ```
 
 `axme-code setup` does three things:
