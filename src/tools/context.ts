@@ -111,7 +111,7 @@ export function getFullContextSections(projectPath: string, workspacePath?: stri
 
   // Backlog summary
   try {
-    const bl = backlogContext(workspacePath ?? projectPath);
+    const bl = backlogContext(projectPath);
     if (bl) parts.push(bl);
   } catch {}
 
