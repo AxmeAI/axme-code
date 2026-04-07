@@ -2,7 +2,10 @@
 
 **Persistent memory, decisions, and safety guardrails for Claude Code.**
 
-[![Alpha](https://img.shields.io/badge/status-alpha-orange)]() [![npm](https://img.shields.io/npm/v/@axme/code)]() [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![Alpha](https://img.shields.io/badge/status-alpha-orange)]()
+[![npm](https://img.shields.io/npm/v/@axme/code)](https://www.npmjs.com/package/@axme/code)
+[![GitHub Release](https://img.shields.io/github/v/release/AxmeAI/axme-code)](https://github.com/AxmeAI/axme-code/releases)
+[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 **[Quick Start](#quick-start)** · **[How It Works](#how-it-works)** · **[Architecture](docs/ARCHITECTURE.md)**
 
@@ -21,6 +24,8 @@ AXME Code fixes all of this. You just work with Claude Code as usual - AXME Code
 ---
 
 ## Quick Start
+
+**Requires [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (CLI or VS Code extension).**
 
 ### Option A: npm (recommended)
 
@@ -53,25 +58,21 @@ claude                   # that's it - use Claude Code as usual
 
 ## What You Get
 
-### Persistent Knowledge Base
+**Persistent Knowledge Base** - your agent starts every session with full context: stack, decisions, patterns, glossary, and what happened last session. No more re-explaining on session 47.
 
-Your agent starts every session with full context - project stack, architecture decisions, coding patterns, glossary, and what happened in the last session. No more "what framework do we use?" on session 47.
+**Safety Guardrails (100% Reliable)** - hooks intercept tool calls before execution, not prompts. Even if the agent hallucinates a reason to run `rm -rf /`, the hook blocks it. Hard enforcement at the Claude Code harness level.
 
-### Safety Guardrails (100% Reliable)
+**Automatic Knowledge Extraction** - the agent saves discoveries via MCP tools during work. At session close, a structured checklist ensures nothing is missed. If you forget to close - a background auditor extracts from the transcript.
 
-Safety rules are enforced by **hooks that intercept tool calls before execution** - not by prompts. Even if the agent hallucinates a reason to run `rm -rf /` or `git push --force origin main`, the hook blocks it. This is hard enforcement at the Claude Code harness level, not a suggestion in a system prompt.
-
-### Automatic Knowledge Extraction
-
-During work, the agent saves important discoveries (decisions, patterns, feedback) via MCP tools. At session close, a structured checklist ensures nothing is missed. And if you forget to close the session - a background auditor reads the transcript and extracts what the agent didn't save.
-
-### Multi-Repo Workspaces
-
-Each repo has its own knowledge base (`.axme-code/`). Workspace-level rules apply to all repos. Repo-specific rules stay scoped. The agent sees merged context - universal rules plus the repo it's working in.
+**Multi-Repo Workspaces** - each repo has its own knowledge base (`.axme-code/`). Workspace rules apply to all repos. Repo-specific rules stay scoped. The agent sees merged context.
 
 ---
 
-## Knowledge Categories
+## How It Works
+
+![AXME Code Overview](docs/diagrams/axme-code-overview.png)
+
+### Knowledge Categories
 
 | Category | What it stores | Example |
 |----------|---------------|---------|
@@ -81,12 +82,6 @@ Each repo has its own knowledge base (`.axme-code/`). Workspace-level rules appl
 | **Safety** | Protected branches, denied commands, filesystem restrictions | git push --force -> BLOCKED |
 | **Handoff** | Where work stopped, blockers, next steps | "PR#17 open, needs review" |
 | **Worklog** | Session history, audit results, events | Timeline of all sessions |
-
----
-
-## How It Works
-
-![AXME Code Overview](docs/diagrams/axme-code-overview.png)
 
 ### Session Flow
 
@@ -123,11 +118,9 @@ All data lives in `.axme-code/` in your project root (or workspace root for mult
 
 ---
 
-## Related
+## AXME Platform
 
-| Repository | Description |
-|-----------|-------------|
-| [axme](https://github.com/AxmeAI/axme) | AXME platform - durable execution for AI agents |
+AXME Code is the developer tools layer of the [AXME platform](https://github.com/AxmeAI/axme) - durable execution infrastructure for AI agents.
 
 ---
 
@@ -207,4 +200,4 @@ During `axme-code setup`, preset bundles provide curated best-practice rules:
 
 ---
 
-hello@axme.ai
+[Issues](https://github.com/AxmeAI/axme-code/issues) - hello@axme.ai
