@@ -67,6 +67,10 @@ clearLegacyActiveSession(defaultProjectPath);
 // lives on SessionMeta.auditStatus, so the directory is dead weight.
 clearLegacyPendingAuditsDir(defaultProjectPath);
 
+// Start background auto-update check (non-blocking, never crashes server)
+import { backgroundAutoUpdate, getUpdateNotification } from "./auto-update.js";
+backgroundAutoUpdate().catch(() => {});
+
 
 /**
  * Return the AXME session UUID owned by this MCP server for worklog purposes.
@@ -228,6 +232,11 @@ server.tool(
   },
   async ({ project_path, workspace_path, page }) => {
     const sections = getFullContextSections(pp(project_path), wp(workspace_path));
+    // Inject auto-update notification if available (first page only)
+    const updateMsg = getUpdateNotification();
+    if (updateMsg && (!page || page === 1)) {
+      sections.unshift(`**Update**: ${updateMsg}`);
+    }
     const result = paginateSections(sections, page ?? 1, "axme_context", { project_path, workspace_path });
     return { content: [{ type: "text" as const, text: result.text }] };
   },

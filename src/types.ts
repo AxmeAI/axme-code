@@ -2,6 +2,10 @@
  * Shared types for AXME Code MCP server.
  */
 
+// --- Build-time constants (replaced by esbuild define) ---
+declare const __VERSION__: string;
+export const AXME_CODE_VERSION: string = typeof __VERSION__ !== "undefined" ? __VERSION__ : "0.0.0-dev";
+
 // --- Constants ---
 
 export const AXME_CODE_DIR = ".axme-code";
