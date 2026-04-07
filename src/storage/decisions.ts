@@ -273,12 +273,17 @@ export function listScopedDecisions(projectPath: string, workspacePath?: string)
 }
 
 export function showDecisions(projectPath: string): string {
+  return getDecisionSections(projectPath).join("\n");
+}
+
+/** Return decisions as array of line sections (for pagination). */
+export function getDecisionSections(projectPath: string): string[] {
   const decisions = listDecisions(projectPath);
-  if (decisions.length === 0) return "No decisions recorded.";
+  if (decisions.length === 0) return ["No decisions recorded."];
   return decisions.map(d => {
     const badge = d.enforce ? ` [${d.enforce}]` : "";
     return `- **${d.id}: ${d.title}**${badge} - ${d.decision}`;
-  }).join("\n");
+  });
 }
 
 export function toSlug(text: string): string {

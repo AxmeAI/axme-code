@@ -12,8 +12,11 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
-import { getFullContext, getOracle, getDecisions } from "./tools/context.js";
-import { allMemoryContext } from "./storage/memory.js";
+import { getFullContextSections, getOracle, getDecisions } from "./tools/context.js";
+import { allMemoryContext, getMemorySections } from "./storage/memory.js";
+import { getOracleSections } from "./storage/oracle.js";
+import { getDecisionSections } from "./storage/decisions.js";
+import { paginateSections } from "./utils/pagination.js";
 import { saveMemoryTool } from "./tools/memory-tools.js";
 import { saveDecisionTool } from "./tools/decision-tools.js";
 import { updateSafetyTool, showSafetyTool } from "./tools/safety-tools.js";
@@ -221,10 +224,12 @@ server.tool(
   {
     project_path: z.string().optional().describe("Absolute path to the project root (defaults to server cwd)"),
     workspace_path: z.string().optional().describe("Absolute path to workspace root (defaults to detected workspace)"),
+    page: z.number().optional().describe("Page number (1-based). Omit for first page. Follow pagination instructions if output is split."),
   },
-  async ({ project_path, workspace_path }) => {
-
-    return { content: [{ type: "text" as const, text: getFullContext(pp(project_path), wp(workspace_path)) }] };
+  async ({ project_path, workspace_path, page }) => {
+    const sections = getFullContextSections(pp(project_path), wp(workspace_path));
+    const result = paginateSections(sections, page ?? 1, "axme_context", { project_path, workspace_path });
+    return { content: [{ type: "text" as const, text: result.text }] };
   },
 );
 
@@ -234,17 +239,19 @@ server.tool(
   "Show project oracle data (stack, structure, patterns, glossary).",
   {
     project_path: z.string().optional().describe("Absolute path to the project root (defaults to server cwd)"),
+    page: z.number().optional().describe("Page number (1-based). Omit for first page. Follow pagination instructions if output is split."),
   },
-  async ({ project_path }) => {
+  async ({ project_path, page }) => {
     const resolved = pp(project_path);
     deliveredContext.add("oracle:" + resolved);
+    let sections = getOracleSections(resolved);
     // If requesting repo oracle and workspace oracle was already delivered, return repo-only
     if (isWorkspace && defaultWorkspacePath && resolved !== defaultWorkspacePath
         && deliveredContext.has("oracle:" + defaultWorkspacePath)) {
-      return { content: [{ type: "text" as const, text: getOracle(resolved) + "\n\n*(Workspace oracle already loaded)*" }] };
+      sections = [...sections, "*(Workspace oracle already loaded)*"];
     }
-    // If workspace call and repo exists, return workspace only (repo loaded separately)
-    return { content: [{ type: "text" as const, text: getOracle(resolved) }] };
+    const result = paginateSections(sections, page ?? 1, "axme_oracle", { project_path });
+    return { content: [{ type: "text" as const, text: result.text }] };
   },
 );
 
@@ -254,16 +261,19 @@ server.tool(
   "Show all project decisions with enforce levels.",
   {
     project_path: z.string().optional().describe("Absolute path to the project root (defaults to server cwd)"),
+    page: z.number().optional().describe("Page number (1-based). Omit for first page. Follow pagination instructions if output is split."),
   },
-  async ({ project_path }) => {
+  async ({ project_path, page }) => {
     const resolved = pp(project_path);
     deliveredContext.add("decisions:" + resolved);
+    let sections = getDecisionSections(resolved);
     // If requesting repo decisions and workspace decisions already delivered, return repo-only
     if (isWorkspace && defaultWorkspacePath && resolved !== defaultWorkspacePath
         && deliveredContext.has("decisions:" + defaultWorkspacePath)) {
-      return { content: [{ type: "text" as const, text: getDecisions(resolved) + "\n\n*(Workspace decisions already loaded)*" }] };
+      sections = [...sections, "*(Workspace decisions already loaded)*"];
     }
-    return { content: [{ type: "text" as const, text: getDecisions(resolved) }] };
+    const result = paginateSections(sections, page ?? 1, "axme_decisions", { project_path });
+    return { content: [{ type: "text" as const, text: result.text }] };
   },
 );
 
@@ -273,37 +283,54 @@ server.tool(
   "Show all project memories (feedback + patterns). Call at session start alongside axme_oracle and axme_decisions.",
   {
     project_path: z.string().optional().describe("Absolute path to the project root (defaults to server cwd)"),
+    page: z.number().optional().describe("Page number (1-based). Omit for first page. Follow pagination instructions if output is split."),
   },
-  async ({ project_path }) => {
+  async ({ project_path, page }) => {
     const resolved = pp(project_path);
     deliveredContext.add("memories:" + resolved);
+
+    let sections: string[];
 
     // If requesting repo memories and workspace memories already delivered: repo-only
     if (isWorkspace && defaultWorkspacePath && resolved !== defaultWorkspacePath
         && deliveredContext.has("memories:" + defaultWorkspacePath)) {
-      const text = allMemoryContext(resolved);
-      return { content: [{ type: "text" as const, text: (text || "No repo-specific memories.") + "\n\n*(Workspace memories already loaded)*" }] };
+      sections = getMemorySections(resolved);
+      if (sections.length === 0) sections = ["No repo-specific memories."];
+      sections.push("*(Workspace memories already loaded)*");
     }
-
     // If requesting repo memories but workspace NOT yet delivered: merged (workspace + repo)
-    if (isWorkspace && defaultWorkspacePath && resolved !== defaultWorkspacePath) {
+    else if (isWorkspace && defaultWorkspacePath && resolved !== defaultWorkspacePath) {
       const { listMemories } = await import("./storage/memory.js");
       const { mergeMemories } = await import("./storage/workspace-merge.js");
       const wsMemories = listMemories(defaultWorkspacePath);
       const projMemories = listMemories(resolved);
       const merged = mergeMemories(wsMemories, projMemories);
-      if (merged.length === 0) return { content: [{ type: "text" as const, text: "No memories recorded." }] };
+      if (merged.length === 0) {
+        return { content: [{ type: "text" as const, text: "No memories recorded." }] };
+      }
       const feedbacks = merged.filter(m => m.type === "feedback");
       const patterns = merged.filter(m => m.type === "pattern");
-      const parts: string[] = ["## Project Memories (workspace + repo merged)"];
-      if (feedbacks.length > 0) { parts.push(`\n### Feedback (${feedbacks.length}):`); for (const m of feedbacks) parts.push(`- **${m.title}**: ${m.description}`); }
-      if (patterns.length > 0) { parts.push(`\n### Patterns (${patterns.length}):`); for (const m of patterns) parts.push(`- **${m.title}**: ${m.description}`); }
-      return { content: [{ type: "text" as const, text: parts.join("\n") }] };
+      sections = ["## Project Memories (workspace + repo merged)"];
+      if (feedbacks.length > 0) {
+        sections.push(`### Feedback (${feedbacks.length}):\n` +
+          feedbacks.map(m => `- **${m.title}**: ${m.description}`).join("\n"));
+      }
+      if (patterns.length > 0) {
+        sections.push(`### Patterns (${patterns.length}):\n` +
+          patterns.map(m => `- **${m.title}**: ${m.description}`).join("\n"));
+      }
+    }
+    // Workspace call or single-repo: return as-is
+    else {
+      sections = getMemorySections(resolved);
+      if (sections.length === 0) {
+        return { content: [{ type: "text" as const, text: "No memories recorded." }] };
+      }
+      sections = ["## Project Memories", ...sections];
     }
 
-    // Workspace call or single-repo: return as-is
-    const text = allMemoryContext(resolved);
-    return { content: [{ type: "text" as const, text: text || "No memories recorded." }] };
+    const result = paginateSections(sections, page ?? 1, "axme_memories", { project_path });
+    return { content: [{ type: "text" as const, text: result.text }] };
   },
 );
 
