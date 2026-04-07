@@ -7,6 +7,7 @@
  * - Defaults project_path/workspace_path in all tools from cwd
  */
 
+import { join } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
@@ -181,6 +182,24 @@ function pp(project_path?: string): string {
   return project_path || defaultProjectPath;
 }
 
+/**
+ * Resolve project_path from scope when project_path is not explicitly provided.
+ * If scope contains a specific repo name (not "all"), resolve to workspace/repo-name.
+ * Falls back to pp() default behavior.
+ */
+function ppWithScope(project_path?: string, scope?: string[]): string {
+  if (project_path) return project_path;
+  if (isWorkspace && scope && scope.length > 0) {
+    const repoScope = scope.find(s => s !== "all");
+    if (repoScope) {
+      const match = serverWorkspace.projects.find(p => p.name === repoScope);
+      if (match) return join(defaultProjectPath, match.path);
+    }
+    // scope: ["all"] or no match -> workspace root
+  }
+  return defaultProjectPath;
+}
+
 function wp(workspace_path?: string): string | undefined {
   return workspace_path || defaultWorkspacePath || undefined;
 }
@@ -244,8 +263,9 @@ server.tool(
   async ({ project_path, type, title, description, body, keywords, scope }) => {
 
     const sid = getOwnedSessionIdForLogging();
-    const result = saveMemoryTool(pp(project_path), { type, title, description, body, keywords, scope }, sid);
-    return { content: [{ type: "text" as const, text: `Memory saved: ${result.slug} (${type})` }] };
+    const resolved = ppWithScope(project_path, scope);
+    const result = saveMemoryTool(resolved, { type, title, description, body, keywords, scope }, sid);
+    return { content: [{ type: "text" as const, text: `Memory saved: ${result.slug} (${type}) -> ${resolved}` }] };
   },
 );
 
@@ -280,8 +300,9 @@ server.tool(
   },
   async ({ project_path, title, decision, reasoning, enforce, scope }) => {
 
-    const result = saveDecisionTool(pp(project_path), { title, decision, reasoning, enforce, scope });
-    return { content: [{ type: "text" as const, text: `Decision saved: ${result.id} - ${title}` }] };
+    const resolved = ppWithScope(project_path, scope);
+    const result = saveDecisionTool(resolved, { title, decision, reasoning, enforce, scope });
+    return { content: [{ type: "text" as const, text: `Decision saved: ${result.id} - ${title} -> ${resolved}` }] };
   },
 );
 
@@ -558,7 +579,8 @@ server.tool(
       for (const m of args.memories) {
         try {
           if (m.action === "add" && m.type && m.title && m.description) {
-            const result = saveMemoryTool(targetPath, {
+            const mPath = ppWithScope(undefined, m.scope);
+            const result = saveMemoryTool(mPath, {
               type: m.type, title: m.title, description: m.description,
               body: m.body, keywords: m.keywords, scope: m.scope,
             }, sid);
@@ -568,7 +590,8 @@ server.tool(
             report.push(`Memory removed: ${m.slug}`);
           } else if (m.action === "supersede" && m.slug && m.type && m.title && m.description) {
             deleteMemory(targetPath, m.slug);
-            const result = saveMemoryTool(targetPath, {
+            const mPath = ppWithScope(undefined, m.scope);
+            const result = saveMemoryTool(mPath, {
               type: m.type, title: m.title, description: m.description,
               body: m.body, keywords: m.keywords, scope: m.scope,
             }, sid);
@@ -585,7 +608,8 @@ server.tool(
       for (const d of args.decisions) {
         try {
           if (d.action === "add" && d.title && d.decision && d.reasoning) {
-            const result = saveDecisionTool(targetPath, {
+            const dPath = ppWithScope(undefined, d.scope);
+            const result = saveDecisionTool(dPath, {
               title: d.title, decision: d.decision, reasoning: d.reasoning,
               enforce: d.enforce, scope: d.scope,
             });
@@ -594,7 +618,8 @@ server.tool(
             revokeDecision(targetPath, d.id, "Removed during session close by agent");
             report.push(`Decision revoked: ${d.id}`);
           } else if (d.action === "supersede" && d.id && d.title && d.decision && d.reasoning) {
-            const result = supersedeDecision(targetPath, d.id, {
+            const dPath = ppWithScope(undefined, d.scope);
+            const result = supersedeDecision(dPath, d.id, {
               title: d.title, slug: d.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 50),
               decision: d.decision, reasoning: d.reasoning,
               enforce: d.enforce ?? null, scope: d.scope,
