@@ -58,8 +58,9 @@ digraph axme_code_architecture {
         Decisions [label="decisions/\nD-001..D-NNN", fillcolor="#bbf"];
         Memory [label="memory/\nfeedback/ + patterns/", fillcolor="#bbf"];
         Safety [label="safety/\nrules.yaml", fillcolor="#bbf"];
+        Backlog [label="backlog/\nB-001..B-NNN", fillcolor="#bbf"];
         Sessions [label="sessions/\nmeta.json", fillcolor="#bbf"];
-        Plans [label="plans/\nhandoff.md", fillcolor="#bbf"];
+        Plans [label="plans/\nhandoff-id.md", fillcolor="#bbf"];
         Worklog [label="worklog.jsonl\nworklog.md", fillcolor="#bbf"];
     }
 

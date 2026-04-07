@@ -101,9 +101,11 @@ All data lives in `.axme-code/` in your project root (or workspace root for mult
     patterns/       # Validated successful approaches
   safety/
     rules.yaml      # git + bash + filesystem guardrails
+  backlog/          # B-001-slug.md ... persistent cross-session task tracking
   sessions/         # Per-session meta.json (tracking, agentClosed flag)
+  active-sessions/  # Claude session -> AXME session mapping
   plans/
-    handoff.md      # Session handoff (Source: agent or auditor)
+    handoff-<id>.md # Per-session handoff (last 5 kept)
   worklog.jsonl     # Structured event log
   worklog.md        # Narrative session summaries
   config.yaml       # Model settings, presets
@@ -153,6 +155,9 @@ A detached process that reads the session transcript and catches anything the ag
 | `axme_save_memory` | Save feedback or pattern memory |
 | `axme_safety` | Show current safety rules |
 | `axme_update_safety` | Add a new safety rule |
+| `axme_backlog` | List or read backlog items (persistent cross-session task tracking) |
+| `axme_backlog_add` | Add a new backlog item |
+| `axme_backlog_update` | Update backlog item status, priority, or notes |
 | `axme_status` | Project status (sessions, decisions count, last activity) |
 | `axme_worklog` | Recent worklog events |
 | `axme_workspace` | List all repos in workspace |
@@ -171,6 +176,8 @@ A detached process that reads the session transcript and catches anything the ag
 axme-code setup [path]       # Initialize project/workspace KB with LLM scan
 axme-code serve              # Start MCP server (called by Claude Code automatically)
 axme-code status [path]      # Show project status (sessions, decisions, memories)
+axme-code stats [path]       # Worklog statistics (sessions, costs, safety blocks)
+axme-code audit-kb [path]    # KB audit: dedup, conflicts, compaction
 axme-code hook pre-tool-use  # PreToolUse hook handler (called by Claude Code)
 axme-code hook post-tool-use # PostToolUse hook handler (called by Claude Code)
 axme-code hook session-end   # SessionEnd hook handler (called by Claude Code)
