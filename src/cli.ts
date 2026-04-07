@@ -307,16 +307,25 @@ async function main() {
         for (const e of result.errors) console.log(`  Warning: ${e}`);
       }
 
-      // Create or update .mcp.json
-      const mcpPath = join(projectPath, ".mcp.json");
-      let mcpConfig: Record<string, any> = {};
-      if (existsSync(mcpPath)) {
-        try { mcpConfig = JSON.parse(readFileSync(mcpPath, "utf-8")); } catch { mcpConfig = {}; }
+      // Create or update .mcp.json (workspace root + each child repo)
+      const mcpEntry = { command: "axme-code", args: ["serve"] };
+      const mcpPaths = [projectPath];
+      if (isWorkspace) {
+        for (const p of ws.projects) {
+          mcpPaths.push(join(projectPath, p.path));
+        }
       }
-      if (!mcpConfig.mcpServers) mcpConfig.mcpServers = {};
-      mcpConfig.mcpServers.axme = { command: "axme-code", args: ["serve"] };
-      writeFileSync(mcpPath, JSON.stringify(mcpConfig, null, 2) + "\n", "utf-8");
-      console.log(`  .mcp.json: updated`);
+      for (const dir of mcpPaths) {
+        const mcpPath = join(dir, ".mcp.json");
+        let mcpConfig: Record<string, any> = {};
+        if (existsSync(mcpPath)) {
+          try { mcpConfig = JSON.parse(readFileSync(mcpPath, "utf-8")); } catch { mcpConfig = {}; }
+        }
+        if (!mcpConfig.mcpServers) mcpConfig.mcpServers = {};
+        mcpConfig.mcpServers.axme = mcpEntry;
+        writeFileSync(mcpPath, JSON.stringify(mcpConfig, null, 2) + "\n", "utf-8");
+      }
+      console.log(`  .mcp.json: updated (${mcpPaths.length} locations)`);
 
       // Generate CLAUDE.md
       generateClaudeMd(projectPath, isWorkspace);

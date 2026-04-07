@@ -11,7 +11,7 @@
     "build": "node build.mjs",
     "start": "node dist/server.js",
     "dev": "tsx src/cli.ts",
-    "test": "node --test --experimental-strip-types test/*.test.ts",
+    "test": "tsx --test test/*.test.ts",
     "lint": "tsc --noEmit"
   },
   "engines": {
@@ -34,5 +34,6 @@
     "url": "https://github.com/AxmeAI/axme-code.git"
   },
   "license": "MIT",
-  "keywords": ["mcp", "claude-code", "ai-agent", "developer-tools"]
+  "keywords": ["mcp", "claude-code", "ai-agent", "developer-tools"],
+  "files": ["dist", "README.md", "LICENSE"]
 }

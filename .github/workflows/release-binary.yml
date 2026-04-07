@@ -1,0 +1,77 @@
+name: release-binary
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux-x64
+            node-arch: x64
+          - os: ubuntu-latest
+            target: linux-arm64
+            node-arch: arm64
+          - os: macos-latest
+            target: darwin-arm64
+            node-arch: arm64
+          - os: macos-latest
+            target: darwin-x64
+            node-arch: x64
+
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Create standalone bundle
+        run: |
+          mkdir -p release
+          # Bundle everything into a single file with node shebang
+          npx esbuild dist/cli.mjs --bundle --platform=node --target=node20 \
+            --outfile=release/axme-code-${{ matrix.target }} \
+            --banner:js='#!/usr/bin/env node'
+          chmod +x release/axme-code-${{ matrix.target }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: axme-code-${{ matrix.target }}
+          path: release/axme-code-${{ matrix.target }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*/axme-code-*
+          generate_release_notes: true
