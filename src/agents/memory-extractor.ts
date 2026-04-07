@@ -39,10 +39,10 @@ For each memory, output in this exact format (one block per memory):
 slug: <kebab-case, max 60 chars>
 type: <feedback or pattern>
 title: <one-line summary, max 80 chars>
-description: <1-2 sentence explanation>
+description: <1-2 sentences: what happened + specific action/command/rule. Must be self-contained - this is the ONLY field shown in agent context.>
 keywords: <3-7 keywords, comma-separated>
 scope: <comma-separated project names this applies to, or "all" for universal>
-body: <detailed explanation with **Why:** and **How to apply:** sections>
+body: <Optional archive detail. Keep short or omit - description must carry all meaning.>
 ###END###
 
 Rules:
