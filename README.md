@@ -152,12 +152,12 @@ A detached process that reads the session transcript and catches anything the ag
 
 | Tool | Description |
 |------|-------------|
-| `axme_context` | Load full project knowledge base (oracle + decisions + safety + memory + plans + handoff) |
+| `axme_context` | Compact meta (safety, handoff, worklog) + instructions to load full KB in parallel |
 | `axme_oracle` | Show oracle data (stack, structure, patterns, glossary) |
 | `axme_decisions` | List active decisions with enforce levels |
+| `axme_memories` | Show all memories (feedback + patterns) |
 | `axme_save_decision` | Save a new architectural decision |
 | `axme_save_memory` | Save feedback or pattern memory |
-| `axme_search_memory` | Keyword search across memories |
 | `axme_safety` | Show current safety rules |
 | `axme_update_safety` | Add a new safety rule |
 | `axme_status` | Project status (sessions, decisions count, last activity) |
