@@ -57,16 +57,31 @@ await build({
   target: "node20",
   format: "esm",
   packages: "bundle",
+  external: ["@anthropic-ai/claude-agent-sdk"],
   outfile: "dist/plugin/cli.mjs",
   sourcemap: true,
   banner: { js: "" },
   define,
 });
 
-// Plugin bin wrapper
+// Plugin bin wrapper — sets NODE_PATH so SDK can be found from CLAUDE_PLUGIN_DATA
 mkdirSync("dist/plugin/bin", { recursive: true });
-writeFileSync("dist/plugin/bin/axme-code", '#!/usr/bin/env node\nimport("../cli.mjs");\n');
+writeFileSync("dist/plugin/bin/axme-code", `#!/bin/bash
+PLUGIN_DIR="\$(cd "\$(dirname "\$0")/.." && pwd)"
+DATA_DIR="\${CLAUDE_PLUGIN_DATA:-\$HOME/.claude/plugins/data/axme-code}"
+export NODE_PATH="\$DATA_DIR/node_modules:\$NODE_PATH"
+exec node "\$PLUGIN_DIR/cli.mjs" "\$@"
+`);
 chmodSync("dist/plugin/bin/axme-code", 0o755);
+
+// Plugin package.json — only SDK for npm install in CLAUDE_PLUGIN_DATA
+writeFileSync("dist/plugin/package.json", JSON.stringify({
+  name: "@axme/code-plugin",
+  private: true,
+  dependencies: {
+    "@anthropic-ai/claude-agent-sdk": pkg.dependencies["@anthropic-ai/claude-agent-sdk"],
+  },
+}, null, 2) + "\n");
 
 // --- Assemble plugin directory ---
 import { cpSync, existsSync } from "fs";
@@ -83,6 +98,9 @@ writeFileSync("dist/plugin/.mcp.json", JSON.stringify({
     axme: {
       command: "node",
       args: ["${CLAUDE_PLUGIN_ROOT}/server.mjs"],
+      env: {
+        NODE_PATH: "${CLAUDE_PLUGIN_DATA}/node_modules",
+      },
     },
   },
 }, null, 2) + "\n");
@@ -94,8 +112,8 @@ writeFileSync("dist/plugin/hooks/hooks.json", JSON.stringify({
     SessionStart: [{
       hooks: [{
         type: "command",
-        command: "node ${CLAUDE_PLUGIN_ROOT}/cli.mjs check-init",
-        timeout: 5,
+        command: "diff -q ${CLAUDE_PLUGIN_ROOT}/package.json ${CLAUDE_PLUGIN_DATA}/package.json >/dev/null 2>&1 || (mkdir -p ${CLAUDE_PLUGIN_DATA} && cp ${CLAUDE_PLUGIN_ROOT}/package.json ${CLAUDE_PLUGIN_DATA}/ && cd ${CLAUDE_PLUGIN_DATA} && npm install --omit=dev --ignore-scripts 2>/dev/null) ; NODE_PATH=${CLAUDE_PLUGIN_DATA}/node_modules node ${CLAUDE_PLUGIN_ROOT}/cli.mjs check-init",
+        timeout: 30,
       }],
     }],
     PreToolUse: [{
