@@ -138,5 +138,6 @@ writeFileSync("dist/plugin/hooks/hooks.json", JSON.stringify({
 
 // Copy LICENSE and README
 if (existsSync("LICENSE")) cpSync("LICENSE", "dist/plugin/LICENSE");
+cpSync("templates/plugin-README.md", "dist/plugin/README.md");
 
 console.log("Build complete.");
