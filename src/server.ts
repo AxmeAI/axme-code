@@ -879,6 +879,7 @@ server.tool(
     const session = loadSession(targetPath, sid);
     if (session) {
       session.agentClosed = true;
+      session.closedAt = new Date().toISOString();
       writeSession(targetPath, session);
     }
 

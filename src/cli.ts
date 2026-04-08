@@ -264,7 +264,8 @@ async function main() {
   switch (command) {
     case "setup": {
       const forceSetup = args.includes("--force");
-      const setupArgs = args.filter(a => a !== "--force");
+      const pluginMode = args.includes("--plugin") || !!process.env.CLAUDE_PLUGIN_ROOT;
+      const setupArgs = args.filter(a => a !== "--force" && a !== "--plugin");
       const projectPath = resolve(setupArgs[1] || ".");
       const hasGitDir = existsSync(join(projectPath, ".git"));
       const ws = detectWorkspace(projectPath);
@@ -317,7 +318,7 @@ async function main() {
 
       // Detect plugin context — skip .mcp.json and hooks if running from plugin
       // (plugin provides its own .mcp.json and hooks/hooks.json)
-      const isPlugin = !!process.env.CLAUDE_PLUGIN_ROOT;
+      const isPlugin = pluginMode;
 
       if (!isPlugin) {
         // Create or update .mcp.json (workspace root + each child repo)
