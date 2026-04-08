@@ -315,31 +315,43 @@ async function main() {
         }
       }
 
-      // Create or update .mcp.json (workspace root + each child repo)
-      const mcpEntry = { command: "axme-code", args: ["serve"] };
-      const mcpPaths = [projectPath];
-      if (isWorkspace) {
-        for (const p of ws.projects) {
-          mcpPaths.push(join(projectPath, p.path));
+      // Detect plugin context — skip .mcp.json and hooks if running from plugin
+      // (plugin provides its own .mcp.json and hooks/hooks.json)
+      const isPlugin = !!process.env.CLAUDE_PLUGIN_ROOT;
+
+      if (!isPlugin) {
+        // Create or update .mcp.json (workspace root + each child repo)
+        const mcpEntry = { command: "axme-code", args: ["serve"] };
+        const mcpPaths = [projectPath];
+        if (isWorkspace) {
+          for (const p of ws.projects) {
+            mcpPaths.push(join(projectPath, p.path));
+          }
         }
-      }
-      for (const dir of mcpPaths) {
-        const mcpPath = join(dir, ".mcp.json");
-        let mcpConfig: Record<string, any> = {};
-        if (existsSync(mcpPath)) {
-          try { mcpConfig = JSON.parse(readFileSync(mcpPath, "utf-8")); } catch { mcpConfig = {}; }
+        for (const dir of mcpPaths) {
+          const mcpPath = join(dir, ".mcp.json");
+          let mcpConfig: Record<string, any> = {};
+          if (existsSync(mcpPath)) {
+            try { mcpConfig = JSON.parse(readFileSync(mcpPath, "utf-8")); } catch { mcpConfig = {}; }
+          }
+          if (!mcpConfig.mcpServers) mcpConfig.mcpServers = {};
+          mcpConfig.mcpServers.axme = mcpEntry;
+          writeFileSync(mcpPath, JSON.stringify(mcpConfig, null, 2) + "\n", "utf-8");
         }
-        if (!mcpConfig.mcpServers) mcpConfig.mcpServers = {};
-        mcpConfig.mcpServers.axme = mcpEntry;
-        writeFileSync(mcpPath, JSON.stringify(mcpConfig, null, 2) + "\n", "utf-8");
+        console.log(`  .mcp.json: updated (${mcpPaths.length} locations)`);
+      } else {
+        console.log(`  .mcp.json: skipped (plugin provides MCP server)`);
       }
-      console.log(`  .mcp.json: updated (${mcpPaths.length} locations)`);
 
       // Generate CLAUDE.md
       generateClaudeMd(projectPath, isWorkspace);
 
-      // Configure Claude Code hooks in .claude/settings.json
-      configureHooks(projectPath);
+      if (!isPlugin) {
+        // Configure Claude Code hooks in .claude/settings.json
+        configureHooks(projectPath);
+      } else {
+        console.log(`  Hooks: skipped (plugin provides hooks)`);
+      }
 
       // Add .axme-code/ to .gitignore
       const gitignorePath = join(projectPath, ".gitignore");

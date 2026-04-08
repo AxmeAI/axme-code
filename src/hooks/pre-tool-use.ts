@@ -202,6 +202,7 @@ function handlePreToolUse(sessionOrigin: string, event: HookInput): void {
  * @param workspacePath - from --workspace CLI flag
  */
 export async function runPreToolUseHook(workspacePath?: string): Promise<void> {
+  if (!workspacePath) workspacePath = process.cwd();
   if (!workspacePath) return;
 
   // Subclaude audit workers run inside session-auditor with
