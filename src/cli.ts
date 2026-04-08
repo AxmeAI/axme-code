@@ -407,6 +407,21 @@ async function main() {
       break;
     }
 
+    case "check-init": {
+      // Plugin SessionStart hook — outputs instruction for the agent
+      const checkPath = resolve(args[1] || ".");
+      const { configExists } = await import("./storage/config.js");
+      if (configExists(checkPath)) {
+        console.log(`[AXME Code] Knowledge base found. Call axme_context to load full project context.`);
+      } else {
+        console.log(`[AXME Code] Plugin active but project not initialized.`);
+        console.log(`Run this command now: axme-code setup --plugin`);
+        console.log(`This scans your project and builds the knowledge base (30-120 seconds, once).`);
+        console.log(`After setup completes, call axme_context to load the knowledge base.`);
+      }
+      break;
+    }
+
     case "audit-session": {
       // Standalone entry point for the detached audit worker. Takes the
       // workspace path and an AXME session id, runs runSessionCleanup on

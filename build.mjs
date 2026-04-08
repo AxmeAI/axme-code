@@ -91,6 +91,13 @@ writeFileSync("dist/plugin/.mcp.json", JSON.stringify({
 writeFileSync("dist/plugin/hooks/hooks.json", JSON.stringify({
   description: "AXME Code safety enforcement and session tracking",
   hooks: {
+    SessionStart: [{
+      hooks: [{
+        type: "command",
+        command: "node ${CLAUDE_PLUGIN_ROOT}/cli.mjs check-init",
+        timeout: 5,
+      }],
+    }],
     PreToolUse: [{
       hooks: [{
         type: "command",
