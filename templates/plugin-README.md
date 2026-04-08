@@ -26,17 +26,19 @@ You keep using Claude Code exactly as before. AXME Code works transparently in t
 
 ## Install
 
-### From Claude Code CLI
+### From marketplace (after approval)
 
 ```bash
-/install axme-code
+claude plugin install axme-code
 ```
 
-### Manual
+### Local testing
 
 ```bash
-/plugin add AxmeAI/axme-code-plugin
+claude --plugin-dir /path/to/axme-code-plugin
 ```
+
+Note: `--plugin-dir` is per-session only — you need to pass it every time.
 
 ## First Use
 
