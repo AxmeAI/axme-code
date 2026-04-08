@@ -183,7 +183,7 @@ function configureHooks(projectPath: string): void {
   settings.hooks.PreToolUse.push({
     hooks: [{
       type: "command",
-      command: `npx -y @axme/code hook pre-tool-use --workspace ${projectPath}`,
+      command: `axme-code hook pre-tool-use --workspace ${projectPath}`,
       timeout: 5,
     }],
   });
@@ -195,7 +195,7 @@ function configureHooks(projectPath: string): void {
     matcher: "Edit|Write|NotebookEdit",
     hooks: [{
       type: "command",
-      command: `npx -y @axme/code hook post-tool-use --workspace ${projectPath}`,
+      command: `axme-code hook post-tool-use --workspace ${projectPath}`,
       timeout: 10,
     }],
   });
@@ -205,7 +205,7 @@ function configureHooks(projectPath: string): void {
   settings.hooks.SessionEnd.push({
     hooks: [{
       type: "command",
-      command: `npx -y @axme/code hook session-end --workspace ${projectPath}`,
+      command: `axme-code hook session-end --workspace ${projectPath}`,
       timeout: 120,
     }],
   });
@@ -248,7 +248,7 @@ function usage(): void {
   console.log(`AXME Code - Persistent memory, decisions, and safety guardrails for Claude Code
 
 Usage:
-  axme-code setup [path]                  Initialize project (LLM scan + .mcp.json + CLAUDE.md)
+  axme-code setup [path] [--force]         Initialize project (LLM scan + .mcp.json + CLAUDE.md)
   axme-code serve                         Start MCP server (stdio transport)
   axme-code status [path]                 Show project status
   axme-code cleanup legacy-artifacts [--dry-run]  Remove pre-PR#7 sessions/logs
@@ -263,7 +263,9 @@ After setup, run 'claude' as usual. AXME tools are available automatically.`);
 async function main() {
   switch (command) {
     case "setup": {
-      const projectPath = resolve(args[1] || ".");
+      const forceSetup = args.includes("--force");
+      const setupArgs = args.filter(a => a !== "--force");
+      const projectPath = resolve(setupArgs[1] || ".");
       const hasGitDir = existsSync(join(projectPath, ".git"));
       const ws = detectWorkspace(projectPath);
       const isWorkspace = hasGitDir ? false : ws.type !== "single";
@@ -299,13 +301,18 @@ async function main() {
         }
         generateWorkspaceYaml(projectPath, ws);
       } else {
-        const result = await initProjectWithLLM(projectPath, { onProgress: console.log });
-        console.log(`  Oracle: ${result.oracle.files} files (${result.oracle.llm ? "LLM scan" : "deterministic fallback"})`);
-        console.log(`  Decisions: ${result.decisions.count} (${result.decisions.fromScan} LLM + ${result.decisions.fromPresets} presets)`);
-        console.log(`  Memories: ${result.memories.count} (${result.memories.fromPresets} from presets)`);
-        console.log(`  Safety: ${result.safety.llm ? "LLM scan" : "defaults + presets"}`);
-        if (result.cost.costUsd > 0) console.log(`  Cost: $${result.cost.costUsd.toFixed(2)}, ${(result.durationMs / 1000).toFixed(1)}s`);
-        for (const e of result.errors) console.log(`  Warning: ${e}`);
+        const result = await initProjectWithLLM(projectPath, { onProgress: console.log, force: forceSetup });
+        if (!result.created && result.durationMs === 0) {
+          console.log(`  Already initialized (skipped LLM scan). Use --force to re-scan.`);
+          console.log(`  Decisions: ${result.decisions.count}, Memories: ${result.memories.count}`);
+        } else {
+          console.log(`  Oracle: ${result.oracle.files} files (${result.oracle.llm ? "LLM scan" : "deterministic fallback"})`);
+          console.log(`  Decisions: ${result.decisions.count} (${result.decisions.fromScan} LLM + ${result.decisions.fromPresets} presets)`);
+          console.log(`  Memories: ${result.memories.count} (${result.memories.fromPresets} from presets)`);
+          console.log(`  Safety: ${result.safety.llm ? "LLM scan" : "defaults + presets"}`);
+          if (result.cost.costUsd > 0) console.log(`  Cost: $${result.cost.costUsd.toFixed(2)}, ${(result.durationMs / 1000).toFixed(1)}s`);
+          for (const e of result.errors) console.log(`  Warning: ${e}`);
+        }
       }
 
       // Create or update .mcp.json (workspace root + each child repo)

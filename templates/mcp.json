@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "axme": {
-      "command": "npx",
-      "args": ["-y", "@axme/code", "serve"]
+      "command": "axme-code",
+      "args": ["serve"]
     }
   }
 }
