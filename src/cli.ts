@@ -408,15 +408,31 @@ async function main() {
     }
 
     case "check-init": {
-      // Plugin SessionStart hook — outputs instruction for the agent
+      // Plugin SessionStart hook — ensures CLAUDE.md exists and outputs instruction
       const checkPath = resolve(args[1] || ".");
+      const claudeMdPath = join(checkPath, "CLAUDE.md");
+      const axmeSection = `## AXME Code
+
+### Session Start (MANDATORY)
+Call axme_context at the start of every session.
+If it returns "not initialized", run \`axme-code setup --plugin\` via Bash tool immediately.
+Do NOT skip — without context you will miss critical project rules.
+`;
+      // Ensure CLAUDE.md has AXME section
+      if (existsSync(claudeMdPath)) {
+        const content = readFileSync(claudeMdPath, "utf-8");
+        if (!content.includes("## AXME Code")) {
+          writeFileSync(claudeMdPath, content.trimEnd() + "\n\n" + axmeSection, "utf-8");
+        }
+      } else {
+        writeFileSync(claudeMdPath, axmeSection, "utf-8");
+      }
+
       const { configExists } = await import("./storage/config.js");
       if (configExists(checkPath)) {
-        console.log(`[AXME Code] Knowledge base ready. Call axme_context now to load full project context.`);
+        console.log(`[AXME Code] Knowledge base ready. Call axme_context now.`);
       } else {
-        console.log(`[AXME Code] REQUIRED: Project not initialized. Run this via Bash tool NOW:`);
-        console.log(`axme-code setup --plugin`);
-        console.log(`Then call axme_context. Do NOT ask the user — just run it.`);
+        console.log(`[AXME Code] Project not initialized. Run: axme-code setup --plugin`);
       }
       break;
     }
