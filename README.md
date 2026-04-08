@@ -82,9 +82,7 @@ Decisions enforce verification requirements: agent must run tests and show proof
 curl -fsSL https://raw.githubusercontent.com/AxmeAI/axme-code/main/install.sh | bash
 ```
 
-Or with a specific version: `curl -fsSL ... | bash -s v0.2.0`
-
-Installs to `~/.local/bin/axme-code`. Supports Linux and macOS (x64 and ARM64).
+Installs to `~/.local/bin/axme-code`. Supports Linux, macOS, and Windows (x64 and ARM64).
 
 ### Setup
 
@@ -95,7 +93,7 @@ claude                   # that's it — use Claude Code as usual
 ```
 
 `axme-code setup` does three things:
-1. **Scans your project** and builds the knowledge base (stack, structure, patterns, glossary)
+1. **Scans your project** and builds the knowledge base — oracle (stack, structure, patterns, glossary), extracts decisions, memories, and safety rules from your code, configs, CLAUDE.md, and session history
 2. **Installs safety hooks** that intercept dangerous commands before execution
 3. **Configures the MCP server** in Claude Code settings (`.mcp.json`)
 
@@ -127,6 +125,8 @@ Blocked by default:
 - `npm publish`, `git tag`, `gh release create`
 - Writing to `.env`, `.pem`, `.key` files
 
+You can add your own custom rules via `axme_update_safety` or by editing `.axme-code/safety/rules.yaml` directly.
+
 ### Automatic Knowledge Extraction
 The agent saves discoveries during work via MCP tools. At session close, a structured checklist ensures nothing is missed. If you just close the window — a background auditor extracts memories, decisions, and safety rules from the full session transcript.
 
@@ -145,7 +145,7 @@ Supports 14 workspace formats: VS Code multi-root, pnpm/npm/yarn workspaces, Nx,
 
 1. **Session starts** → agent calls `axme_context`, loads full knowledge base
 2. **During work** → agent saves discoveries via `axme_save_memory`, `axme_save_decision`. Hooks enforce safety on every tool call.
-3. **Session close** → agent calls `axme_begin_close`, gets a checklist. Reviews the session for missed memories, decisions, safety rules. Calls `axme_finalize_close` — MCP writes handoff, worklog, and extractions atomically.
+3. **Session close** → ask your agent to close the session → agent calls `axme_begin_close`, gets a checklist. Reviews the session for missed memories, decisions, safety rules. Calls `axme_finalize_close` — MCP writes handoff, worklog, and extractions atomically.
 4. **Fallback** → if you just close the window, the background auditor extracts everything from the transcript.
 5. **Next session** → `axme_context` returns everything accumulated. Handoff says exactly where to continue.
 
