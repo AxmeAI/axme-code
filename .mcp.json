@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "axme": {
+      "command": "axme-code",
+      "args": [
+        "serve"
+      ]
+    }
+  }
+}
