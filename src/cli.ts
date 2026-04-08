@@ -118,10 +118,15 @@ function generateClaudeMd(projectPath: string, isWorkspace: boolean): void {
   if (existsSync(claudeMdPath)) {
     const content = readFileSync(claudeMdPath, "utf-8");
     if (content.includes("## AXME Code")) {
-      return; // already has our section
+      // Replace existing section (may be minimal from check-init) with full template
+      const sectionStart = content.indexOf("## AXME Code");
+      const before = content.slice(0, sectionStart).trimEnd();
+      writeFileSync(claudeMdPath, before ? before + "\n\n" + section : section, "utf-8");
+      console.log("  CLAUDE.md: updated AXME Code section");
+    } else {
+      appendFileSync(claudeMdPath, "\n\n" + section, "utf-8");
+      console.log("  CLAUDE.md: appended AXME Code section");
     }
-    appendFileSync(claudeMdPath, "\n\n" + section, "utf-8");
-    console.log("  CLAUDE.md: appended AXME Code section");
   } else {
     writeFileSync(claudeMdPath, section, "utf-8");
     console.log("  CLAUDE.md: created");
