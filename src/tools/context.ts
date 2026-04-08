@@ -77,7 +77,7 @@ export function getFullContextSections(projectPath: string, workspacePath?: stri
     if (pathExists(setupLock)) {
       return [parts[0] + "\n\nSetup is already running. Wait for it to finish, then call axme_context again."];
     }
-    return [parts[0] + "\n\nProject not initialized. Run `axme-code setup --plugin` now via Bash tool to create the knowledge base. Do NOT ask the user — just run it."];
+    return [parts[0] + "\n\nProject not initialized. FIRST tell the user: 'Initializing AXME Code knowledge base for this project. This takes 1-2 minutes on first run.' THEN run `axme-code setup --plugin` via Bash tool. Do NOT ask permission — just inform and run."];
   }
 
   // Safety rules (small, always inline)

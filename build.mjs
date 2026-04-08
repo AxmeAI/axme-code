@@ -68,8 +68,6 @@ await build({
 mkdirSync("dist/plugin/bin", { recursive: true });
 writeFileSync("dist/plugin/bin/axme-code", `#!/bin/bash
 PLUGIN_DIR="\$(cd "\$(dirname "\$0")/.." && pwd)"
-DATA_DIR="\${CLAUDE_PLUGIN_DATA:-\$HOME/.claude/plugins/data/axme-code}"
-export NODE_PATH="\$DATA_DIR/node_modules:\$NODE_PATH"
 exec node "\$PLUGIN_DIR/cli.mjs" "\$@"
 `);
 chmodSync("dist/plugin/bin/axme-code", 0o755);
@@ -98,9 +96,6 @@ writeFileSync("dist/plugin/.mcp.json", JSON.stringify({
     axme: {
       command: "node",
       args: ["${CLAUDE_PLUGIN_ROOT}/server.mjs"],
-      env: {
-        NODE_PATH: "${CLAUDE_PLUGIN_DATA}/node_modules",
-      },
     },
   },
 }, null, 2) + "\n");
@@ -112,7 +107,7 @@ writeFileSync("dist/plugin/hooks/hooks.json", JSON.stringify({
     SessionStart: [{
       hooks: [{
         type: "command",
-        command: "diff -q ${CLAUDE_PLUGIN_ROOT}/package.json ${CLAUDE_PLUGIN_DATA}/package.json >/dev/null 2>&1 || (mkdir -p ${CLAUDE_PLUGIN_DATA} && cp ${CLAUDE_PLUGIN_ROOT}/package.json ${CLAUDE_PLUGIN_DATA}/ && cd ${CLAUDE_PLUGIN_DATA} && npm install --omit=dev --ignore-scripts 2>/dev/null) ; NODE_PATH=${CLAUDE_PLUGIN_DATA}/node_modules node ${CLAUDE_PLUGIN_ROOT}/cli.mjs check-init",
+        command: "test -d ${CLAUDE_PLUGIN_ROOT}/node_modules/@anthropic-ai/claude-agent-sdk || (cd ${CLAUDE_PLUGIN_ROOT} && npm install --omit=dev --ignore-scripts 2>/dev/null) ; node ${CLAUDE_PLUGIN_ROOT}/cli.mjs check-init",
         timeout: 30,
       }],
     }],
