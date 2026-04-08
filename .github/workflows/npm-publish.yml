@@ -24,3 +24,22 @@ jobs:
       - run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # Sync plugin bundle to axme-code-plugin repo
+      - name: Sync plugin repo
+        env:
+          PLUGIN_REPO_TOKEN: ${{ secrets.PLUGIN_REPO_TOKEN }}
+        run: |
+          git clone https://x-access-token:${PLUGIN_REPO_TOKEN}@github.com/AxmeAI/axme-code-plugin.git /tmp/plugin-repo
+          # Remove old files (except .git)
+          find /tmp/plugin-repo -maxdepth 1 -not -name '.git' -not -name '.' -exec rm -rf {} +
+          # Copy new plugin bundle (including dotfiles)
+          cp -r dist/plugin/. /tmp/plugin-repo/
+          # Keep README
+          cp /tmp/plugin-repo/README.md /tmp/plugin-repo/README.md 2>/dev/null || true
+          cd /tmp/plugin-repo
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add -A
+          git commit -m "sync: ${GITHUB_REF_NAME} from axme-code" || echo "No changes to commit"
+          git push
