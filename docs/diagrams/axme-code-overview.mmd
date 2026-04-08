@@ -22,11 +22,16 @@ graph LR
     A -->|"reads KB at start"| MCP
     A -->|"saves during work"| MCP
     A -->|"close session"| MCP
-    MCP -->|"atomicWrite"| KB
+    MCP -->|"atomicWrite"| O
+    MCP -->|"atomicWrite"| D
+    MCP -->|"atomicWrite"| M
 
     H -->|"blocks dangerous\ncommands (100%)"| A
     H -->|"reads rules"| S
-    AU -->|"catches missed\nitems after close"| KB
+    AU -->|"catches missed\nitems after close"| D
+    AU -->|"catches missed\nitems after close"| M
+
+    linkStyle default stroke:#666,stroke-width:2px
 
     classDef agent fill:#d0f0d0,stroke:#4a4,stroke-width:2px,color:#000
     classDef axme fill:#fff3e0,stroke:#e65100,stroke-width:2px,color:#000

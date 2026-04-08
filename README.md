@@ -1,24 +1,76 @@
 # AXME Code
 
-**Persistent memory, decisions, and safety guardrails for Claude Code.**
+### Claude Code forgets your project every session. We fixed it.
+
+AXME Code is an [MCP server](https://modelcontextprotocol.io/) plugin for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) that gives your agent persistent memory, architectural decisions, and safety guardrails — across every session, automatically.
+
+You keep using Claude Code exactly as before. AXME Code works transparently in the background.
 
 [![Alpha](https://img.shields.io/badge/status-alpha-orange)]()
 [![GitHub Release](https://img.shields.io/github/v/release/AxmeAI/axme-code)](https://github.com/AxmeAI/axme-code/releases)
-[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![Tests](https://img.shields.io/badge/tests-413%20passing-brightgreen)]()
 
-**[Quick Start](#quick-start)** · **[How It Works](#how-it-works)** · **[Architecture](docs/ARCHITECTURE.md)**
+**[Quick Start](#quick-start)** · **[Before & After](#before--after)** · **[How It Works](#how-it-works)** · **[Architecture](docs/ARCHITECTURE.md)**
 
 ---
 
-## The Problem
+![AXME Code demo](docs/demo.gif)
 
-- **Agents forget everything between sessions** - your stack, conventions, past decisions, all gone
-- **Agents can run dangerous commands** - `rm -rf`, `git push --force`, `npm publish` with no guardrails
-- **No one tracks decisions** - why was this library chosen? what deploy procedure was agreed on?
-- **You re-explain the same things every session** - "we use FastAPI, not Flask", "never push to main"
-- **No continuity** - what was done yesterday? what's blocked? what's next?
+## Before & After
 
-AXME Code fixes all of this. You just work with Claude Code as usual - AXME Code handles the rest transparently.
+<table>
+<tr>
+<th width="50%">Without AXME Code</th>
+<th width="50%">With AXME Code</th>
+</tr>
+<tr>
+<td>
+
+**Session 1**: "We use FastAPI, not Flask. Deploy only via GitHub Actions. Never push to main directly."
+
+**Session 2**: "Like I said yesterday, we use FastAPI..."
+
+**Session 7**: "For the third time this week, we use FastAPI..."
+
+**Session 47**: *gives up, mass-pastes 200 lines into CLAUDE.md*
+
+</td>
+<td>
+
+**Session 1**: Agent learns your stack, saves decisions.
+
+**Session 2**: Agent calls `axme_context` → already knows FastAPI, deploy rules, what happened yesterday.
+
+**Session 47**: Agent has your full project history: 30 decisions, 15 memories, safety rules, and a handoff from session 46.
+
+</td>
+</tr>
+<tr>
+<td>
+
+Agent runs `git push --force` to main. Your Friday is ruined.
+
+</td>
+<td>
+
+Hook intercepts the command **before execution** and blocks it. Not a prompt — hard enforcement at the harness level.
+
+</td>
+</tr>
+<tr>
+<td>
+
+Agent says "Done!" — but tests don't pass, half the code is stubbed, and the deploy is broken.
+
+</td>
+<td>
+
+Decisions enforce verification requirements: agent must run tests and show proof before reporting completion.
+
+</td>
+</tr>
+</table>
 
 ---
 
@@ -30,67 +82,80 @@ AXME Code fixes all of this. You just work with Claude Code as usual - AXME Code
 curl -fsSL https://raw.githubusercontent.com/AxmeAI/axme-code/main/install.sh | bash
 ```
 
-Or specify a version: `curl -fsSL ... | bash -s v0.1.0`
-
-Installs to `~/.local/bin/axme-code`. Auto-updates in background.
+Installs to `~/.local/bin/axme-code`. Supports Linux, macOS, and Windows (x64 and ARM64).
 
 ### Setup
 
 ```bash
 cd your-project          # or workspace root for multi-repo
 axme-code setup
-claude                   # that's it - use Claude Code as usual
+claude                   # that's it — use Claude Code as usual
 ```
 
 `axme-code setup` does three things:
-1. Scans your project and builds the knowledge base (oracle, stack, structure)
-2. Installs hooks for safety enforcement
-3. Configures the MCP server in Claude Code settings
+1. **Scans your project** and builds the knowledge base — oracle (stack, structure, patterns, glossary), extracts decisions, memories, and safety rules from your code, configs, CLAUDE.md, and session history
+2. **Installs safety hooks** that intercept dangerous commands before execution
+3. **Configures the MCP server** in Claude Code settings (`.mcp.json`)
+
+After setup, every Claude Code session automatically loads the full knowledge base. No config, no manual steps.
 
 ---
 
 ## What You Get
 
-**Persistent Knowledge Base** - your agent starts every session with full context: stack, decisions, patterns, glossary, and what happened last session. No more re-explaining on session 47.
+### Persistent Knowledge Base
+Your agent starts every session with full context: stack, decisions, patterns, glossary, and a handoff from the previous session. No more re-explaining your architecture on session 47.
 
-**Safety Guardrails (100% Reliable)** - hooks intercept tool calls before execution, not prompts. Even if the agent hallucinates a reason to run `rm -rf /`, the hook blocks it. Hard enforcement at the Claude Code harness level.
+| Category | What it stores | Example |
+|----------|---------------|---------|
+| **Oracle** | Project structure, tech stack, coding patterns, glossary | "TypeScript 5.9, Node 20, ESM, esbuild" |
+| **Decisions** | Architectural decisions with enforcement levels | "All deploys via CI/CD only" [required] |
+| **Memory** | Feedback from mistakes, validated patterns | "Never use sync HTTP in async handlers" |
+| **Safety** | Protected branches, denied commands, filesystem restrictions | `git push --force` → BLOCKED |
+| **Backlog** | Persistent cross-session task tracking | "B-003: migrate auth to OAuth2 [in-progress]" |
+| **Handoff** | Where work stopped, blockers, next steps | "PR #17 open, waiting on review. Next: fix flaky test." |
+| **Worklog** | Session history and events | Timeline of all sessions and what was done |
 
-**Automatic Knowledge Extraction** - the agent saves discoveries via MCP tools during work. At session close, a structured checklist ensures nothing is missed. If you forget to close - a background auditor extracts from the transcript.
+### Safety Guardrails (100% Reliable)
+Hooks intercept tool calls **before execution** — not prompts. Even if the agent hallucinates a reason to run `rm -rf /`, the hook blocks it. This is hard enforcement at the Claude Code harness level, not a suggestion in a system prompt.
 
-**Multi-Repo Workspaces** - each repo has its own knowledge base (`.axme-code/`). Workspace rules apply to all repos. Repo-specific rules stay scoped. The agent sees merged context.
+Blocked by default:
+- `git push --force`, `git reset --hard`, direct push to `main`/`master`
+- `rm -rf /`, `chmod 777`, `curl | sh`
+- `npm publish`, `git tag`, `gh release create`
+- Writing to `.env`, `.pem`, `.key` files
+
+You can add your own custom rules via `axme_update_safety` or by editing `.axme-code/safety/rules.yaml` directly.
+
+### Automatic Knowledge Extraction
+The agent saves discoveries during work via MCP tools. At session close, a structured checklist ensures nothing is missed. If you just close the window — a background auditor extracts memories, decisions, and safety rules from the full session transcript.
+
+### Multi-Repo Workspaces
+Each repo gets its own knowledge base (`.axme-code/`). Workspace-level rules apply to all repos. Repo-specific rules stay scoped. The agent sees merged context — workspace safety floor + repo-specific decisions.
+
+Supports 14 workspace formats: VS Code multi-root, pnpm/npm/yarn workspaces, Nx, Gradle, Maven, Rush, git submodules, and more.
 
 ---
 
 ## How It Works
 
-![AXME Code Overview](docs/diagrams/axme-code-overview.png)
-
-### Knowledge Categories
-
-| Category | What it stores | Example |
-|----------|---------------|---------|
-| **Oracle** | Project structure, tech stack, coding patterns, glossary | "Python 3.11, FastAPI, PostgreSQL" |
-| **Decisions** | Architectural decisions with enforcement levels (required/advisory) | "All deploys via GitHub Actions only" (required) |
-| **Memory** | Feedback from mistakes, validated patterns | "Never use sync httpx in async handlers" |
-| **Safety** | Protected branches, denied commands, filesystem restrictions | git push --force -> BLOCKED |
-| **Handoff** | Where work stopped, blockers, next steps | "PR#17 open, needs review" |
-| **Worklog** | Session history, audit results, events | Timeline of all sessions |
+![AXME Code Architecture](docs/diagrams/axme-code-overview.png)
 
 ### Session Flow
 
-1. **Session starts** - agent calls `axme_context`, gets full knowledge base
-2. **During work** - agent saves discoveries via `axme_save_memory`, `axme_save_decision`. Hooks enforce safety on every tool call.
-3. **Session close** - user asks to close. Agent calls `axme_begin_close`, gets a checklist. Reviews the session for missed memories, decisions, safety rules. Checks for duplicates against loaded context. Calls `axme_finalize_close` with all data - MCP writes handoff, worklog, extractions atomically. Agent outputs storage summary and startup text for next session.
-4. **Fallback** - if the user just closes the window, the auditor runs in background and extracts everything from the transcript.
-5. **Next session** - `axme_context` returns everything accumulated. Handoff says where to continue.
+1. **Session starts** → agent calls `axme_context`, loads full knowledge base
+2. **During work** → agent saves discoveries via `axme_save_memory`, `axme_save_decision`. Hooks enforce safety on every tool call.
+3. **Session close** → ask your agent to close the session → agent calls `axme_begin_close`, gets a checklist. Reviews the session for missed memories, decisions, safety rules. Calls `axme_finalize_close` — MCP writes handoff, worklog, and extractions atomically.
+4. **Fallback** → if you just close the window, the background auditor extracts everything from the transcript.
+5. **Next session** → `axme_context` returns everything accumulated. Handoff says exactly where to continue.
 
-> **Tip**: You can trigger saving at any time - just ask the agent "remember this" or "save this as a decision". You don't have to wait for session close.
+> **Tip**: You can save at any time — just tell the agent "remember this" or "save this as a decision". You don't have to wait for session close.
 
 ---
 
 ## Storage
 
-All data lives in `.axme-code/` in your project root (or workspace root for multi-repo):
+All data lives in `.axme-code/` in your project root (gitignored automatically):
 
 ```
 .axme-code/
@@ -101,9 +166,8 @@ All data lives in `.axme-code/` in your project root (or workspace root for mult
     patterns/       # Validated successful approaches
   safety/
     rules.yaml      # git + bash + filesystem guardrails
-  backlog/          # B-001-slug.md ... persistent cross-session task tracking
+  backlog/          # B-001-slug.md ... persistent cross-session tasks
   sessions/         # Per-session meta.json (tracking, agentClosed flag)
-  active-sessions/  # Claude session -> AXME session mapping
   plans/
     handoff-<id>.md # Per-session handoff (last 5 kept)
   worklog.jsonl     # Structured event log
@@ -111,11 +175,13 @@ All data lives in `.axme-code/` in your project root (or workspace root for mult
   config.yaml       # Model settings, presets
 ```
 
+Human-readable markdown and YAML. No database, no external dependencies.
+
 ---
 
 ## AXME Platform
 
-AXME Code is the developer tools layer of the [AXME platform](https://github.com/AxmeAI/axme) - durable execution infrastructure for AI agents.
+AXME Code is the developer tools layer of the [AXME platform](https://github.com/AxmeAI) — durable execution infrastructure for AI agents.
 
 ---
 
@@ -126,28 +192,28 @@ AXME Code has three components:
 
 ### 1. MCP Server (persistent, runs while VS Code is open)
 
-Provides tools for the agent to read and write the knowledge base. All writes go through MCP server code (atomicWrite, correct append) - the agent never writes storage files directly. This guarantees format consistency.
+Provides tools for the agent to read and write the knowledge base. All writes go through MCP server code (atomicWrite, correct append) — the agent never writes storage files directly.
 
 ### 2. Hooks (fire on every tool call)
 
-**pre-tool-use**: Checks every Bash command, git operation, and file access against safety rules. Blocks violations before they execute. Also creates/recovers session tracking.
+**pre-tool-use**: Checks every Bash command, git operation, and file access against safety rules. Blocks violations before execution. Also creates/recovers session tracking.
 
 **post-tool-use**: Records which files the agent changed (for audit trail).
 
 ### 3. Background Auditor (runs after session close)
 
 A detached process that reads the session transcript and catches anything the agent forgot to save. Two modes:
-- **Full extraction** - when the agent crashed or the user closed the window without formal close
-- **Verify-only** - when the agent completed the close checklist (lighter, cheaper)
+- **Full extraction** — when the agent crashed or user closed without formal close
+- **Verify-only** — when the agent completed the close checklist (lighter, cheaper)
 
 </details>
 
 <details>
-<summary><strong>Available MCP Tools</strong></summary>
+<summary><strong>Available MCP Tools (19 tools)</strong></summary>
 
 | Tool | Description |
 |------|-------------|
-| `axme_context` | Compact meta (safety, handoff, worklog) + instructions to load full KB in parallel |
+| `axme_context` | Load full knowledge base (oracle + decisions + safety + memory + handoff) |
 | `axme_oracle` | Show oracle data (stack, structure, patterns, glossary) |
 | `axme_decisions` | List active decisions with enforce levels |
 | `axme_memories` | Show all memories (feedback + patterns) |
@@ -155,17 +221,17 @@ A detached process that reads the session transcript and catches anything the ag
 | `axme_save_memory` | Save feedback or pattern memory |
 | `axme_safety` | Show current safety rules |
 | `axme_update_safety` | Add a new safety rule |
-| `axme_backlog` | List or read backlog items (persistent cross-session task tracking) |
+| `axme_backlog` | List or read backlog items |
 | `axme_backlog_add` | Add a new backlog item |
 | `axme_backlog_update` | Update backlog item status, priority, or notes |
 | `axme_status` | Project status (sessions, decisions count, last activity) |
 | `axme_worklog` | Recent worklog events |
 | `axme_workspace` | List all repos in workspace |
-| `axme_begin_close` | Start session close - returns extraction checklist |
-| `axme_finalize_close` | Finalize close - writes handoff, worklog, extractions atomically |
-| `axme_ask_question` | Record a question only the user can answer |
+| `axme_begin_close` | Start session close — returns extraction checklist |
+| `axme_finalize_close` | Finalize close — writes handoff, worklog, extractions atomically |
+| `axme_ask_question` | Record a question for the user |
 | `axme_list_open_questions` | List open questions from previous sessions |
-| `axme_answer_question` | Record the user's answer to an open question |
+| `axme_answer_question` | Record the user's answer |
 
 </details>
 
@@ -173,14 +239,14 @@ A detached process that reads the session transcript and catches anything the ag
 <summary><strong>CLI Commands</strong></summary>
 
 ```bash
-axme-code setup [path]       # Initialize project/workspace KB with LLM scan
+axme-code setup [path]       # Initialize project/workspace with LLM scan
 axme-code serve              # Start MCP server (called by Claude Code automatically)
-axme-code status [path]      # Show project status (sessions, decisions, memories)
+axme-code status [path]      # Show project status
 axme-code stats [path]       # Worklog statistics (sessions, costs, safety blocks)
 axme-code audit-kb [path]    # KB audit: dedup, conflicts, compaction
 axme-code hook pre-tool-use  # PreToolUse hook handler (called by Claude Code)
-axme-code hook post-tool-use # PostToolUse hook handler (called by Claude Code)
-axme-code hook session-end   # SessionEnd hook handler (called by Claude Code)
+axme-code hook post-tool-use # PostToolUse hook handler
+axme-code hook session-end   # SessionEnd hook handler
 axme-code audit-session      # Run LLM audit on a session transcript
 ```
 
@@ -196,8 +262,20 @@ During `axme-code setup`, preset bundles provide curated best-practice rules:
 | **essential-safety** | Protected branches, no secrets in git, no force push, fail loudly |
 | **ai-agent-guardrails** | Verification requirements, no autonomous deploys, proof before done |
 
+Additional presets available: `production-ready`, `team-collaboration`.
+
 </details>
 
 ---
 
-[Issues](https://github.com/AxmeAI/axme-code/issues) - hello@axme.ai
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
+## License
+
+[MIT](LICENSE)
+
+---
+
+[Issues](https://github.com/AxmeAI/axme-code/issues) · [Architecture](docs/ARCHITECTURE.md) · hello@axme.ai
