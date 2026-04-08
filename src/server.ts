@@ -614,7 +614,7 @@ server.tool(
     const { answerQuestion } = await import("./storage/questions.js");
     const q = answerQuestion(pp(project_path), question_id, answer);
     if (!q) return { content: [{ type: "text" as const, text: `Question ${question_id} not found or not open.` }] };
-    return { content: [{ type: "text" as const, text: `Answer recorded for ${q.id}. Status: [answered]` }] };
+    return { content: [{ type: "text" as const, text: `Answer recorded for ${q.id}. Status: [answered].` }] };
   },
 );
 
