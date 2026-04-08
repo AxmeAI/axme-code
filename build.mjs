@@ -68,8 +68,15 @@ await build({
 mkdirSync("dist/plugin/bin", { recursive: true });
 writeFileSync("dist/plugin/bin/axme-code", `#!/bin/bash
 PLUGIN_DIR="\$(cd "\$(dirname "\$0")/.." && pwd)"
-DATA_DIR="\${CLAUDE_PLUGIN_DATA:-\$HOME/.claude/plugins/data/axme-code}"
-export NODE_PATH="\$DATA_DIR/node_modules:\$NODE_PATH"
+if [ -n "\$CLAUDE_PLUGIN_DATA" ]; then
+  DATA_DIR="\$CLAUDE_PLUGIN_DATA"
+else
+  # Find plugin data dir by pattern (name varies: axme-code, axme-code-inline, etc.)
+  DATA_DIR="\$(ls -d \$HOME/.claude/plugins/data/axme-code* 2>/dev/null | head -1)"
+fi
+if [ -n "\$DATA_DIR" ]; then
+  export NODE_PATH="\$DATA_DIR/node_modules:\$NODE_PATH"
+fi
 exec node "\$PLUGIN_DIR/cli.mjs" "\$@"
 `);
 chmodSync("dist/plugin/bin/axme-code", 0o755);
