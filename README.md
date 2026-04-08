@@ -2,7 +2,9 @@
 
 ### Claude Code forgets your project every session. We fixed it.
 
-AXME Code is an [MCP server](https://modelcontextprotocol.io/) plugin for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) that gives your agent persistent memory, architectural decisions, and safety guardrails — across every session, automatically.
+AXME Code is an [MCP server](https://modelcontextprotocol.io/) plugin for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) that gives your AI coding agent **persistent memory**, **architectural decisions**, and **safety guardrails** — across every session, automatically.
+
+Stop re-explaining your architecture on session 47. Stop losing context between sessions. Stop hoping the agent won't run `git push --force` to main. AXME Code handles context engineering, session continuity, and hard safety enforcement so you can focus on building.
 
 You keep using Claude Code exactly as before. AXME Code works transparently in the background.
 
@@ -11,7 +13,7 @@ You keep using Claude Code exactly as before. AXME Code works transparently in t
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Tests](https://img.shields.io/badge/tests-413%20passing-brightgreen)]()
 
-**[Quick Start](#quick-start)** · **[Before & After](#before--after)** · **[How It Works](#how-it-works)** · **[Architecture](docs/ARCHITECTURE.md)**
+**[Quick Start](#quick-start)** · **[Before & After](#before--after)** · **[How It Works](#how-it-works)** · **[Architecture](docs/ARCHITECTURE.md)** · **[Website](https://code.axme.ai)**
 
 ---
 
@@ -134,6 +136,20 @@ The agent saves discoveries during work via MCP tools. At session close, a struc
 Each repo gets its own knowledge base (`.axme-code/`). Workspace-level rules apply to all repos. Repo-specific rules stay scoped. The agent sees merged context — workspace safety floor + repo-specific decisions.
 
 Supports 14 workspace formats: VS Code multi-root, pnpm/npm/yarn workspaces, Nx, Gradle, Maven, Rush, git submodules, and more.
+
+### Why Not Just CLAUDE.md?
+
+CLAUDE.md is great for simple projects with a few rules. But it doesn't scale:
+
+| | CLAUDE.md | AXME Code |
+|---|---|---|
+| **Memory** | Static, manual | Automatic, accumulates across sessions |
+| **Decisions** | Flat text, no enforcement | Structured, required/advisory levels |
+| **Safety** | Prompt-based (~80% compliance) | Hook-based (100% enforcement) |
+| **Session continuity** | None | Handoff + background auditor |
+| **Scales to** | ~50 lines | Hundreds of decisions, memories, rules |
+
+AXME Code complements CLAUDE.md — it reads your existing CLAUDE.md during setup and extracts decisions and rules from it.
 
 ---
 
@@ -278,4 +294,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ---
 
-[Issues](https://github.com/AxmeAI/axme-code/issues) · [Architecture](docs/ARCHITECTURE.md) · hello@axme.ai
+[Website](https://code.axme.ai) · [Issues](https://github.com/AxmeAI/axme-code/issues) · [Architecture](docs/ARCHITECTURE.md) · hello@axme.ai
+
+---
+
+<sub>AXME Code is a Claude Code plugin (MCP server) for persistent memory, context engineering, and safety guardrails. Works with Claude Code CLI and VS Code extension. Alternative to manual CLAUDE.md management, claude-mem, and MemClaw. Open source, MIT licensed.</sub>
