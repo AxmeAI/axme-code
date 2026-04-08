@@ -176,7 +176,10 @@ export function questionsContext(projectPath: string): string {
     "",
     ...open.map(q => `- **${q.id}**: ${q.question}${q.context ? ` (context: ${q.context})` : ""}`),
     "",
-    "Use axme_answer_question(id, answer) to respond.",
+    "For each question: show it to the user, get their answer, then IMMEDIATELY execute the action",
+    "(e.g. axme_save_decision with action supersede/remove, axme_update_safety, etc.).",
+    "After executing, call axme_answer_question(id, answer) to mark as processed.",
+    "Do NOT just record the answer — act on it in this session.",
   ];
   return lines.join("\n");
 }
