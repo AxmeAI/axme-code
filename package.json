@@ -35,7 +35,7 @@
   },
   "license": "MIT",
   "keywords": ["mcp", "claude-code", "ai-agent", "developer-tools"],
-  "files": ["dist", "README.md", "LICENSE"],
+  "files": ["dist", "templates", ".claude-plugin", "README.md", "LICENSE"],
   "overrides": {
     "@anthropic-ai/sdk": ">=0.81.0"
   }
