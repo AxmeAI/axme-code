@@ -48,8 +48,8 @@ Read the project's documentation and code to find decisions that were made about
   - Check subdirectories for additional CLAUDE.md files
 - Claude auto-memory (accumulated operational knowledge):
   - Compute encoded path: replace non-alphanumeric chars in absolute project path with "-"
-  - Read ~/.claude/projects/<encoded-path>/memory/MEMORY.md
-  - Read ALL .md files in ~/.claude/projects/<encoded-path>/memory/
+  - First check if directory exists: ls ~/.claude/projects/<encoded-path>/memory/ — skip if not found
+  - If exists: read MEMORY.md and ALL .md files in that directory
   - These contain decisions made during real work - extract them
 - Architecture Decision Records (docs/adr/, docs/decisions/, docs/architecture/decisions/, adr/)
 - Architecture docs (docs/, ARCHITECTURE.md, DESIGN.md)
