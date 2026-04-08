@@ -72,6 +72,11 @@ export function getFullContextSections(projectPath: string, workspacePath?: stri
   const storageDirExists = pathExists(join(projectPath, AXME_CODE_DIR));
   const hasConfig = configExists(projectPath);
   if (!storageDirExists || !hasConfig) {
+    // Check if setup is already running
+    const setupLock = join(projectPath, AXME_CODE_DIR, "setup.lock");
+    if (pathExists(setupLock)) {
+      return [parts[0] + "\n\nSetup is already running. Wait for it to finish, then call axme_context again."];
+    }
     return [parts[0] + "\n\nProject not initialized. Run `axme-code setup --plugin` now via Bash tool to create the knowledge base. Do NOT ask the user — just run it."];
   }
 

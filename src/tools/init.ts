@@ -20,7 +20,7 @@ import { initPlanStore } from "../storage/plans.js";
 import { bundlesToDecisions, bundlesToMemories, bundlesToDeployChecklists, applyPresetSafetyRules } from "../presets.js";
 import { AXME_CODE_DIR, DEFAULT_PROJECT_CONFIG } from "../types.js";
 import { addCost, zeroCost, type CostInfo } from "../utils/cost-extractor.js";
-import { atomicWrite } from "../storage/engine.js";
+import { atomicWrite, removeFile } from "../storage/engine.js";
 import yaml from "js-yaml";
 
 export interface InitResult {
@@ -66,6 +66,20 @@ export async function initProjectWithLLM(projectPath: string, opts?: {
   }
 
   ensureDir(axmeDir);
+
+  // Setup lock — prevent concurrent setup runs (plugin may trigger multiple)
+  const lockPath = join(axmeDir, "setup.lock");
+  if (pathExists(lockPath)) {
+    return {
+      projectPath, created: false,
+      oracle: { files: 0, llm: false },
+      decisions: { count: 0, fromScan: 0, fromPresets: 0 },
+      memories: { count: 0, fromPresets: 0 },
+      safety: { created: false, llm: false, summary: "setup already running" },
+      config: false, cost: zeroCost(), durationMs: 0, errors: ["Setup already in progress"],
+    };
+  }
+  atomicWrite(lockPath, new Date().toISOString());
 
   const presets = opts?.presets ?? DEFAULT_PROJECT_CONFIG.presets;
   let totalCost = zeroCost();
@@ -227,6 +241,9 @@ export async function initProjectWithLLM(projectPath: string, opts?: {
   } else if (oracleExists(projectPath) && !oracleLlm) {
     oracleFiles = 4;
   }
+
+  // Remove setup lock
+  try { removeFile(lockPath); } catch {}
 
   return {
     projectPath,
