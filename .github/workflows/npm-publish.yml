@@ -31,13 +31,16 @@ jobs:
           PLUGIN_REPO_TOKEN: ${{ secrets.PLUGIN_REPO_TOKEN }}
         run: |
           git clone https://x-access-token:${PLUGIN_REPO_TOKEN}@github.com/AxmeAI/axme-code-plugin.git /tmp/plugin-repo
-          # Remove old files (except .git)
-          find /tmp/plugin-repo -maxdepth 1 -not -name '.git' -not -name '.' -exec rm -rf {} +
-          # Copy new plugin bundle (including dotfiles)
-          cp -r dist/plugin/. /tmp/plugin-repo/
-          # Keep README
-          cp /tmp/plugin-repo/README.md /tmp/plugin-repo/README.md 2>/dev/null || true
           cd /tmp/plugin-repo
+          # Remove old files (except .git and .gitignore)
+          ls -A | grep -v '^\.\(git\|gitignore\)$' | xargs rm -rf
+          # Copy new plugin bundle
+          cp -r ${GITHUB_WORKSPACE}/dist/plugin/. .
+          cp ${GITHUB_WORKSPACE}/dist/plugin/.mcp.json .
+          cp -r ${GITHUB_WORKSPACE}/dist/plugin/.claude-plugin .
+          # Remove sourcemaps and node_modules (not needed in repo)
+          rm -f *.map
+          rm -rf node_modules package-lock.json
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
           git add -A
