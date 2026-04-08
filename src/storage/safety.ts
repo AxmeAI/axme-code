@@ -427,7 +427,7 @@ export function checkGit(rules: SafetyRules, command: string, _cwd?: string, ski
     // on a bare refspec token, not inside another argument.
     const hasPlusRefspec = tokens.some(t => /^\+[^-].*/.test(t));
     if (hasForceFlag || hasPlusRefspec) {
-      return { allowed: false, reason: "Force push is not allowed" };
+      return { allowed: false, reason: "Force push is not allowed. Push new commits to the branch instead. Never amend pushed commits." };
     }
   }
   if (!rules.git.allowDirectPushToMain && stripped.startsWith("git push")) {
