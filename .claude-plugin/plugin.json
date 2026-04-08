@@ -1,0 +1,24 @@
+{
+  "name": "axme-code",
+  "version": "0.2.0",
+  "description": "Persistent memory, architectural decisions, and safety guardrails for Claude Code. Your agent starts every session with full project context — stack, decisions, patterns, safety rules, and a handoff from the previous session.",
+  "author": {
+    "name": "AXME AI",
+    "email": "hello@axme.ai",
+    "url": "https://github.com/AxmeAI"
+  },
+  "homepage": "https://code.axme.ai",
+  "repository": "https://github.com/AxmeAI/axme-code",
+  "license": "MIT",
+  "keywords": [
+    "memory",
+    "decisions",
+    "safety",
+    "guardrails",
+    "context-engineering",
+    "mcp-server",
+    "knowledge-base",
+    "session-continuity"
+  ],
+  "mcpServers": "./.mcp.json"
+}
