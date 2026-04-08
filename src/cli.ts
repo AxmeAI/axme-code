@@ -183,7 +183,7 @@ function configureHooks(projectPath: string): void {
   settings.hooks.PreToolUse.push({
     hooks: [{
       type: "command",
-      command: `axme-code hook pre-tool-use --workspace ${projectPath}`,
+      command: `npx -y @axme/code hook pre-tool-use --workspace ${projectPath}`,
       timeout: 5,
     }],
   });
@@ -195,7 +195,7 @@ function configureHooks(projectPath: string): void {
     matcher: "Edit|Write|NotebookEdit",
     hooks: [{
       type: "command",
-      command: `axme-code hook post-tool-use --workspace ${projectPath}`,
+      command: `npx -y @axme/code hook post-tool-use --workspace ${projectPath}`,
       timeout: 10,
     }],
   });
@@ -205,7 +205,7 @@ function configureHooks(projectPath: string): void {
   settings.hooks.SessionEnd.push({
     hooks: [{
       type: "command",
-      command: `axme-code hook session-end --workspace ${projectPath}`,
+      command: `npx -y @axme/code hook session-end --workspace ${projectPath}`,
       timeout: 120,
     }],
   });
