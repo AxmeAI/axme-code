@@ -1,6 +1,6 @@
 {
   "name": "axme-code",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Persistent memory, architectural decisions, and safety guardrails for Claude Code. Your agent starts every session with full project context — stack, decisions, patterns, safety rules, and a handoff from the previous session.",
   "author": {
     "name": "AXME AI",
