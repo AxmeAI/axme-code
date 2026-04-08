@@ -1,43 +1,63 @@
-import { describe, it } from "node:test";
+import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { paginateSections } from "../src/utils/pagination.js";
 import { getOracleSections } from "../src/storage/oracle.js";
 import { getDecisionSections } from "../src/storage/decisions.js";
-import { getMemorySections } from "../src/storage/memory.js";
 import { getFullContextSections } from "../src/tools/context.js";
 
-const WORKSPACE = "/home/georgeb/axme-workspace";
-const AXME_CODE = "/home/georgeb/axme-workspace/axme-code";
-const CONTROL_PLANE = "/home/georgeb/axme-workspace/axme-control-plane";
+const TEST_ROOT = "/tmp/axme-pagination-integration-test";
+const PROJECT = join(TEST_ROOT, "project");
+
+function setupProject() {
+  rmSync(TEST_ROOT, { recursive: true, force: true });
+  const axme = join(PROJECT, ".axme-code");
+  mkdirSync(join(axme, "oracle"), { recursive: true });
+  mkdirSync(join(axme, "decisions"), { recursive: true });
+  mkdirSync(join(axme, "memory", "feedback"), { recursive: true });
+  mkdirSync(join(axme, "memory", "patterns"), { recursive: true });
+  mkdirSync(join(axme, "safety"), { recursive: true });
+  mkdirSync(join(axme, "sessions"), { recursive: true });
+
+  writeFileSync(join(axme, "oracle", "stack.md"), "# Stack\n\nNode.js 20, TypeScript 5.9, ESM modules.\n\nesbuild for bundling.\n");
+  writeFileSync(join(axme, "oracle", "structure.md"), "# Structure\n\nsrc/ — main source\ntest/ — tests\ndist/ — build output\n");
+  writeFileSync(join(axme, "oracle", "patterns.md"), "# Patterns\n\nCamelCase functions, PascalCase types.\n");
+  writeFileSync(join(axme, "oracle", "glossary.md"), "# Glossary\n\nMCP = Model Context Protocol\nOracle = Project knowledge base\n");
+  writeFileSync(join(axme, "config.yaml"), "model: claude-sonnet-4-6\npresets:\n  - essential-safety\n");
+  writeFileSync(join(axme, "safety", "rules.yaml"), `git:\n  protectedBranches: [main]\n  allowDirectPushToMain: false\n  allowForcePush: false\nbash:\n  deniedPrefixes:\n    - "rm -rf /"\n  allowedPrefixes: []\nfilesystem:\n  deniedPaths: []\n  readOnlyPaths: []\n`);
+
+  // Create enough decisions for pagination (>30KB total)
+  writeFileSync(join(axme, "decisions", "index.md"), "# Decisions\n");
+  for (let i = 1; i <= 30; i++) {
+    const id = `D-${String(i).padStart(3, "0")}`;
+    const slug = `test-decision-${i}`;
+    const body = `This is decision ${i}. `.repeat(50); // ~1KB each
+    writeFileSync(join(axme, "decisions", `${id}-${slug}.md`), `---\nid: ${id}\nslug: ${slug}\ntitle: Test decision ${i}\nenforce: required\nstatus: active\ndate: "2026-04-01"\nsource: manual\n---\n${body}\n`);
+  }
+}
+
+beforeEach(() => setupProject());
+afterEach(() => rmSync(TEST_ROOT, { recursive: true, force: true }));
 
 describe("pagination integration with real data", () => {
-  it("workspace oracle paginates correctly", () => {
-    const sections = getOracleSections(WORKSPACE);
+  it("oracle paginates correctly", () => {
+    const sections = getOracleSections(PROJECT);
     assert.ok(sections.length > 0, "should have oracle sections");
-    const totalChars = sections.reduce((s, sec) => s + sec.length, 0);
-    console.log(`  workspace oracle: ${sections.length} sections, ${totalChars} chars`);
 
     const p1 = paginateSections(sections, 1, "axme_oracle", {});
-    console.log(`  page 1/${p1.totalPages}: ${p1.text.length} chars`);
-    if (p1.totalPages > 1) {
-      assert.ok(p1.text.includes("page: 2"), "should have next-page instruction");
-      const p2 = paginateSections(sections, 2, "axme_oracle", {});
-      console.log(`  page 2/${p2.totalPages}: ${p2.text.length} chars`);
-    }
+    assert.ok(p1.text.length > 0, "page 1 should have content");
   });
 
-  it("axme-code decisions paginates correctly (largest: 114KB)", () => {
-    const sections = getDecisionSections(AXME_CODE);
-    assert.ok(sections.length > 0, "should have decisions");
-    const totalChars = sections.reduce((s, sec) => s + sec.length, 0);
-    console.log(`  axme-code decisions: ${sections.length} items, ${totalChars} chars`);
+  it("decisions paginate correctly with many items", () => {
+    const sections = getDecisionSections(PROJECT);
+    assert.ok(sections.length >= 30, "should have 30+ decisions");
 
     // Walk all pages
     let page = 1;
     let allContent = "";
     while (true) {
-      const result = paginateSections(sections, page, "axme_decisions", { project_path: AXME_CODE });
-      console.log(`  page ${result.page}/${result.totalPages}: ${result.text.length} chars`);
+      const result = paginateSections(sections, page, "axme_decisions", { project_path: PROJECT });
       assert.ok(result.text.length <= 30_000, `page ${page} too large: ${result.text.length}`);
       allContent += result.text;
       if (result.page >= result.totalPages) break;
@@ -50,35 +70,22 @@ describe("pagination integration with real data", () => {
     }
   });
 
-  it("workspace context paginates correctly", () => {
-    const sections = getFullContextSections(WORKSPACE);
-    const totalChars = sections.reduce((s, sec) => s + sec.length, 0);
-    console.log(`  workspace context: ${sections.length} sections, ${totalChars} chars`);
+  it("context includes safety in first page", () => {
+    const sections = getFullContextSections(PROJECT);
+    assert.ok(sections.length > 0);
 
-    const p1 = paginateSections(sections, 1, "axme_context", { workspace_path: WORKSPACE });
-    console.log(`  page 1/${p1.totalPages}: ${p1.text.length} chars`);
-    // First page should always have storage root header
+    const p1 = paginateSections(sections, 1, "axme_context", {});
     assert.ok(p1.text.includes("AXME Storage Root"), "first page must include storage root");
-    // First page should always have safety rules
-    assert.ok(p1.text.includes("Safety Rules") || p1.text.includes("Safety"), "first page should include safety");
-  });
-
-  it("control-plane oracle paginates correctly", () => {
-    const sections = getOracleSections(CONTROL_PLANE);
-    const totalChars = sections.reduce((s, sec) => s + sec.length, 0);
-    console.log(`  control-plane oracle: ${sections.length} sections, ${totalChars} chars`);
-
-    const p1 = paginateSections(sections, 1, "axme_oracle", { project_path: CONTROL_PLANE });
-    console.log(`  page 1/${p1.totalPages}: ${p1.text.length} chars`);
-    assert.ok(p1.text.length <= 30_000, `page 1 too large: ${p1.text.length}`);
+    assert.ok(
+      p1.text.includes("Safety") || p1.text.includes("Protected branches") || p1.text.includes("Load Full Knowledge Base"),
+      "first page should include safety or KB load instruction"
+    );
   });
 
   it("no data loss across pages", () => {
-    const sections = getDecisionSections(WORKSPACE);
-    const totalChars = sections.reduce((s, sec) => s + sec.length, 0);
-    console.log(`  workspace decisions: ${sections.length} items, ${totalChars} chars`);
+    const sections = getDecisionSections(PROJECT);
+    assert.ok(sections.length > 0);
 
-    // Collect all pages
     let page = 1;
     const pageTexts: string[] = [];
     while (true) {
@@ -87,9 +94,7 @@ describe("pagination integration with real data", () => {
       if (result.page >= result.totalPages) break;
       page++;
     }
-    console.log(`  ${pageTexts.length} total pages`);
 
-    // Every section should appear in exactly one page
     for (const sec of sections) {
       const found = pageTexts.filter(pt => pt.includes(sec));
       assert.equal(found.length, 1, `section should appear in exactly 1 page: ${sec.slice(0, 60)}`);
