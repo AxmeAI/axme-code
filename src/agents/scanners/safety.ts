@@ -36,8 +36,7 @@ Read these files if they exist:
     - Also check .claude/CLAUDE.md, .claude/rules/*.md, .claudecode/rules.md
     - If CLAUDE.md references other files with rules - follow and read them
 11. **AGENTS.md** - may contain safety constraints
-12. **Claude auto-memory** - check ~/.claude/projects/<encoded-path>/memory/ for safety-related feedback
-    (encoded-path = absolute project path with non-alphanumeric chars replaced by "-")
+12. **Claude auto-memory** - compute encoded-path (replace non-alphanumeric chars in absolute project path with "-"), check if ~/.claude/projects/<encoded-path>/memory/ exists (ls first), if yes read .md files for safety-related feedback
 
 ## What to extract
 

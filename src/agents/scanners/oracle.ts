@@ -43,8 +43,8 @@ Thoroughly scan the project using the tools available to you. Read files, explor
    - Check subdirectories for additional CLAUDE.md files
 4. **Claude auto-memory (accumulated project knowledge):**
    - Compute the encoded project path: replace every non-alphanumeric char in the absolute project path with "-"
-   - Check ~/.claude/projects/<encoded-path>/memory/MEMORY.md
-   - Read ALL .md files in ~/.claude/projects/<encoded-path>/memory/
+   - First check if the directory exists: ls ~/.claude/projects/<encoded-path>/memory/ — if it doesn't exist, skip this step entirely
+   - If it exists: read MEMORY.md and ALL .md files in that directory
    - These contain hard-won operational lessons - treat as HIGH PRIORITY
 5. **Config files:** tsconfig.json, .eslintrc*, eslint.config.*, .prettierrc*, .editorconfig, Makefile, Taskfile.yml, Justfile
 6. **Source directory structure** (list all significant directories and their contents)

@@ -738,8 +738,8 @@ server.tool(
     })).optional().describe("Safety rules to add/remove"),
     // --- Handoff ---
     stopped_at: z.string().describe("What the session stopped at (single line)"),
-    summary: z.string().describe("2-5 bullet points of what was accomplished"),
-    in_progress: z.string().describe("Current state: branches, PRs, uncommitted work"),
+    summary: z.string().describe("2-5 bullet points of what was accomplished. Use real newlines, NOT literal backslash-n. Each bullet on its own line starting with '- '."),
+    in_progress: z.string().describe("Current state: branches, PRs, uncommitted work. Use real newlines, NOT literal backslash-n."),
     prs: z.array(z.object({
       url: z.string(),
       title: z.string(),
@@ -747,9 +747,9 @@ server.tool(
     })).optional().describe("PRs created/merged in this session"),
     test_results: z.string().optional().describe("Test run summary"),
     blockers: z.string().optional().describe("Blockers for next session"),
-    next_steps: z.string().describe("Concrete next steps for next session"),
+    next_steps: z.string().describe("Concrete next steps for next session. Use real newlines, NOT literal backslash-n."),
     dirty_branches: z.string().optional().describe("Branch names with state"),
-    worklog_entry: z.string().describe("Narrative session summary (5-15 lines markdown)"),
+    worklog_entry: z.string().describe("Narrative session summary (5-15 lines markdown). Use real newlines, NOT literal backslash-n."),
     startup_text: z.string().describe("Ready-to-paste startup text for the next session"),
   },
   async (args) => {
@@ -879,6 +879,7 @@ server.tool(
     const session = loadSession(targetPath, sid);
     if (session) {
       session.agentClosed = true;
+      session.closedAt = new Date().toISOString();
       writeSession(targetPath, session);
     }
 

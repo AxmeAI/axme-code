@@ -54,7 +54,8 @@ function handlePostToolUse(workspacePath: string, event: HookInput): void {
  * @param workspacePath - from --workspace CLI flag
  */
 export async function runPostToolUseHook(workspacePath?: string): Promise<void> {
-  if (!workspacePath) return; // No workspace = nothing to do
+  if (!workspacePath) workspacePath = process.cwd();
+  if (!workspacePath) return;
 
   // Skip entirely when we are running inside a subclaude audit worker
   // (see session-auditor env: { ...process.env, AXME_SKIP_HOOKS: "1" }).

@@ -67,6 +67,7 @@ function handleSessionEnd(workspacePath: string, input: SessionEndInput): void {
  * @param workspacePath - from --workspace CLI flag
  */
 export async function runSessionEndHook(workspacePath?: string): Promise<void> {
+  if (!workspacePath) workspacePath = process.cwd();
   if (!workspacePath) return;
 
   // Skip entirely when running inside a subclaude audit worker (see

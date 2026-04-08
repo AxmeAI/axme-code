@@ -264,7 +264,8 @@ async function main() {
   switch (command) {
     case "setup": {
       const forceSetup = args.includes("--force");
-      const setupArgs = args.filter(a => a !== "--force");
+      const pluginMode = args.includes("--plugin") || !!process.env.CLAUDE_PLUGIN_ROOT;
+      const setupArgs = args.filter(a => a !== "--force" && a !== "--plugin");
       const projectPath = resolve(setupArgs[1] || ".");
       const hasGitDir = existsSync(join(projectPath, ".git"));
       const ws = detectWorkspace(projectPath);
@@ -315,31 +316,43 @@ async function main() {
         }
       }
 
-      // Create or update .mcp.json (workspace root + each child repo)
-      const mcpEntry = { command: "axme-code", args: ["serve"] };
-      const mcpPaths = [projectPath];
-      if (isWorkspace) {
-        for (const p of ws.projects) {
-          mcpPaths.push(join(projectPath, p.path));
+      // Detect plugin context — skip .mcp.json and hooks if running from plugin
+      // (plugin provides its own .mcp.json and hooks/hooks.json)
+      const isPlugin = pluginMode;
+
+      if (!isPlugin) {
+        // Create or update .mcp.json (workspace root + each child repo)
+        const mcpEntry = { command: "axme-code", args: ["serve"] };
+        const mcpPaths = [projectPath];
+        if (isWorkspace) {
+          for (const p of ws.projects) {
+            mcpPaths.push(join(projectPath, p.path));
+          }
         }
-      }
-      for (const dir of mcpPaths) {
-        const mcpPath = join(dir, ".mcp.json");
-        let mcpConfig: Record<string, any> = {};
-        if (existsSync(mcpPath)) {
-          try { mcpConfig = JSON.parse(readFileSync(mcpPath, "utf-8")); } catch { mcpConfig = {}; }
+        for (const dir of mcpPaths) {
+          const mcpPath = join(dir, ".mcp.json");
+          let mcpConfig: Record<string, any> = {};
+          if (existsSync(mcpPath)) {
+            try { mcpConfig = JSON.parse(readFileSync(mcpPath, "utf-8")); } catch { mcpConfig = {}; }
+          }
+          if (!mcpConfig.mcpServers) mcpConfig.mcpServers = {};
+          mcpConfig.mcpServers.axme = mcpEntry;
+          writeFileSync(mcpPath, JSON.stringify(mcpConfig, null, 2) + "\n", "utf-8");
         }
-        if (!mcpConfig.mcpServers) mcpConfig.mcpServers = {};
-        mcpConfig.mcpServers.axme = mcpEntry;
-        writeFileSync(mcpPath, JSON.stringify(mcpConfig, null, 2) + "\n", "utf-8");
+        console.log(`  .mcp.json: updated (${mcpPaths.length} locations)`);
+      } else {
+        console.log(`  .mcp.json: skipped (plugin provides MCP server)`);
       }
-      console.log(`  .mcp.json: updated (${mcpPaths.length} locations)`);
 
       // Generate CLAUDE.md
       generateClaudeMd(projectPath, isWorkspace);
 
-      // Configure Claude Code hooks in .claude/settings.json
-      configureHooks(projectPath);
+      if (!isPlugin) {
+        // Configure Claude Code hooks in .claude/settings.json
+        configureHooks(projectPath);
+      } else {
+        console.log(`  Hooks: skipped (plugin provides hooks)`);
+      }
 
       // Add .axme-code/ to .gitignore
       const gitignorePath = join(projectPath, ".gitignore");
@@ -390,6 +403,36 @@ async function main() {
       } else if (hookName === "session-end") {
         const { runSessionEndHook } = await import("./hooks/session-end.js");
         await runSessionEndHook(workspacePath);
+      }
+      break;
+    }
+
+    case "check-init": {
+      // Plugin SessionStart hook — ensures CLAUDE.md exists and outputs instruction
+      const checkPath = resolve(args[1] || ".");
+      const claudeMdPath = join(checkPath, "CLAUDE.md");
+      const axmeSection = `## AXME Code
+
+### Session Start (MANDATORY)
+Call axme_context at the start of every session.
+If it returns "not initialized", run \`axme-code setup --plugin\` via Bash tool immediately.
+Do NOT skip — without context you will miss critical project rules.
+`;
+      // Ensure CLAUDE.md has AXME section
+      if (existsSync(claudeMdPath)) {
+        const content = readFileSync(claudeMdPath, "utf-8");
+        if (!content.includes("## AXME Code")) {
+          writeFileSync(claudeMdPath, content.trimEnd() + "\n\n" + axmeSection, "utf-8");
+        }
+      } else {
+        writeFileSync(claudeMdPath, axmeSection, "utf-8");
+      }
+
+      const { configExists } = await import("./storage/config.js");
+      if (configExists(checkPath)) {
+        console.log(`[AXME Code] Knowledge base ready. Call axme_context now.`);
+      } else {
+        console.log(`[AXME Code] Project not initialized. Run: axme-code setup --plugin`);
       }
       break;
     }

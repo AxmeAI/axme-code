@@ -34,8 +34,7 @@ Read these files if they exist:
 8. package.json (scripts section), pyproject.toml - build/test/deploy commands
 9. **Pre-deploy checklist files** - look for files with CHECKLIST, PRE_PROD, pre-deploy in name
 10. **CLAUDE.md** - read for deploy rules, staging/prod procedures, deploy prohibitions
-11. **Claude auto-memory** - check ~/.claude/projects/<encoded-path>/memory/ for deploy-related feedback
-    (encoded-path = absolute project path with non-alphanumeric chars replaced by "-")
+11. **Claude auto-memory** - compute encoded-path (replace non-alphanumeric chars in absolute project path with "-"), check if ~/.claude/projects/<encoded-path>/memory/ exists (ls first), if yes read .md files for deploy-related feedback
 
 ## What to extract
 
