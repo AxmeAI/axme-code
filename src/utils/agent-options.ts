@@ -2,7 +2,21 @@
  * Shared agent query options builder for LLM scanner agents.
  */
 
+import { execSync } from "node:child_process";
+
 type Options = import("@anthropic-ai/claude-agent-sdk").Options;
+
+/** Find claude binary path. Cached after first lookup. */
+let _claudePath: string | undefined;
+function findClaudePath(): string | undefined {
+  if (_claudePath !== undefined) return _claudePath || undefined;
+  try {
+    _claudePath = execSync("which claude", { encoding: "utf-8" }).trim();
+  } catch {
+    _claudePath = "";
+  }
+  return _claudePath || undefined;
+}
 
 export type AgentRole = "scanner" | "tester" | "reviewer" | "engineer" | "architect" | "auditor";
 
@@ -41,6 +55,8 @@ export function buildAgentQueryOptions(base: {
 }, role: AgentRole): Options {
   const tools = ROLE_TOOLS[role];
 
+  const claudePath = findClaudePath();
+
   return {
     cwd: base.cwd,
     model: base.model,
@@ -49,6 +65,7 @@ export function buildAgentQueryOptions(base: {
       : { type: "preset" as const, preset: "claude_code" as const },
     settingSources: ["project"],
     ...(base.maxTurns !== undefined ? { maxTurns: base.maxTurns } : {}),
+    ...(claudePath ? { pathToClaudeCodeExecutable: claudePath } : {}),
     permissionMode: "bypassPermissions",
     allowDangerouslySkipPermissions: true,
     allowedTools: tools.allowed,

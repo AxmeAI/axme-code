@@ -174,7 +174,10 @@ export async function initProjectWithLLM(projectPath: string, opts?: {
   log(`  [${projectName}] Scanners complete, processing results...`);
   for (const settled of scanners) {
     if (settled.status === "rejected") {
-      errors.push(`LLM scan failed: ${settled.reason?.message ?? settled.reason}`);
+      const err = settled.reason;
+      const msg = err?.message ?? String(err);
+      const stack = err?.stack ? `\n${err.stack.split("\n").slice(0, 3).join("\n")}` : "";
+      errors.push(`LLM scan failed: ${msg}${stack}`);
       continue;
     }
     const val = settled.value;
