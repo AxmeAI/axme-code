@@ -8,6 +8,7 @@
 import { oracleContext, showOracle, oracleExists, loadOracleFiles } from "../storage/oracle.js";
 import { decisionsContext, showDecisions, enforceableDecisionsContext, listDecisions } from "../storage/decisions.js";
 import { pathExists, readSafe } from "../storage/engine.js";
+import { configExists } from "../storage/config.js";
 import { join } from "node:path";
 import { existsSync } from "node:fs";
 import { AXME_CODE_DIR } from "../types.js";
@@ -67,10 +68,11 @@ export function getFullContextSections(projectPath: string, workspacePath?: stri
   // Storage root header
   parts.push(buildStorageRootHeader(projectPath, workspacePath));
 
-  // Not initialized check
+  // Not initialized check — both directory and config must exist
   const storageDirExists = pathExists(join(projectPath, AXME_CODE_DIR));
-  if (!storageDirExists) {
-    return [parts[0] + "\n\nProject not initialized. Ask the user to run 'axme-code setup' in terminal."];
+  const hasConfig = configExists(projectPath);
+  if (!storageDirExists || !hasConfig) {
+    return [parts[0] + "\n\nProject not initialized. Run `axme-code setup --plugin` now via Bash tool to create the knowledge base. Do NOT ask the user — just run it."];
   }
 
   // Safety rules (small, always inline)
