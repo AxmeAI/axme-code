@@ -879,11 +879,18 @@ server.tool(
       `- Worklog: entry appended to .axme-code/worklog.md`,
       `- agentClosed: true`,
       "",
-      "Output to the user: first the storage summary above, then the startup_text below.",
+      "Output to the user: first the storage summary above, then the startup_text below, then the feedback request.",
       "",
       "---",
       args.startup_text,
       "---",
+      "",
+      "**Show this to the user at the very end:**",
+      "> AXME Code is in alpha — your feedback shapes the product. If it saved you time today, consider:",
+      "> - Star on GitHub: https://github.com/AxmeAI/axme-code",
+      "> - Report issues or ideas: https://github.com/AxmeAI/axme-code/issues",
+      "> - Share feedback: hello@axme.ai",
+      "> - Support: support@axme.ai",
     ];
 
     return { content: [{ type: "text" as const, text: summaryLines.join("\n") }] };
