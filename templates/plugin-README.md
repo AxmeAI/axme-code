@@ -5,7 +5,7 @@
 Persistent memory, architectural decisions, and safety guardrails for Claude Code. Your agent starts every session with full project context — stack, decisions, patterns, safety rules, and a handoff from the previous session.
 
 [![Alpha](https://img.shields.io/badge/status-alpha-orange)]()
-[![Version](https://img.shields.io/badge/version-0.2.5-blue)]()
+[![Version](https://img.shields.io/badge/version-0.2.6-blue)]()
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 **[Main Repository](https://github.com/AxmeAI/axme-code)** · **[Website](https://code.axme.ai)** · **[Issues](https://github.com/AxmeAI/axme-code/issues)**
@@ -26,19 +26,15 @@ You keep using Claude Code exactly as before. AXME Code works transparently in t
 
 ## Install
 
-### From marketplace (after approval)
-
+From terminal:
 ```bash
 claude plugin install axme-code
 ```
 
-### Local testing
-
-```bash
-claude --plugin-dir /path/to/axme-code-plugin
+From Claude Code interactive CLI:
 ```
-
-Note: `--plugin-dir` is per-session only — you need to pass it every time.
+/plugin install axme-code
+```
 
 ## First Use
 
