@@ -46,6 +46,8 @@ export interface SessionAuditResult {
   chunks?: number;
   /** Estimated prompt tokens for observability. */
   promptTokens?: number;
+  /** Number of extraction blocks the parser dropped due to missing required fields. Used for telemetry. */
+  droppedCount?: number;
 }
 
 /**
@@ -537,6 +539,7 @@ export async function runSessionAudit(opts: {
   let totalCostUsd = 0;
   let totalCostCached: CostInfo | undefined;
   let totalPromptChars = 0;
+  let totalDroppedCount = 0;
 
   for (let i = 0; i < chunks.length; i++) {
     const chunkBlock = chunks[i];
@@ -561,6 +564,7 @@ export async function runSessionAudit(opts: {
     });
 
     totalPromptChars += chunkResult.promptChars;
+    totalDroppedCount += chunkResult.droppedCount ?? 0;
     if (chunkResult.cost) {
       totalCostCached = chunkResult.cost;
       totalCostUsd += chunkResult.cost.costUsd ?? 0;
@@ -594,6 +598,7 @@ export async function runSessionAudit(opts: {
     durationMs: Date.now() - startTime,
     chunks: chunks.length,
     promptTokens: Math.round(totalPromptChars / 4),
+    droppedCount: totalDroppedCount,
   };
 }
 
@@ -639,7 +644,7 @@ async function runSingleAuditCall(opts: {
     // auto-loading the project's .claude/settings.json, but users or CI may
     // register hooks via environment or other means, so the belt-and-braces
     // env check in every hook handler is what actually stops the recursion.
-    env: { ...process.env, AXME_SKIP_HOOKS: "1" },
+    env: { ...process.env, AXME_SKIP_HOOKS: "1", AXME_TELEMETRY_DISABLED: "1" },
   };
 
   const isMultiChunk = opts.totalChunks > 1;
@@ -891,7 +896,7 @@ ${freeTextAnalysis}`;
       "Read", "Grep", "Glob", "Write", "Edit", "NotebookEdit", "Agent",
       "Skill", "TodoWrite", "WebFetch", "WebSearch", "Bash", "ToolSearch",
     ],
-    env: { ...process.env, AXME_SKIP_HOOKS: "1" },
+    env: { ...process.env, AXME_SKIP_HOOKS: "1", AXME_TELEMETRY_DISABLED: "1" },
   };
 
   const q = sdk.query({ prompt: formatPrompt, options: queryOpts });
@@ -925,10 +930,11 @@ ${freeTextAnalysis}`;
  */
 export function parseAuditOutput(output: string | object, sessionId: string): Omit<SessionAuditResult, "cost" | "durationMs"> {
   const today = new Date().toISOString().slice(0, 10);
+  let droppedCount = 0;
   const json = typeof output === "object" ? output : extractJson(output);
   if (!json) {
     process.stderr.write(`AXME auditor: failed to extract JSON from output (${typeof output === "string" ? output.length : 0} chars). First 300: ${typeof output === "string" ? output.slice(0, 300) : JSON.stringify(output).slice(0, 300)}\n`);
-    return { memories: [], decisions: [], safetyRules: [], oracleNeedsRescan: false, questions: [], handoff: null, sessionSummary: null };
+    return { memories: [], decisions: [], safetyRules: [], oracleNeedsRescan: false, questions: [], handoff: null, sessionSummary: null, droppedCount: 0 };
   }
 
   // Parse memories
@@ -945,11 +951,11 @@ export function parseAuditOutput(output: string | object, sessionId: string): Om
       const fieldName = m.body ? "body" : m.summary ? "summary" : "description";
       process.stderr.write(`AXME auditor: memory title recovered from ${fieldName}: ${title.slice(0, 80)}\n`);
     }
-    if (!title) { process.stderr.write(`AXME auditor: memory dropped (no usable content): ${JSON.stringify(m).slice(0, 200)}\n`); continue; }
+    if (!title) { droppedCount++; process.stderr.write(`AXME auditor: memory dropped (no usable content): ${JSON.stringify(m).slice(0, 200)}\n`); continue; }
     const type = m.type;
-    if (type !== "feedback" && type !== "pattern") { process.stderr.write(`AXME auditor: memory "${title.slice(0, 60)}" dropped (invalid type: ${type})\n`); continue; }
+    if (type !== "feedback" && type !== "pattern") { droppedCount++; process.stderr.write(`AXME auditor: memory "${title.slice(0, 60)}" dropped (invalid type: ${type})\n`); continue; }
     const slug = toMemorySlug(m.slug || title);
-    if (!slug) { process.stderr.write(`AXME auditor: memory "${title.slice(0, 60)}" dropped (could not generate slug)\n`); continue; }
+    if (!slug) { droppedCount++; process.stderr.write(`AXME auditor: memory "${title.slice(0, 60)}" dropped (could not generate slug)\n`); continue; }
     const scope = parseScopeField(m.scope);
     memories.push({
       slug, type, title,
@@ -965,10 +971,11 @@ export function parseAuditOutput(output: string | object, sessionId: string): Om
   const decisions: Omit<Decision, "id">[] = [];
   for (const d of (Array.isArray(json.decisions) ? json.decisions : [])) {
     const title = d.title;
-    if (!title) { process.stderr.write(`AXME auditor: decision dropped (no title): ${JSON.stringify(d).slice(0, 200)}\n`); continue; }
+    if (!title) { droppedCount++; process.stderr.write(`AXME auditor: decision dropped (no title): ${JSON.stringify(d).slice(0, 200)}\n`); continue; }
     // Fallback: if decision body is missing, try reasoning or use title
     let decision = d.decision || d.reasoning || "";
     if (!decision) {
+      droppedCount++;
       process.stderr.write(`AXME auditor: decision "${title}" dropped (no decision or reasoning field)\n`);
       continue;
     }
@@ -996,8 +1003,8 @@ export function parseAuditOutput(output: string | object, sessionId: string): Om
   for (const s of (Array.isArray(json.safety) ? json.safety : [])) {
     const ruleType = s.rule_type;
     const value = s.value;
-    if (!ruleType) { process.stderr.write(`AXME auditor: safety dropped (no rule_type): ${JSON.stringify(s).slice(0, 200)}\n`); continue; }
-    if (!value) { process.stderr.write(`AXME auditor: safety dropped (no value, rule_type=${ruleType})\n`); continue; }
+    if (!ruleType) { droppedCount++; process.stderr.write(`AXME auditor: safety dropped (no rule_type): ${JSON.stringify(s).slice(0, 200)}\n`); continue; }
+    if (!value) { droppedCount++; process.stderr.write(`AXME auditor: safety dropped (no value, rule_type=${ruleType})\n`); continue; }
     const scope = parseScopeField(s.scope);
     safetyRules.push({ ruleType, value, ...(scope ? { scope } : {}) });
   }
@@ -1046,7 +1053,7 @@ export function parseAuditOutput(output: string | object, sessionId: string): Om
   const sessionSummary = json.session_summary && typeof json.session_summary === "string" && json.session_summary.trim().length > 10
     ? json.session_summary.trim() : null;
 
-  return { memories, decisions, safetyRules, oracleNeedsRescan, questions, handoff, sessionSummary };
+  return { memories, decisions, safetyRules, oracleNeedsRescan, questions, handoff, sessionSummary, droppedCount };
 }
 
 /**

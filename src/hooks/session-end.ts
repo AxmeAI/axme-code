@@ -87,7 +87,12 @@ export async function runSessionEndHook(workspacePath?: string): Promise<void> {
       // Empty/invalid stdin is fine — we'll proceed without transcript attachment
     }
     handleSessionEnd(workspacePath, input);
-  } catch {
-    // Hook failures must be silent
+  } catch (err) {
+    // Hook failures must be silent — but reported to telemetry for visibility.
+    // Use blocking send: hook subprocess exits ms after this catch.
+    try {
+      const { sendTelemetryBlocking, classifyError } = await import("../telemetry.js");
+      await sendTelemetryBlocking("error", { category: "hook", error_class: classifyError(err), fatal: false });
+    } catch { /* swallow */ }
   }
 }

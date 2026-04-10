@@ -68,7 +68,13 @@ export async function runPostToolUseHook(workspacePath?: string): Promise<void> 
     for await (const chunk of process.stdin) chunks.push(chunk);
     const input = JSON.parse(Buffer.concat(chunks).toString("utf-8")) as HookInput;
     handlePostToolUse(workspacePath, input);
-  } catch {
-    // Hook failures must be silent
+  } catch (err) {
+    // Hook failures must be silent — but reported to telemetry for visibility.
+    // Use blocking send: hook subprocess exits ms after this catch and would
+    // kill any setImmediate-queued network call.
+    try {
+      const { sendTelemetryBlocking, classifyError } = await import("../telemetry.js");
+      await sendTelemetryBlocking("error", { category: "hook", error_class: classifyError(err), fatal: false });
+    } catch { /* swallow */ }
   }
 }

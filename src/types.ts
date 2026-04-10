@@ -158,6 +158,7 @@ export type WorklogEventType =
   | "session_end"
   | "session_orphan_audit_queued"
   | "safety_block"
+  | "safety_updated"
   | "check_result"
   | "audit_complete"
   | "decision_saved"

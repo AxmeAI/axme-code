@@ -219,7 +219,13 @@ export async function runPreToolUseHook(workspacePath?: string): Promise<void> {
     for await (const chunk of process.stdin) chunks.push(chunk);
     const input = JSON.parse(Buffer.concat(chunks).toString("utf-8")) as HookInput;
     handlePreToolUse(workspacePath, input);
-  } catch {
-    // Hook failures must be silent - fail open for safety
+  } catch (err) {
+    // Hook failures must be silent - fail open for safety.
+    // Reported to telemetry via blocking send so the network call lands
+    // before this short-lived hook subprocess exits.
+    try {
+      const { sendTelemetryBlocking, classifyError } = await import("../telemetry.js");
+      await sendTelemetryBlocking("error", { category: "hook", error_class: classifyError(err), fatal: false });
+    } catch { /* swallow */ }
   }
 }

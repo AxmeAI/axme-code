@@ -217,7 +217,12 @@ export async function backgroundAutoUpdate(): Promise<void> {
         updated: false,
       });
     }
-  } catch {
-    // Never crash the server due to update logic
+  } catch (err) {
+    // Never crash the server due to update logic.
+    // Report to telemetry so we can see auto-update failures in aggregate.
+    try {
+      const { reportError, classifyError } = await import("./telemetry.js");
+      reportError("auto_update", classifyError(err), false);
+    } catch { /* swallow */ }
   }
 }
