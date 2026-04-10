@@ -31,6 +31,7 @@ export function statusTool(projectPath: string): string {
     `Decisions: ${decisions.length} recorded`,
     `  Required: ${decisions.filter(d => d.enforce === "required").length}`,
     `  Advisory: ${decisions.filter(d => d.enforce === "advisory").length}`,
+    `  Other:    ${decisions.filter(d => d.enforce !== "required" && d.enforce !== "advisory").length}`,
     `Memories: ${memories.length} total`,
     `  Feedback: ${memories.filter(m => m.type === "feedback").length}`,
     `  Patterns: ${memories.filter(m => m.type === "pattern").length}`,

@@ -284,6 +284,34 @@ Additional presets available: `production-ready`, `team-collaboration`.
 
 ---
 
+## Telemetry
+
+axme-code sends anonymous usage telemetry to help us improve the product. We collect:
+
+- **Lifecycle events**: install, startup, version update
+- **Product health events**: setup completion, audit completion (counts of memories/decisions/safety extracted, duration, cost, error class)
+- **Errors**: category and bounded error class for failures in audit, setup, hooks, and auto-update
+
+What we **never** send:
+- Hostnames, usernames, file paths, working directories
+- Source code, transcripts, decisions, memories, or any project content
+- IP addresses (stripped at the server)
+- Raw exception messages (we map to a small set of error classes)
+
+Each install gets a random 64-character machine ID stored in `~/.local/share/axme-code/machine-id`. The ID is not derived from hardware and cannot be linked back to you.
+
+**To disable telemetry**, set either of these environment variables:
+
+```bash
+export AXME_TELEMETRY_DISABLED=1
+# or the industry-standard:
+export DO_NOT_TRACK=1
+```
+
+When disabled, no network requests are made and no machine ID is generated.
+
+---
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.

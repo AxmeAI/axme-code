@@ -71,5 +71,11 @@ export function buildAgentQueryOptions(base: {
     allowedTools: tools.allowed,
     disallowedTools: tools.disallowed,
     includePartialMessages: true,
+    // Disable telemetry in spawned subprocesses. Sub-claude sessions started
+    // by scanners/auditors may pick up the parent's .mcp.json and re-launch
+    // axme-code as an MCP server. Each re-launch would otherwise fire its
+    // own startup event, inflating DAU and skewing scanner cost metrics.
+    // The parent process owns the lifecycle event for this user action.
+    env: { ...process.env, AXME_TELEMETRY_DISABLED: "1", AXME_SKIP_HOOKS: "1" },
   };
 }

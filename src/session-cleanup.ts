@@ -344,6 +344,12 @@ export async function runSessionCleanup(
 
   const result: SessionCleanupResult = { ...base };
   let auditSucceeded = false;
+  // Telemetry-relevant fields, populated inside the audit block, read after.
+  let auditStartMs = 0;
+  let auditPromptTokens = 0;
+  let auditChunks = 0;
+  let auditDroppedCount = 0;
+  let auditErrorClass: string | null = null;
   const activityLength = sessionTurns
     ? sessionTurns.reduce((s, t) => s + t.content.length, 0)
     : (sessionEvents ?? "").length;
@@ -365,7 +371,7 @@ export async function runSessionCleanup(
   // Run LLM audit only if there's meaningful activity to analyze
   if (hasActivity) {
     const auditStartIso = new Date().toISOString();
-    const auditStartMs = Date.now();
+    auditStartMs = Date.now();
 
     // Claim the audit for this process by setting auditStatus=pending in a
     // single writeSession call. This is not an atomic lock — two processes
@@ -654,6 +660,9 @@ export async function runSessionCleanup(
       result.decisions = audit.decisions.length;
       result.safetyRules = audit.safetyRules.length;
       result.costUsd = audit.cost?.costUsd ?? 0;
+      auditPromptTokens = audit.promptTokens ?? 0;
+      auditChunks = audit.chunks ?? 0;
+      auditDroppedCount = audit.droppedCount ?? 0;
       auditSucceeded = true;
 
       // Bump KB audit counter — after N session audits, recommend deep KB cleanup
@@ -737,6 +746,10 @@ export async function runSessionCleanup(
       // cap (MAX_AUDIT_ATTEMPTS) prevents infinite re-runs. recordAuditFailure
       // sets auditStatus=failed + auditFinishedAt + lastAuditError on the meta.
       recordAuditFailure(workspacePath, sessionId, err, "runSessionAudit");
+      try {
+        const { classifyError } = await import("./telemetry.js");
+        auditErrorClass = classifyError(err);
+      } catch { /* swallow */ }
       if (auditLogPath) {
         updateAuditLog(auditLogPath, {
           phase: "failed",
@@ -791,6 +804,32 @@ export async function runSessionCleanup(
         durationMs: 0, // duration is in audit-logs, not needed here
       });
     } catch {}
+  }
+
+  // Send anonymous telemetry: one audit_complete event per cleanup that
+  // actually attempted an audit (hasActivity=true). Skipped sessions (ghost,
+  // already-audited, concurrent, etc.) return earlier and never reach here.
+  // Use the blocking variant: runSessionCleanup is called from the detached
+  // audit-session subprocess which exits immediately after returning. The
+  // fire-and-forget setImmediate would be killed before the network request
+  // completes, dropping the event.
+  if (hasActivity) {
+    try {
+      const { sendTelemetryBlocking } = await import("./telemetry.js");
+      const outcome = result.auditRan ? "success" : "failed";
+      await sendTelemetryBlocking("audit_complete", {
+        outcome,
+        duration_ms: auditStartMs > 0 ? Date.now() - auditStartMs : 0,
+        prompt_tokens: auditPromptTokens,
+        cost_usd: result.costUsd,
+        chunks: auditChunks,
+        memories_saved: result.memories,
+        decisions_saved: result.decisions,
+        safety_saved: result.safetyRules,
+        dropped_count: auditDroppedCount,
+        error_class: auditErrorClass,
+      });
+    } catch { /* never throw from telemetry */ }
   }
 
   // Note: clearing the per-Claude-session mapping file is the caller's

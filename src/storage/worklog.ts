@@ -130,6 +130,15 @@ export function logMemorySaved(
   logEvent(projectPath, "memory_saved", sessionId, { slug, type });
 }
 
+export function logSafetyUpdated(
+  projectPath: string,
+  sessionId: string,
+  ruleType: string,
+  value: string,
+): void {
+  logEvent(projectPath, "safety_updated", sessionId, { ruleType, value });
+}
+
 export function logError(projectPath: string, sessionId: string, error: string): void {
   logEvent(projectPath, "error", sessionId, { error });
 }

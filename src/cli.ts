@@ -266,8 +266,23 @@ After setup, run 'claude' as usual. AXME tools are available automatically.`);
 }
 
 async function main() {
+  // Send anonymous startup telemetry only for user-facing CLI commands.
+  // Hook and audit-session subcommands run as short-lived subprocesses
+  // (Claude Code hooks fire many times per session, audit-session is a
+  // detached background worker), so firing telemetry per invocation would
+  // spam the endpoint and skew startup counts. The `serve` command sends
+  // its own startup event from server.ts after MCP server is up.
+  // We AWAIT this so events flush before heavy work begins — under event
+  // loop pressure (LLM scanners), fire-and-forget setImmediate may stall.
+  const startupCommands = new Set(["setup", "status", "stats", "audit-kb", "cleanup", "help"]);
+  if (command && startupCommands.has(command)) {
+    const { sendStartupEvents } = await import("./telemetry.js");
+    await sendStartupEvents();
+  }
+
   switch (command) {
     case "setup": {
+      const setupStartMs = Date.now();
       const forceSetup = args.includes("--force");
       const pluginMode = args.includes("--plugin") || !!process.env.CLAUDE_PLUGIN_ROOT;
       const setupArgs = args.filter(a => a !== "--force" && a !== "--plugin");
@@ -275,6 +290,35 @@ async function main() {
       const hasGitDir = existsSync(join(projectPath, ".git"));
       const ws = detectWorkspace(projectPath);
       const isWorkspace = hasGitDir ? false : ws.type !== "single";
+      const childRepos = isWorkspace
+        ? ws.projects.filter(p => existsSync(join(projectPath, p.path, ".git"))).length
+        : 0;
+      // Telemetry-relevant fields, populated as setup progresses
+      let setupOutcome: "success" | "fallback" | "failed" = "failed";
+      let setupMethod: "llm" | "deterministic" = "deterministic";
+      let setupPhaseFailed: string | null = null;
+      let setupPresetsApplied = 0;
+      let setupScannersRun = 0;
+      let setupScannersFailed = 0;
+      // Use the blocking variant so the event lands BEFORE process.exit() runs.
+      // The fire-and-forget sendTelemetry uses setImmediate, which is killed
+      // by process.exit() before the network request is even started.
+      const sendSetupTelemetry = async () => {
+        try {
+          const { sendTelemetryBlocking } = await import("./telemetry.js");
+          await sendTelemetryBlocking("setup_complete", {
+            outcome: setupOutcome,
+            duration_ms: Date.now() - setupStartMs,
+            method: setupMethod,
+            scanners_run: setupScannersRun,
+            scanners_failed: setupScannersFailed,
+            phase_failed: setupPhaseFailed,
+            presets_applied: setupPresetsApplied,
+            is_workspace: isWorkspace,
+            child_repos: childRepos,
+          });
+        } catch { /* swallow */ }
+      };
 
       if (isWorkspace) {
         console.log(`Initializing AXME Code workspace in ${projectPath} (${ws.type}, ${ws.projects.length} projects)...`);
@@ -289,36 +333,60 @@ async function main() {
         console.error(`To authenticate, run one of:`);
         console.error(`  claude login              (Claude subscription)`);
         console.error(`  export ANTHROPIC_API_KEY=sk-ant-...  (API key)\n`);
+        setupOutcome = "failed";
+        setupPhaseFailed = "auth_check";
+        await sendSetupTelemetry();
         process.exit(1);
       }
 
       // Init with LLM scanners (parallel)
-      if (isWorkspace) {
-        const { workspaceResult, projectResults } = await initWorkspaceWithLLM(projectPath, { onProgress: console.log });
-        const totalCost = workspaceResult.cost.costUsd + projectResults.reduce((s, r) => s + r.cost.costUsd, 0);
-        console.log(`  Workspace: ${workspaceResult.decisions.count} decisions, ${workspaceResult.memories.count} memories`);
-        for (const r of projectResults) {
-          const name = r.projectPath.split("/").pop();
-          console.log(`  ${name}: ${r.decisions.count} decisions (${r.decisions.fromScan} LLM + ${r.decisions.fromPresets} presets)`);
-        }
-        if (totalCost > 0) console.log(`  Total cost: $${totalCost.toFixed(2)}`);
-        for (const e of [...workspaceResult.errors, ...projectResults.flatMap(r => r.errors)]) {
-          console.log(`  Warning: ${e}`);
-        }
-        generateWorkspaceYaml(projectPath, ws);
-      } else {
-        const result = await initProjectWithLLM(projectPath, { onProgress: console.log, force: forceSetup });
-        if (!result.created && result.durationMs === 0) {
-          console.log(`  Already initialized (skipped LLM scan). Use --force to re-scan.`);
-          console.log(`  Decisions: ${result.decisions.count}, Memories: ${result.memories.count}`);
+      try {
+        if (isWorkspace) {
+          const { workspaceResult, projectResults } = await initWorkspaceWithLLM(projectPath, { onProgress: console.log });
+          const totalCost = workspaceResult.cost.costUsd + projectResults.reduce((s, r) => s + r.cost.costUsd, 0);
+          console.log(`  Workspace: ${workspaceResult.decisions.count} decisions, ${workspaceResult.memories.count} memories`);
+          for (const r of projectResults) {
+            const name = r.projectPath.split("/").pop();
+            console.log(`  ${name}: ${r.decisions.count} decisions (${r.decisions.fromScan} LLM + ${r.decisions.fromPresets} presets)`);
+          }
+          if (totalCost > 0) console.log(`  Total cost: $${totalCost.toFixed(2)}`);
+          for (const e of [...workspaceResult.errors, ...projectResults.flatMap(r => r.errors)]) {
+            console.log(`  Warning: ${e}`);
+          }
+          generateWorkspaceYaml(projectPath, ws);
+          // Track telemetry: any LLM scan in any repo means LLM method
+          const anyLlm = projectResults.some(r => r.oracle.llm) || workspaceResult.decisions.fromScan > 0;
+          setupMethod = anyLlm ? "llm" : "deterministic";
+          setupPresetsApplied = projectResults.reduce((s, r) => s + (r.decisions.fromPresets || 0), 0);
+          // Sum scanner counts across workspace + all projects
+          setupScannersRun = workspaceResult.scannersRun + projectResults.reduce((s, r) => s + r.scannersRun, 0);
+          setupScannersFailed = workspaceResult.scannersFailed + projectResults.reduce((s, r) => s + r.scannersFailed, 0);
         } else {
-          console.log(`  Oracle: ${result.oracle.files} files (${result.oracle.llm ? "LLM scan" : "deterministic fallback"})`);
-          console.log(`  Decisions: ${result.decisions.count} (${result.decisions.fromScan} LLM + ${result.decisions.fromPresets} presets)`);
-          console.log(`  Memories: ${result.memories.count} (${result.memories.fromPresets} from presets)`);
-          console.log(`  Safety: ${result.safety.llm ? "LLM scan" : "defaults + presets"}`);
-          if (result.cost.costUsd > 0) console.log(`  Cost: $${result.cost.costUsd.toFixed(2)}, ${(result.durationMs / 1000).toFixed(1)}s`);
-          for (const e of result.errors) console.log(`  Warning: ${e}`);
+          const result = await initProjectWithLLM(projectPath, { onProgress: console.log, force: forceSetup });
+          if (!result.created && result.durationMs === 0) {
+            console.log(`  Already initialized (skipped LLM scan). Use --force to re-scan.`);
+            console.log(`  Decisions: ${result.decisions.count}, Memories: ${result.memories.count}`);
+          } else {
+            console.log(`  Oracle: ${result.oracle.files} files (${result.oracle.llm ? "LLM scan" : "deterministic fallback"})`);
+            console.log(`  Decisions: ${result.decisions.count} (${result.decisions.fromScan} LLM + ${result.decisions.fromPresets} presets)`);
+            console.log(`  Memories: ${result.memories.count} (${result.memories.fromPresets} from presets)`);
+            console.log(`  Safety: ${result.safety.llm ? "LLM scan" : "defaults + presets"}`);
+            if (result.cost.costUsd > 0) console.log(`  Cost: $${result.cost.costUsd.toFixed(2)}, ${(result.durationMs / 1000).toFixed(1)}s`);
+            for (const e of result.errors) console.log(`  Warning: ${e}`);
+          }
+          // Track telemetry: oracle.llm tells us whether LLM path was used
+          setupMethod = result.oracle.llm ? "llm" : "deterministic";
+          setupPresetsApplied = (result.decisions.fromPresets || 0);
+          setupScannersRun = result.scannersRun;
+          setupScannersFailed = result.scannersFailed;
         }
+      } catch (err) {
+        setupOutcome = "failed";
+        setupPhaseFailed = "init_scan";
+        const { classifyError, reportError } = await import("./telemetry.js");
+        try { reportError("setup", classifyError(err), true); } catch { /* swallow */ }
+        await sendSetupTelemetry();
+        throw err;
       }
 
       // Detect plugin context — skip .mcp.json and hooks if running from plugin
@@ -377,6 +445,11 @@ async function main() {
         ? ws.projects.filter(p => existsSync(join(projectPath, p.path, ".git"))).length
         : 0;
       writeBootstrapToAxmeMemory(projectPath, isWorkspace, repoCount);
+
+      // Setup completed. setupMethod was set above by the init scan.
+      // outcome=success when LLM ran end-to-end, fallback when deterministic was used.
+      setupOutcome = setupMethod === "llm" ? "success" : "fallback";
+      await sendSetupTelemetry();
 
       console.log("\nDone! Run 'claude' to start using AXME tools.");
       break;

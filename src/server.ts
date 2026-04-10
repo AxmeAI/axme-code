@@ -75,6 +75,12 @@ clearLegacyPendingAuditsDir(defaultProjectPath);
 import { backgroundAutoUpdate, getUpdateNotification } from "./auto-update.js";
 backgroundAutoUpdate().catch(() => {});
 
+// Send anonymous startup telemetry (install/startup/update) — never throws.
+// We do not await here because server.ts is a top-level module side-effect;
+// the event loop has plenty of time during MCP server lifetime to flush.
+import { sendStartupEvents } from "./telemetry.js";
+void sendStartupEvents();
+
 
 /**
  * Return the AXME session UUID owned by this MCP server for worklog purposes.
@@ -225,6 +231,35 @@ const server = new McpServer(
   { name: "axme", version: "0.1.0" },
   { instructions: buildInstructions() },
 );
+
+// Wrap every tool handler with a try/catch that reports caught exceptions to
+// telemetry under the `mcp_tool` category. We monkey-patch server.tool() once
+// here instead of touching all 19 individual tool registrations below. The
+// MCP SDK still receives any thrown error and returns it to the client, so
+// no behavior changes — we only add an extra observability hook.
+//
+// Why fatal=true: an exception that bubbles out of a tool handler means the
+// tool call did not complete its intended work — the user-visible operation
+// has aborted. That matches our "fatal vs degraded" definition.
+const _origRegisterTool: any = server.tool.bind(server);
+(server as any).tool = function (...args: any[]): any {
+  // Last argument is always the handler function
+  const handler = args[args.length - 1];
+  if (typeof handler === "function") {
+    args[args.length - 1] = async (...handlerArgs: any[]): Promise<any> => {
+      try {
+        return await handler(...handlerArgs);
+      } catch (err) {
+        try {
+          const { reportError, classifyError } = await import("./telemetry.js");
+          reportError("mcp_tool", classifyError(err), true);
+        } catch { /* never throw from telemetry */ }
+        throw err;
+      }
+    };
+  }
+  return _origRegisterTool.apply(server, args);
+};
 
 // --- Helper: resolve paths with defaults from server state ---
 
@@ -431,8 +466,8 @@ server.tool(
     value: z.string().describe("Rule value (branch name, command prefix, or file path pattern)"),
   },
   async ({ project_path, rule_type, value }) => {
-
-    const result = updateSafetyTool(pp(project_path), rule_type, value);
+    const sid = getOwnedSessionIdForLogging();
+    const result = updateSafetyTool(pp(project_path), rule_type, value, sid ?? undefined);
     return { content: [{ type: "text" as const, text: `Safety rule added: ${result.ruleType} = ${result.value}` }] };
   },
 );
@@ -820,7 +855,7 @@ server.tool(
       for (const s of args.safety_rules) {
         try {
           if (s.action === "add") {
-            updateSafetyTool(targetPath, s.rule_type, s.value);
+            updateSafetyTool(targetPath, s.rule_type, s.value, sid);
             report.push(`Safety added: ${s.rule_type} = ${s.value}`);
           } else if (s.action === "remove") {
             const { removeSafetyRule } = await import("./storage/safety.js");
@@ -860,13 +895,36 @@ server.tool(
       appendFileSync(join(targetPath, AXME_CODE_DIR, "worklog.md"), worklogEntry);
     } catch {}
 
-    // 4. Set agentClosed flag
+    // 4. Set agentClosed flag and spawn detached auditor.
+    // The auditor runs in verify-only mode (since agentClosed=true) — its job
+    // is to catch anything the agent missed. Spawning here ensures the audit
+    // runs immediately on close, instead of waiting for SessionEnd hook (which
+    // may never fire if Claude Code is killed) or MCP server cleanup (which
+    // happens only when the server itself exits).
+    //
+    // IMPORTANT: we do NOT pre-set auditStatus=pending here. runSessionCleanup
+    // in the worker will claim the audit itself (setting pending + started_at
+    // atomically before the LLM call). If we set pending here, the worker
+    // would see its OWN pending state and self-dedup as "concurrent-audit",
+    // never actually running. The spawn→worker-read window is small (~1s)
+    // and no other code path spawns auditors for a session whose MCP server
+    // is still alive, so this gap is safe.
     const { loadSession, writeSession } = await import("./storage/sessions.js");
     const session = loadSession(targetPath, sid);
     if (session) {
       session.agentClosed = true;
       session.closedAt = new Date().toISOString();
       writeSession(targetPath, session);
+    }
+    // Spawn the detached audit worker. Best-effort — failure is logged but
+    // does not block the close response. If spawn fails, the next MCP server
+    // start will pick this up via the orphan-recovery path.
+    let auditorSpawned = false;
+    try {
+      spawnDetachedAuditWorker(targetPath, sid);
+      auditorSpawned = true;
+    } catch (err) {
+      process.stderr.write(`AXME finalize_close: failed to spawn auditor for ${sid}: ${err}\n`);
     }
 
     // 5. Build storage summary
@@ -878,6 +936,7 @@ server.tool(
       `- Handoff: written to .axme-code/plans/handoff.md`,
       `- Worklog: entry appended to .axme-code/worklog.md`,
       `- agentClosed: true`,
+      `- Auditor: ${auditorSpawned ? "spawned (verify-only mode, runs in background)" : "spawn failed - will run on next session start"}`,
       "",
       "Output to the user: first the storage summary above, then the startup_text below, then the feedback request.",
       "",
