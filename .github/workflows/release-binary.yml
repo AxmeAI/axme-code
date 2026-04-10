@@ -75,3 +75,86 @@ jobs:
         with:
           files: artifacts/*/axme-code-*
           generate_release_notes: true
+
+  publish-npm:
+    # Publish @axme/code to npm. We do this in the same workflow as release-binary
+    # (chained via `needs: release`) instead of a separate `release: published`
+    # trigger workflow because GitHub Actions does NOT fire workflow events from
+    # actions taken by GITHUB_TOKEN (anti-recursion safety). When release-binary
+    # creates the GitHub release via softprops/action-gh-release, no downstream
+    # workflow listening on `release: published` will run. Chaining via `needs:`
+    # in the same workflow run avoids that limitation entirely.
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm test
+
+      - name: Publish to npm
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  sync-plugin-repo:
+    # Sync plugin bundle to AxmeAI/axme-code-plugin. Same anti-recursion reason:
+    # if we wait for `release: published` we never run, so we chain on `needs: publish-npm`
+    # to keep the previous behavior (sync after npm publish succeeds).
+    needs: publish-npm
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Sync plugin repo
+        env:
+          PLUGIN_REPO_TOKEN: ${{ secrets.PLUGIN_REPO_TOKEN }}
+        run: |
+          git clone https://x-access-token:${PLUGIN_REPO_TOKEN}@github.com/AxmeAI/axme-code-plugin.git /tmp/plugin-repo
+          cd /tmp/plugin-repo
+          # Remove old files (except .git and .gitignore)
+          ls -A | grep -v '^\.\(git\|gitignore\)$' | xargs rm -rf
+          # Copy new plugin bundle
+          cp -r ${GITHUB_WORKSPACE}/dist/plugin/. .
+          cp ${GITHUB_WORKSPACE}/dist/plugin/.mcp.json .
+          cp -r ${GITHUB_WORKSPACE}/dist/plugin/.claude-plugin .
+          # Remove sourcemaps and node_modules (not needed in repo)
+          rm -f *.map
+          rm -rf node_modules package-lock.json
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add -A
+          git commit -m "sync: ${GITHUB_REF_NAME} from axme-code" || echo "No changes to commit"
+          git push
