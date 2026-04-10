@@ -34,6 +34,10 @@ export interface InitResult {
   cost: CostInfo;
   durationMs: number;
   errors: string[];
+  /** Number of LLM scanners that actually executed (max 4: oracle/decision/safety/deploy). 0 in deterministic-only fallback. Used for telemetry. */
+  scannersRun: number;
+  /** Number of LLM scanners that failed (rejected or returned an error). Used for telemetry. */
+  scannersFailed: number;
 }
 
 /**
@@ -61,6 +65,7 @@ export async function initProjectWithLLM(projectPath: string, opts?: {
         memories: { count: listMemories(projectPath).length, fromPresets: 0 },
         safety: { created: false, llm: true, summary: "already initialized" },
         config: false, cost: zeroCost(), durationMs: 0, errors: [],
+        scannersRun: 0, scannersFailed: 0,
       };
     }
   }
@@ -77,6 +82,7 @@ export async function initProjectWithLLM(projectPath: string, opts?: {
       memories: { count: 0, fromPresets: 0 },
       safety: { created: false, llm: false, summary: "setup already running" },
       config: false, cost: zeroCost(), durationMs: 0, errors: ["Setup already in progress"],
+      scannersRun: 0, scannersFailed: 0,
     };
   }
   atomicWrite(lockPath, new Date().toISOString());
@@ -172,8 +178,14 @@ export async function initProjectWithLLM(projectPath: string, opts?: {
 
   // Process results
   log(`  [${projectName}] Scanners complete, processing results...`);
+  // Telemetry counters: how many of the 4 scanners actually ran (non-skipped)
+  // and how many failed (rejected). Used by setup_complete telemetry payload.
+  let scannersRun = 0;
+  let scannersFailed = 0;
   for (const settled of scanners) {
     if (settled.status === "rejected") {
+      scannersFailed++;
+      scannersRun++;
       const err = settled.reason;
       const msg = err?.message ?? String(err);
       const stack = err?.stack ? `\n${err.stack.split("\n").slice(0, 3).join("\n")}` : "";
@@ -182,6 +194,7 @@ export async function initProjectWithLLM(projectPath: string, opts?: {
     }
     const val = settled.value;
     if ("skipped" in val) continue;
+    scannersRun++;
 
     if (val.type === "oracle" && val.result) {
       writeOracleFiles(projectPath, val.result.files);
@@ -263,6 +276,8 @@ export async function initProjectWithLLM(projectPath: string, opts?: {
     cost: totalCost,
     durationMs: Date.now() - startTime,
     errors,
+    scannersRun,
+    scannersFailed,
   };
 }
 
@@ -352,6 +367,8 @@ export async function initWorkspaceWithLLM(workspacePath: string, opts?: {
             cost: zeroCost(),
             durationMs: 0,
             errors: [`Init failed: ${settled.reason?.message ?? settled.reason}`],
+            scannersRun: 0,
+            scannersFailed: 4,
           });
         }
       }
@@ -420,5 +437,6 @@ export function initProjectDeterministic(projectPath: string, opts?: { presets?:
     memories: { count: listMemories(projectPath).length, fromPresets: presetsMemoryCount },
     safety: { created: true, llm: false, summary: "" },
     config: configCreated, cost: zeroCost(), durationMs: Date.now() - startTime, errors: [],
+    scannersRun: 0, scannersFailed: 0,
   };
 }

@@ -298,6 +298,8 @@ async function main() {
       let setupMethod: "llm" | "deterministic" = "deterministic";
       let setupPhaseFailed: string | null = null;
       let setupPresetsApplied = 0;
+      let setupScannersRun = 0;
+      let setupScannersFailed = 0;
       // Use the blocking variant so the event lands BEFORE process.exit() runs.
       // The fire-and-forget sendTelemetry uses setImmediate, which is killed
       // by process.exit() before the network request is even started.
@@ -308,6 +310,8 @@ async function main() {
             outcome: setupOutcome,
             duration_ms: Date.now() - setupStartMs,
             method: setupMethod,
+            scanners_run: setupScannersRun,
+            scanners_failed: setupScannersFailed,
             phase_failed: setupPhaseFailed,
             presets_applied: setupPresetsApplied,
             is_workspace: isWorkspace,
@@ -354,6 +358,9 @@ async function main() {
           const anyLlm = projectResults.some(r => r.oracle.llm) || workspaceResult.decisions.fromScan > 0;
           setupMethod = anyLlm ? "llm" : "deterministic";
           setupPresetsApplied = projectResults.reduce((s, r) => s + (r.decisions.fromPresets || 0), 0);
+          // Sum scanner counts across workspace + all projects
+          setupScannersRun = workspaceResult.scannersRun + projectResults.reduce((s, r) => s + r.scannersRun, 0);
+          setupScannersFailed = workspaceResult.scannersFailed + projectResults.reduce((s, r) => s + r.scannersFailed, 0);
         } else {
           const result = await initProjectWithLLM(projectPath, { onProgress: console.log, force: forceSetup });
           if (!result.created && result.durationMs === 0) {
@@ -370,6 +377,8 @@ async function main() {
           // Track telemetry: oracle.llm tells us whether LLM path was used
           setupMethod = result.oracle.llm ? "llm" : "deterministic";
           setupPresetsApplied = (result.decisions.fromPresets || 0);
+          setupScannersRun = result.scannersRun;
+          setupScannersFailed = result.scannersFailed;
         }
       } catch (err) {
         setupOutcome = "failed";

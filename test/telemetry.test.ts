@@ -437,4 +437,352 @@ describe("reportError", () => {
 
     await new Promise<void>((resolve) => server.close(() => resolve()));
   });
+
+  it("payload contains no raw error message or stack", async () => {
+    let received: any = null;
+    const server = createServer((req, res) => {
+      let body = "";
+      req.on("data", (chunk) => { body += chunk; });
+      req.on("end", () => {
+        try { received = JSON.parse(body); } catch { /* ignore */ }
+        res.statusCode = 200;
+        res.end('{"ok":true}');
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+    const port = (server.address() as any).port;
+    process.env.AXME_TELEMETRY_ENDPOINT = `http://127.0.0.1:${port}/v1/telemetry/events`;
+
+    reportError("hook", "network_error", false);
+    await new Promise((r) => setTimeout(r, 300));
+
+    assert.ok(received);
+    const event = received.events[0];
+    // Required fields only
+    assert.deepStrictEqual(
+      Object.keys(event).sort(),
+      ["arch", "category", "ci", "error_class", "event", "fatal", "mid", "os", "source", "ts", "version"].sort(),
+    );
+    // No stack or message field
+    assert.equal(event.message, undefined);
+    assert.equal(event.stack, undefined);
+
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+});
+
+// --- Lifecycle: install/startup/update with strict counts ---
+
+describe("lifecycle events strict counts", () => {
+  it("first run fires exactly 1 install + 1 startup, no update", async () => {
+    const events: any[] = [];
+    const server = createServer((req, res) => {
+      let body = "";
+      req.on("data", (c) => { body += c; });
+      req.on("end", () => {
+        try {
+          const p = JSON.parse(body);
+          if (Array.isArray(p.events)) events.push(...p.events);
+        } catch { /* ignore */ }
+        res.statusCode = 200;
+        res.end('{"ok":true}');
+      });
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+    const port = (server.address() as any).port;
+    process.env.AXME_TELEMETRY_ENDPOINT = `http://127.0.0.1:${port}/v1/telemetry/events`;
+
+    await sendStartupEvents();
+
+    const installs = events.filter(e => e.event === "install");
+    const startups = events.filter(e => e.event === "startup");
+    const updates = events.filter(e => e.event === "update");
+    assert.equal(installs.length, 1, "exactly 1 install on first run");
+    assert.equal(startups.length, 1, "exactly 1 startup on first run");
+    assert.equal(updates.length, 0, "no update on first run");
+
+    await new Promise<void>((r) => server.close(() => r()));
+  });
+
+  it("second run fires only 1 startup, no install", async () => {
+    const events: any[] = [];
+    const server = createServer((req, res) => {
+      let body = "";
+      req.on("data", (c) => { body += c; });
+      req.on("end", () => {
+        try {
+          const p = JSON.parse(body);
+          if (Array.isArray(p.events)) events.push(...p.events);
+        } catch { /* ignore */ }
+        res.statusCode = 200;
+        res.end('{"ok":true}');
+      });
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+    const port = (server.address() as any).port;
+    process.env.AXME_TELEMETRY_ENDPOINT = `http://127.0.0.1:${port}/v1/telemetry/events`;
+
+    // First run: create the mid file via getOrCreateMid
+    getOrCreateMid();
+    // Need to also write last-version to simulate previous run
+    writeLastVersion("0.0.0-dev"); // matches AXME_CODE_VERSION in test
+    _resetForTests();
+
+    await sendStartupEvents();
+
+    const installs = events.filter(e => e.event === "install");
+    const startups = events.filter(e => e.event === "startup");
+    const updates = events.filter(e => e.event === "update");
+    assert.equal(installs.length, 0, "no install on second run");
+    assert.equal(startups.length, 1, "exactly 1 startup on second run");
+    assert.equal(updates.length, 0, "no update if version unchanged");
+
+    await new Promise<void>((r) => server.close(() => r()));
+  });
+
+  it("update fires exactly 1 update with previous_version field when version changed", async () => {
+    const events: any[] = [];
+    const server = createServer((req, res) => {
+      let body = "";
+      req.on("data", (c) => { body += c; });
+      req.on("end", () => {
+        try {
+          const p = JSON.parse(body);
+          if (Array.isArray(p.events)) events.push(...p.events);
+        } catch { /* ignore */ }
+        res.statusCode = 200;
+        res.end('{"ok":true}');
+      });
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+    const port = (server.address() as any).port;
+    process.env.AXME_TELEMETRY_ENDPOINT = `http://127.0.0.1:${port}/v1/telemetry/events`;
+
+    // Simulate prior install with old version
+    getOrCreateMid();
+    writeLastVersion("0.2.5");
+    _resetForTests();
+
+    await sendStartupEvents();
+
+    const updates = events.filter(e => e.event === "update");
+    assert.equal(updates.length, 1, "exactly 1 update when version changed");
+    assert.equal(updates[0].previous_version, "0.2.5", "update has previous_version");
+
+    await new Promise<void>((r) => server.close(() => r()));
+  });
+
+  it("repeated sendStartupEvents calls in same process are no-op (processStartupSent guard)", async () => {
+    const events: any[] = [];
+    const server = createServer((req, res) => {
+      let body = "";
+      req.on("data", (c) => { body += c; });
+      req.on("end", () => {
+        try {
+          const p = JSON.parse(body);
+          if (Array.isArray(p.events)) events.push(...p.events);
+        } catch { /* ignore */ }
+        res.statusCode = 200;
+        res.end('{"ok":true}');
+      });
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+    const port = (server.address() as any).port;
+    process.env.AXME_TELEMETRY_ENDPOINT = `http://127.0.0.1:${port}/v1/telemetry/events`;
+
+    await sendStartupEvents();
+    await sendStartupEvents();
+    await sendStartupEvents();
+
+    const startups = events.filter(e => e.event === "startup");
+    assert.equal(startups.length, 1, "exactly 1 startup despite 3 calls");
+
+    await new Promise<void>((r) => server.close(() => r()));
+  });
+});
+
+// --- ci field in payloads ---
+
+describe("ci field detection in events", () => {
+  it("ci=true ends up in sent event when CI env is set", async () => {
+    process.env.CI = "true";
+    let received: any = null;
+    const server = createServer((req, res) => {
+      let body = "";
+      req.on("data", (c) => { body += c; });
+      req.on("end", () => {
+        try { received = JSON.parse(body); } catch { /* ignore */ }
+        res.statusCode = 200;
+        res.end('{"ok":true}');
+      });
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+    const port = (server.address() as any).port;
+    process.env.AXME_TELEMETRY_ENDPOINT = `http://127.0.0.1:${port}/v1/telemetry/events`;
+
+    sendTelemetry("startup");
+    await new Promise((r) => setTimeout(r, 200));
+
+    assert.ok(received, "request received");
+    assert.equal(received.events[0].ci, true, "ci=true in payload");
+
+    await new Promise<void>((r) => server.close(() => r()));
+  });
+
+  it("ci=false in payload by default (no CI env)", async () => {
+    let received: any = null;
+    const server = createServer((req, res) => {
+      let body = "";
+      req.on("data", (c) => { body += c; });
+      req.on("end", () => {
+        try { received = JSON.parse(body); } catch { /* ignore */ }
+        res.statusCode = 200;
+        res.end('{"ok":true}');
+      });
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+    const port = (server.address() as any).port;
+    process.env.AXME_TELEMETRY_ENDPOINT = `http://127.0.0.1:${port}/v1/telemetry/events`;
+
+    sendTelemetry("startup");
+    await new Promise((r) => setTimeout(r, 200));
+
+    assert.ok(received, "request received");
+    assert.equal(received.events[0].ci, false, "ci=false default");
+
+    await new Promise<void>((r) => server.close(() => r()));
+  });
+});
+
+// --- Phase 2 payload shapes ---
+
+describe("audit_complete payload shape", () => {
+  it("has all 10 spec fields when sent", async () => {
+    let received: any = null;
+    const server = createServer((req, res) => {
+      let body = "";
+      req.on("data", (c) => { body += c; });
+      req.on("end", () => {
+        try { received = JSON.parse(body); } catch { /* ignore */ }
+        res.statusCode = 200;
+        res.end('{"ok":true}');
+      });
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+    const port = (server.address() as any).port;
+    process.env.AXME_TELEMETRY_ENDPOINT = `http://127.0.0.1:${port}/v1/telemetry/events`;
+
+    sendTelemetry("audit_complete", {
+      outcome: "success",
+      duration_ms: 100000,
+      prompt_tokens: 50000,
+      cost_usd: 0.42,
+      chunks: 1,
+      memories_saved: 2,
+      decisions_saved: 1,
+      safety_saved: 0,
+      dropped_count: 0,
+      error_class: null,
+    });
+    await new Promise((r) => setTimeout(r, 200));
+
+    assert.ok(received);
+    const event = received.events[0];
+    // All 10 audit_complete fields per spec
+    for (const field of [
+      "outcome", "duration_ms", "prompt_tokens", "cost_usd", "chunks",
+      "memories_saved", "decisions_saved", "safety_saved", "dropped_count", "error_class",
+    ]) {
+      assert.ok(field in event, `audit_complete must contain ${field}`);
+    }
+    // Common fields
+    for (const field of ["event", "version", "source", "os", "arch", "ci", "mid", "ts"]) {
+      assert.ok(field in event, `audit_complete must contain common ${field}`);
+    }
+
+    await new Promise<void>((r) => server.close(() => r()));
+  });
+});
+
+describe("setup_complete payload shape", () => {
+  it("has all 9 spec fields when sent", async () => {
+    let received: any = null;
+    const server = createServer((req, res) => {
+      let body = "";
+      req.on("data", (c) => { body += c; });
+      req.on("end", () => {
+        try { received = JSON.parse(body); } catch { /* ignore */ }
+        res.statusCode = 200;
+        res.end('{"ok":true}');
+      });
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+    const port = (server.address() as any).port;
+    process.env.AXME_TELEMETRY_ENDPOINT = `http://127.0.0.1:${port}/v1/telemetry/events`;
+
+    sendTelemetry("setup_complete", {
+      outcome: "success",
+      duration_ms: 30000,
+      method: "llm",
+      scanners_run: 4,
+      scanners_failed: 0,
+      phase_failed: null,
+      presets_applied: 2,
+      is_workspace: false,
+      child_repos: 0,
+    });
+    await new Promise((r) => setTimeout(r, 200));
+
+    assert.ok(received);
+    const event = received.events[0];
+    // All 9 setup_complete fields per spec
+    for (const field of [
+      "outcome", "duration_ms", "method", "scanners_run", "scanners_failed",
+      "phase_failed", "presets_applied", "is_workspace", "child_repos",
+    ]) {
+      assert.ok(field in event, `setup_complete must contain ${field}`);
+    }
+
+    await new Promise<void>((r) => server.close(() => r()));
+  });
+});
+
+// --- Queue cap ---
+
+describe("offline queue cap", () => {
+  it("caps queue at 100 events, drops oldest when over cap", async () => {
+    process.env.AXME_TELEMETRY_ENDPOINT = "http://127.0.0.1:1/dead";
+    // Send 105 events, none will succeed (network closed)
+    for (let i = 0; i < 105; i++) {
+      sendTelemetry("startup", { test_seq: i });
+    }
+    await new Promise((r) => setTimeout(r, 1000));
+
+    const queuePath = _getQueueFilePath();
+    assert.equal(existsSync(queuePath), true, "queue file exists");
+    const lines = readFileSync(queuePath, "utf-8").trim().split("\n");
+    assert.ok(lines.length <= 100, `queue must be capped at 100, got ${lines.length}`);
+    // Oldest events dropped: first event in file should NOT be test_seq 0
+    if (lines.length === 100) {
+      const first = JSON.parse(lines[0]);
+      assert.ok(first.test_seq >= 5, `oldest 5 events dropped, first should have test_seq >= 5, got ${first.test_seq}`);
+    }
+  });
+});
+
+// --- classifyError extra coverage ---
+
+describe("classifyError extra slugs", () => {
+  it("classifies api_error", () => {
+    assert.equal(classifyError(new Error("API error: 500 internal")), "api_error");
+    assert.equal(classifyError(new Error("HTTP 503 Service Unavailable")), "api_error");
+  });
+
+  it("classifies disk_full", () => {
+    assert.equal(classifyError(new Error("ENOSPC: no space left on device")), "disk_full");
+  });
+
+  it("classifies permission_denied", () => {
+    assert.equal(classifyError(new Error("EACCES: permission denied")), "permission_denied");
+  });
 });

@@ -232,6 +232,35 @@ const server = new McpServer(
   { instructions: buildInstructions() },
 );
 
+// Wrap every tool handler with a try/catch that reports caught exceptions to
+// telemetry under the `mcp_tool` category. We monkey-patch server.tool() once
+// here instead of touching all 19 individual tool registrations below. The
+// MCP SDK still receives any thrown error and returns it to the client, so
+// no behavior changes — we only add an extra observability hook.
+//
+// Why fatal=true: an exception that bubbles out of a tool handler means the
+// tool call did not complete its intended work — the user-visible operation
+// has aborted. That matches our "fatal vs degraded" definition.
+const _origRegisterTool: any = server.tool.bind(server);
+(server as any).tool = function (...args: any[]): any {
+  // Last argument is always the handler function
+  const handler = args[args.length - 1];
+  if (typeof handler === "function") {
+    args[args.length - 1] = async (...handlerArgs: any[]): Promise<any> => {
+      try {
+        return await handler(...handlerArgs);
+      } catch (err) {
+        try {
+          const { reportError, classifyError } = await import("./telemetry.js");
+          reportError("mcp_tool", classifyError(err), true);
+        } catch { /* never throw from telemetry */ }
+        throw err;
+      }
+    };
+  }
+  return _origRegisterTool.apply(server, args);
+};
+
 // --- Helper: resolve paths with defaults from server state ---
 
 function pp(project_path?: string): string {
