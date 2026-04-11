@@ -105,4 +105,4 @@ This repo is auto-synced from the main [axme-code](https://github.com/AxmeAI/axm
 
 ---
 
-[Website](https://code.axme.ai) · [Main Repo](https://github.com/AxmeAI/axme-code) · [Issues](https://github.com/AxmeAI/axme-code/issues) · hello@axme.ai
+[Website](https://code.axme.ai) · [Main Repo](https://github.com/AxmeAI/axme-code) · [Issues](https://github.com/AxmeAI/axme-code/issues) · contact@axme.ai

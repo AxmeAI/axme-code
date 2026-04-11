@@ -948,7 +948,7 @@ server.tool(
       "> AXME Code is in alpha — your feedback shapes the product. If it saved you time today, consider:",
       "> - Star on GitHub: https://github.com/AxmeAI/axme-code",
       "> - Report issues or ideas: https://github.com/AxmeAI/axme-code/issues",
-      "> - Share feedback: hello@axme.ai",
+      "> - Share feedback: contact@axme.ai",
       "> - Support: support@axme.ai",
     ];
 
