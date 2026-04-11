@@ -338,7 +338,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ---
 
-[Website](https://code.axme.ai) · [Issues](https://github.com/AxmeAI/axme-code/issues) · [Architecture](docs/ARCHITECTURE.md) · hello@axme.ai
+[Website](https://code.axme.ai) · [Issues](https://github.com/AxmeAI/axme-code/issues) · [Architecture](docs/ARCHITECTURE.md) · contact@axme.ai
 
 ---
 

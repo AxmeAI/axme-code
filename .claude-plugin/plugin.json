@@ -4,7 +4,7 @@
   "description": "(Alpha) Persistent memory, architectural decisions, and safety guardrails for Claude Code. Your agent starts every session with full project context — stack, decisions, patterns, safety rules, and a handoff from the previous session.",
   "author": {
     "name": "AXME AI",
-    "email": "hello@axme.ai",
+    "email": "contact@axme.ai",
     "url": "https://github.com/AxmeAI"
   },
   "homepage": "https://code.axme.ai",

@@ -78,4 +78,4 @@ docs/                # Architecture docs and diagrams
 
 ## Questions?
 
-Open an issue or email hello@axme.ai.
+Open an issue or email contact@axme.ai.
