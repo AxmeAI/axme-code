@@ -1,0 +1,3 @@
+# LongMemEval dataset files (265MB+) — download with:
+#   wget https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/longmemeval_s_cleaned.json
+*.json
