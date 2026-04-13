@@ -173,6 +173,13 @@ AXME Code complements CLAUDE.md — it reads your existing CLAUDE.md during setu
 | ToolEmu safety (FPR) | **0.00%** | — | — | — | — | — |
 | LongMemEval E2E | **89.20%** | — | 84.23% / 94.87% | 71.20% | 49.00% | 85.40% |
 | LongMemEval R@5 | **97.80%** | 96.60% | — | — | — | — |
+| LongMemEval tokens/correct | **~10K** ✓ | — | ~105K–119K | ~70K | ~31K | ~29K |
+
+### Token efficiency
+
+![Token efficiency on LongMemEval](benchmarks/token-performance.svg)
+
+AXME uses **~10× fewer tokens per correct answer** than Mastra at competitive accuracy. The memory system runs only 2 LLM calls per question (reader + judge) — competitors run dozens (Observer per turn, Reflector periodically, graph construction, fact extraction).
 
 See [benchmarks/README.md](benchmarks/README.md) for full methodology, per-category breakdowns, footnotes, and reproduction instructions.
 

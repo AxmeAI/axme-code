@@ -26,10 +26,12 @@ Last updated: 2026-04-13.
 | ToolEmu safety (FPR) | **0.00%** | — | — | — | — | — |
 | LongMemEval E2E | **89.20%** | —¹ | 84.23% / 94.87%² | 71.20% | 49.00%³ | 85.40% |
 | LongMemEval R@5 | **97.80%** | 96.60% | — | — | — | — |
+| LongMemEval tokens/correct⁴ | **~10K** ✓ | — | ~105K–119K | ~70K | ~31K | ~29K |
 
 ¹ MemPalace does not publish E2E results — their runner measures R@5 retrieval only ([GitHub issue #29](https://github.com/MemPalace/mempalace/issues/29)).
 ² Mastra OM scores 84.23% on gpt-4o / 94.87% on gpt-5-mini.
 ³ Mem0's official benchmarks are on [LoCoMo](https://arxiv.org/abs/2504.19413) (66.88% overall), not LongMemEval. The 49.00% figure is from a third-party evaluation ([arxiv 2603.04814](https://arxiv.org/abs/2603.04814)).
+⁴ **Tokens per correct answer** = total LLM tokens / correct answers. AXME value is ✓ measured (500-question run). Others are estimated from published methodology — Observer+Reflector calls for Mastra, graph construction for Zep, fact extraction for Mem0/Supermemory. See [Token efficiency](#token-efficiency) section below.
 
 **Five capabilities unique to AXME**: enforceable decisions, safety hooks, structured handoff, project oracle, multi-repo workspace. No competitor offers any of these.
 
@@ -80,6 +82,28 @@ wget https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main
 ```
 
 **Source**: https://github.com/xiaowu0162/LongMemEval
+
+### Token efficiency
+
+![Token efficiency on LongMemEval](token-performance.svg)
+
+`tokens_per_correct = total_tokens / correct_answers` — measures how many tokens the memory system consumes per correct answer, independent of LLM provider pricing.
+
+| System | Model | tokens/Q | Accuracy | tokens/correct |
+|---|---|---|---|---|
+| **AXME Code** ✓ | Sonnet 4.6 | **~9K** | 89.20% | **~10K** |
+| Supermemory | gpt-4o | ~25K | 85.40% | ~29K |
+| Mem0 | gpt-4o | ~15K | 49.00% | ~31K |
+| Zep | gpt-4o | ~50K | 71.20% | ~70K |
+| Mastra OM | gpt-5-mini | ~100K | 94.87% | ~105K |
+| Mastra OM | gpt-4o | ~100K | 84.23% | ~119K |
+
+**AXME is ~10× more token-efficient than Mastra** at 89% accuracy. Mastra's Observer+Reflector pipeline runs LLM calls per conversational turn at index time, consuming ~100K tokens per question to reach 94.87%. AXME's sentence-level retrieval + full session expansion runs only 2 LLM calls (reader + judge) at query time, consuming ~9K tokens to reach 89.20%.
+
+Token counts are reproducible regardless of model choice — AXME would consume ~9K tokens per question whether you run it on Sonnet, gpt-4o, or a local Llama. Pricing changes over time; token architecture does not.
+
+**Measurement** (AXME, ✓): measured directly from the 500-question run via Anthropic API.
+**Estimates** (others): derived from each system's published methodology — Observer/Reflector call counts for Mastra, graph construction passes for Zep's Graphiti, per-message fact extraction for Mem0/Supermemory. See [`token-performance.py`](token-performance.py) for the calculation and assumptions.
 
 ---
 
