@@ -1,3 +1,4 @@
+%%{init: {'theme': 'dark', 'themeVariables': {'background': '#1a1a1a', 'primaryColor': '#2a2a2a', 'primaryBorderColor': '#555', 'primaryTextColor': '#e0e0e0', 'lineColor': '#888', 'secondaryColor': '#2a2a2a', 'tertiaryColor': '#1a1a1a', 'clusterBkg': '#222', 'clusterBorder': '#555'}}}%%
 graph LR
     subgraph CC["Claude Code"]
         A["Agent"]
@@ -31,11 +32,11 @@ graph LR
     AU -->|"catches missed\nitems after close"| D
     AU -->|"catches missed\nitems after close"| M
 
-    linkStyle default stroke:#666,stroke-width:2px
+    linkStyle default stroke:#aaa,stroke-width:2px
 
-    classDef agent fill:#d0f0d0,stroke:#4a4,stroke-width:2px,color:#000
-    classDef axme fill:#fff3e0,stroke:#e65100,stroke-width:2px,color:#000
-    classDef kb fill:#e0e8ff,stroke:#44c,stroke-width:1px,color:#000
+    classDef agent fill:#2d4a2d,stroke:#6b8,stroke-width:2px,color:#e0ffe0
+    classDef axme fill:#4a3820,stroke:#e89050,stroke-width:2px,color:#ffd0a0
+    classDef kb fill:#2a3555,stroke:#6080d0,stroke-width:1px,color:#d0d8ff
 
     class A agent
     class MCP,H,AU axme

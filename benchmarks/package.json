@@ -1,0 +1,27 @@
+{
+  "name": "axme-code-benchmarks",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Competitive benchmarks for AXME Code — LongMemEval, ToolEmu, feature matrix",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "tsx --test lib/*.test.ts",
+    "bench:toolemu": "tsx toolemu/run.ts",
+    "bench:longmemeval": "tsx longmemeval/run.ts",
+    "bench:all": "npm run bench:toolemu && npm run bench:longmemeval"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.104",
+    "@anthropic-ai/sdk": "^0.88.0",
+    "@huggingface/transformers": "^4.0.1",
+    "hnswlib-node": "^3.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0"
+  }
+}

@@ -153,6 +153,31 @@ AXME Code complements CLAUDE.md — it reads your existing CLAUDE.md during setu
 
 ---
 
+## Comparison
+
+| | AXME Code | MemPalace | Mastra | Zep | Mem0 | Supermemory |
+|---|---|---|---|---|---|---|
+| **Capabilities** | | | | | | |
+| Structured decisions w/ enforce levels | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Pre-execution safety hooks | ✅ | ❌ | ⚠️ | ❌ | ❌ | ❌ |
+| Structured session handoff | ✅ | ❌ | ❌ | ❌ | ⚠️ | ❌ |
+| Automatic knowledge extraction | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ |
+| Project oracle (codebase map) | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Multi-repo workspace | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Local-only storage | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ |
+| Semantic memory search | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Multi-client support | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Capabilities total** | **9/9** | 3/9 | 4/9 | 3/9 | 3/9 | 3/9 |
+| **Benchmarks** | | | | | | |
+| ToolEmu safety (accuracy) | **100.00%** | — | — | — | — | — |
+| ToolEmu safety (FPR) | **0.00%** | — | — | — | — | — |
+| LongMemEval E2E | **89.20%** | — | 84.23% / 94.87% | 71.20% | 49.00% | 85.40% |
+| LongMemEval R@5 | **97.80%** | 96.60% | — | — | — | — |
+
+See [benchmarks/README.md](benchmarks/README.md) for full methodology, per-category breakdowns, footnotes, and reproduction instructions.
+
+---
+
 ## How It Works
 
 ![AXME Code Architecture](docs/diagrams/axme-code-overview.png)
@@ -284,7 +309,8 @@ Additional presets available: `production-ready`, `team-collaboration`.
 
 ---
 
-## Telemetry
+<details>
+<summary><strong>Telemetry</strong></summary>
 
 axme-code sends anonymous usage telemetry to help us improve the product. We collect:
 
@@ -310,21 +336,7 @@ export DO_NOT_TRACK=1
 
 When disabled, no network requests are made and no machine ID is generated.
 
----
-
-## Releasing
-
-Single command, end-to-end:
-
-```bash
-./scripts/release.sh patch    # 0.2.7 → 0.2.8
-./scripts/release.sh minor    # 0.2.7 → 0.3.0
-./scripts/release.sh major    # 0.2.7 → 1.0.0
-```
-
-The script handles preflight (clean tree, on main, npm auth, lint+test+build), bumps the version in all files in lockstep, opens a release PR, waits for you to merge it, then tags + pushes + watches the chained workflow (build → release → npm publish → plugin sync) and verifies all artifacts landed. Use `--dry-run` to see what it would do without writing anything.
-
-Before running, add a `[X.Y.Z] - YYYY-MM-DD` section to `CHANGELOG.md` (the script aborts if it's missing — see [D-128](.axme-code/decisions/) for why this is enforced).
+</details>
 
 ---
 
@@ -339,7 +351,3 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 ---
 
 [Website](https://code.axme.ai) · [Issues](https://github.com/AxmeAI/axme-code/issues) · [Architecture](docs/ARCHITECTURE.md) · contact@axme.ai
-
----
-
-<sub>AXME Code is a Claude Code plugin (MCP server) for persistent memory, context engineering, and safety guardrails. Works with Claude Code CLI and VS Code extension. Alternative to manual CLAUDE.md management, claude-mem, and MemClaw. Open source, MIT licensed.</sub>

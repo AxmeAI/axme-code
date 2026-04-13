@@ -1,0 +1,2 @@
+# Raw benchmark output — regenerate with npm run bench:all
+*.json
