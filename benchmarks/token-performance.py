@@ -5,7 +5,9 @@ Generate token-efficiency scatter plot for LongMemEval systems.
 Metric: tokens per correct answer
   = (total_tokens / total_questions) / accuracy_rate
 
-Lower = more efficient memory system (less context consumed per correct answer).
+Axis convention: higher + more to the right = better.
+- X: accuracy (higher right = better)
+- Y: tokens/correct, log scale, INVERTED (fewer tokens = higher on plot = better)
 
 AXME tokens are MEASURED from our 500-question run.
 Competitor tokens are ESTIMATED from their published methodology
@@ -22,22 +24,12 @@ import matplotlib.pyplot as plt
 # ─── Data ─────────────────────────────────────────────────────────────
 
 # Format: (label, tokens_per_question, accuracy_pct, model, color, is_axme, measured)
-# tokens_per_question includes ALL LLM calls (indexing + query + judge)
 systems = [
-    # AXME: reader ~8.5K + judge ~0.6K = ~9.1K (measured via Anthropic billing)
     ("AXME Code",   9_100,   89.20, "Sonnet 4.6",  "#4ab8ff", True,  True),
-
-    # Mastra OM: Observer per turn (~90 calls × 550 tok) + Reflector (~15 × 2.5K) + R+J (~6K) ≈ 100K
     ("Mastra OM",   100_000, 94.87, "gpt-5-mini",  "#b080e8", False, False),
     ("Mastra OM",   100_000, 84.23, "gpt-4o",      "#b080e8", False, False),
-
-    # Supermemory: hybrid search + reranker LLM + R+J ≈ 25K
     ("Supermemory", 25_000,  85.40, "gpt-4o",      "#e880b0", False, False),
-
-    # Zep: Graphiti entity/fact extraction + graph construction + R+J ≈ 50K
     ("Zep",         50_000,  71.20, "gpt-4o",      "#e8a880", False, False),
-
-    # Mem0: per-message fact extraction + R+J ≈ 15K (3rd-party score 49% on LongMemEval)
     ("Mem0",        15_000,  49.00, "gpt-4o",      "#80e8a8", False, False),
 ]
 
@@ -61,7 +53,8 @@ for label, tpq, acc, model, color, is_axme, measured in systems:
     edge = "white" if is_axme else "#555"
     lw = 2.5 if is_axme else 1.0
 
-    ax.scatter(tpc, acc, s=size, c=color, edgecolors=edge, linewidths=lw,
+    # X = accuracy, Y = tokens/correct
+    ax.scatter(acc, tpc, s=size, c=color, edgecolors=edge, linewidths=lw,
                zorder=3, alpha=0.95)
 
     display_label = f"{label}\n({model})"
@@ -69,39 +62,48 @@ for label, tpq, acc, model, color, is_axme, measured in systems:
     fontsize = 11 if is_axme else 10
 
     if is_axme:
-        ax.annotate(display_label, (tpc, acc), xytext=(14, 8),
+        # AXME is top-left — label below the point
+        ax.annotate(display_label, (acc, tpc), xytext=(0, -32),
                     textcoords="offset points", color="white",
+                    ha="center",
                     fontsize=fontsize, fontweight=fontweight)
     else:
         offsets = {
-            ("Mastra OM", "gpt-5-mini"):  (14, 6),
-            ("Mastra OM", "gpt-4o"):      (14, -22),
+            ("Mastra OM", "gpt-5-mini"):  (-14, 6),    # upper-right area, label to left
+            ("Mastra OM", "gpt-4o"):      (-14, 6),
             ("Supermemory", "gpt-4o"):    (14, 6),
             ("Zep", "gpt-4o"):            (14, 6),
             ("Mem0", "gpt-4o"):           (14, 6),
         }
+        ha_map = {
+            ("Mastra OM", "gpt-5-mini"):  "right",
+            ("Mastra OM", "gpt-4o"):      "right",
+        }
         dx, dy = offsets.get((label, model), (14, 6))
-        ax.annotate(display_label, (tpc, acc), xytext=(dx, dy),
-                    textcoords="offset points", color="#ccc",
+        ha = ha_map.get((label, model), "left")
+        ax.annotate(display_label, (acc, tpc), xytext=(dx, dy),
+                    textcoords="offset points", color="#ccc", ha=ha,
                     fontsize=fontsize, fontweight=fontweight)
 
-ax.set_xlabel("Tokens per correct answer (log scale)", color="white",
+# Axis labels (note: Y is inverted, so the label reflects it)
+ax.set_xlabel("LongMemEval E2E accuracy (%)", color="white",
               fontsize=12, labelpad=10)
-ax.set_ylabel("LongMemEval E2E accuracy (%)", color="white",
+ax.set_ylabel("Tokens per correct answer (log scale, fewer = better)", color="white",
               fontsize=12, labelpad=10)
 
-ax.set_xscale("log")
-ax.set_xlim(7_000, 300_000)
-ax.set_ylim(40, 100)
+# Log-scale Y, INVERTED so that fewer tokens = higher on plot
+ax.set_yscale("log")
+ax.set_ylim(300_000, 7_000)  # inverted: high value first, low value second
+ax.set_xlim(40, 100)
 
-# Format x-axis ticks as "10K", "100K"
-def fmt_tokens(x, _):
-    if x >= 1_000_000:
-        return f"{x/1_000_000:.0f}M"
-    if x >= 1_000:
-        return f"{x/1_000:.0f}K"
-    return str(int(x))
-ax.xaxis.set_major_formatter(plt.FuncFormatter(fmt_tokens))
+# Y tick formatter
+def fmt_tokens(y, _):
+    if y >= 1_000_000:
+        return f"{y/1_000_000:.0f}M"
+    if y >= 1_000:
+        return f"{y/1_000:.0f}K"
+    return str(int(y))
+ax.yaxis.set_major_formatter(plt.FuncFormatter(fmt_tokens))
 
 for spine in ax.spines.values():
     spine.set_edgecolor("#444")
@@ -111,11 +113,19 @@ ax.tick_params(colors="#bbb", which="both")
 ax.set_title("Memory Systems: Token Efficiency on LongMemEval",
              color="white", fontsize=14, fontweight="bold", pad=20)
 
-# AXME callout
-ax.annotate("~10x fewer tokens than Mastra\nat 89% accuracy",
-            xy=(10_200, 89.20), xytext=(18_000, 96),
+# "Top-right = best" hint in the bottom-left corner
+ax.text(0.03, 0.05, "↗ Top-right = best (high accuracy, fewer tokens)",
+        transform=ax.transAxes, ha="left", va="bottom",
+        fontsize=9, color="#888", style="italic")
+
+# Callout next to the AXME point
+ax.annotate("AXME Code uses ~10× fewer tokens\nthan Mastra at 89% accuracy",
+            xy=(89.20, 10_200), xytext=(0.35, 0.80),
+            textcoords="axes fraction",
             fontsize=10, color="#4ab8ff", fontweight="bold",
-            arrowprops=dict(arrowstyle="->", color="#4ab8ff", lw=1.5))
+            ha="center",
+            arrowprops=dict(arrowstyle="->", color="#4ab8ff", lw=1.5,
+                            connectionstyle="arc3,rad=-0.2"))
 
 # Footer note
 fig.text(0.5, 0.025,
