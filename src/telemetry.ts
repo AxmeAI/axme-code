@@ -71,7 +71,15 @@ export interface TelemetryCommonFields {
 
 export type TelemetryEvent = TelemetryCommonFields & Record<string, unknown>;
 
-/** Bounded vocabulary of error classes. Add new entries only when seen in the wild. */
+/**
+ * Bounded vocabulary of error classes. Add new entries only when seen in the wild.
+ *
+ * Backend schema: `error_class varchar(40)` — keep slugs short.
+ *
+ * Order of evaluation inside `classifyError` matters: specific node error codes
+ * (ERR_*) must be matched BEFORE the generic JS error kinds, or they'll collapse
+ * into `type_error` / `reference_error` and lose signal.
+ */
 export type ErrorClass =
   | "prompt_too_long"
   | "api_error"
@@ -84,6 +92,15 @@ export type ErrorClass =
   | "permission_denied"
   | "disk_full"
   | "config_invalid"
+  // Node-specific error codes (ERR_*). Match before the generic JS kinds below.
+  | "node_invalid_arg"    // ERR_INVALID_ARG_TYPE / fileURLToPath(undefined) — B-006
+  | "module_not_found"    // ERR_MODULE_NOT_FOUND / Cannot find module
+  | "spawn_error"         // spawn ENOENT / subprocess failed to start
+  | "out_of_memory"       // ENOMEM / JavaScript heap out of memory
+  // Generic JS error kinds. Last-resort before "unknown" so a bare TypeError
+  // at least lands in a non-empty bucket for triage.
+  | "type_error"
+  | "reference_error"
   | "unknown";
 
 // --- Process state ---
@@ -399,19 +416,67 @@ export async function sendStartupEvents(): Promise<void> {
 /**
  * Map a caught exception to a bounded ErrorClass slug.
  * Never sends raw exception messages to telemetry — only the slug.
+ *
+ * Match order is load-bearing: specific node error codes must be checked
+ * before generic JS error kinds, and domain-specific substrings (transcript
+ * not found, prompt too long) before broad fallbacks (spawn_error).
  */
 export function classifyError(err: unknown): ErrorClass {
   const msg = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase();
+  // Include the Error subtype name so we can catch TypeError / ReferenceError
+  // even when the message text is too bland to identify on its own.
+  const name = err instanceof Error ? err.name.toLowerCase() : "";
+
+  // Domain-specific signals (our code or LLM provider) — check first.
   if (msg.includes("prompt is too long") || msg.includes("max tokens") || msg.includes("context length")) return "prompt_too_long";
   if (msg.includes("rate limit") || msg.includes("429")) return "api_rate_limit";
   if (msg.includes("authentication") || msg.includes("api key") || msg.includes("apikey") || msg.includes("authtoken")) return "oauth_missing";
   if (msg.includes("timeout") || msg.includes("timed out") || msg.includes("aborted")) return "timeout";
-  if (msg.includes("enoent") || msg.includes("transcript not found")) return "transcript_not_found";
+  if (msg.includes("transcript not found")) return "transcript_not_found";
+
+  // Node-specific error codes. Check these BEFORE the generic TypeError /
+  // ReferenceError / ENOENT fallbacks so ERR_INVALID_ARG_TYPE (B-006),
+  // ERR_MODULE_NOT_FOUND, and spawn ENOENT don't collapse into the generic
+  // bucket and lose their triage signal.
+  if (msg.includes("err_invalid_arg_type") || msg.includes("fileurltopath") ||
+      (msg.includes("argument must be of type") && msg.includes("received undefined"))) {
+    return "node_invalid_arg";
+  }
+  if (msg.includes("err_module_not_found") || msg.includes("cannot find module") ||
+      msg.includes("cannot find package")) {
+    return "module_not_found";
+  }
+  if (msg.includes("spawn enoent") || msg.includes("spawn eacces") ||
+      msg.includes("child_process") && msg.includes("enoent")) {
+    return "spawn_error";
+  }
+  if (msg.includes("enomem") || msg.includes("heap out of memory") ||
+      msg.includes("allocation failed") || msg.includes("out of memory")) {
+    return "out_of_memory";
+  }
+
+  // Filesystem / OS errors. ENOENT here (after transcript_not_found / spawn
+  // ENOENT) is a generic missing-file hit.
+  if (msg.includes("enoent")) return "transcript_not_found";
   if (msg.includes("eacces") || msg.includes("permission denied")) return "permission_denied";
   if (msg.includes("enospc") || msg.includes("no space")) return "disk_full";
-  if (msg.includes("network") || msg.includes("econnrefused") || msg.includes("fetch failed") || msg.includes("dns")) return "network_error";
+
+  // Network.
+  if (msg.includes("network") || msg.includes("econnrefused") || msg.includes("econnreset") ||
+      msg.includes("fetch failed") || msg.includes("dns")) return "network_error";
+
+  // Parsing.
   if (msg.includes("unexpected token") || msg.includes("invalid json") || msg.includes("parse")) return "parse_error";
+
+  // Remote API. Keep after the specific 429 (rate_limit) check above.
   if (msg.includes("api error") || msg.includes("500") || msg.includes("503")) return "api_error";
+
+  // Generic JS error kinds. Last resort before "unknown" so a bare TypeError
+  // at least lands in a non-empty bucket and we can distinguish bundler bugs
+  // (ReferenceError is almost always a missing import) from shape mismatches.
+  if (name === "referenceerror") return "reference_error";
+  if (name === "typeerror") return "type_error";
+
   return "unknown";
 }
 

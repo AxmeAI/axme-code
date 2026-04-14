@@ -817,6 +817,13 @@ export async function runSessionCleanup(
     try {
       const { sendTelemetryBlocking } = await import("./telemetry.js");
       const outcome = result.auditRan ? "success" : "failed";
+      // When the audit failed, also stamp the category + fatal fields so the
+      // event lands in the (category, error_class) index on the backend. Audit
+      // failures are non-fatal: the session still closes normally, user work
+      // continues — only the background extraction is lost until next attempt.
+      // Without these fields, failed audits collapse into the NULL bucket on
+      // the admin dashboard and make triage useless (B-007).
+      const isFailed = outcome === "failed";
       await sendTelemetryBlocking("audit_complete", {
         outcome,
         duration_ms: auditStartMs > 0 ? Date.now() - auditStartMs : 0,
@@ -828,6 +835,7 @@ export async function runSessionCleanup(
         safety_saved: result.safetyRules,
         dropped_count: auditDroppedCount,
         error_class: auditErrorClass,
+        ...(isFailed ? { category: "audit" as const, fatal: false } : {}),
       });
     } catch { /* never throw from telemetry */ }
   }
