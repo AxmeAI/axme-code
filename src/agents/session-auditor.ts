@@ -21,6 +21,7 @@ import { basename, relative } from "node:path";
 import type { Memory, Decision, SessionHandoff, WorkspaceInfo } from "../types.js";
 import { DEFAULT_AUDITOR_MODEL } from "../types.js";
 import { extractCostFromResult, zeroCost, type CostInfo } from "../utils/cost-extractor.js";
+import { findClaudePath } from "../utils/agent-options.js";
 import { toMemorySlug } from "../storage/memory.js";
 import { toSlug, listDecisions } from "../storage/decisions.js";
 import { listMemories } from "../storage/memory.js";
@@ -624,12 +625,14 @@ async function runSingleAuditCall(opts: {
 }> {
   const sdk = await import("@anthropic-ai/claude-agent-sdk");
 
+  const claudePath = findClaudePath();
   const queryOpts = {
     cwd: opts.sessionOrigin,
     model: opts.model,
     systemPrompt: AUDIT_SYSTEM_PROMPT,
     settingSources: [],
     mcpServers: {},
+    ...(claudePath ? { pathToClaudeCodeExecutable: claudePath } : {}),
     permissionMode: "bypassPermissions" as const,
     allowDangerouslySkipPermissions: true,
     allowedTools: ["Read", "Grep", "Glob"],
@@ -883,12 +886,14 @@ JSON SCHEMA:
 ANALYSIS TO FORMAT:
 ${freeTextAnalysis}`;
 
+  const claudePath = findClaudePath();
   const queryOpts = {
     cwd: sessionOrigin,
     model,
     systemPrompt: "You are a JSON formatting assistant. Output only a ```json code fence with the structured data. No other text.",
     settingSources: [] as any[],
     mcpServers: {},
+    ...(claudePath ? { pathToClaudeCodeExecutable: claudePath } : {}),
     permissionMode: "bypassPermissions" as const,
     allowDangerouslySkipPermissions: true,
     allowedTools: [] as string[],

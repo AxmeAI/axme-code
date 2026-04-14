@@ -12,6 +12,7 @@
 import type { Memory } from "../types.js";
 import { extractCostFromResult, zeroCost, type CostInfo } from "../utils/cost-extractor.js";
 import { toMemorySlug } from "../storage/memory.js";
+import { findClaudePath } from "../utils/agent-options.js";
 
 export interface MemoryExtractionResult {
   memories: Memory[];
@@ -68,9 +69,11 @@ export async function runMemoryExtraction(opts: {
   const startTime = Date.now();
   const model = opts.model ?? "claude-haiku-4-5";
 
+  const claudePath = findClaudePath();
   const queryOpts = {
     cwd: opts.projectPath,
     model,
+    ...(claudePath ? { pathToClaudeCodeExecutable: claudePath } : {}),
     permissionMode: "bypassPermissions" as const,
     allowDangerouslySkipPermissions: true,
     allowedTools: [] as string[],

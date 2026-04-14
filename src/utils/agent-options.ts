@@ -6,9 +6,16 @@ import { execSync } from "node:child_process";
 
 type Options = import("@anthropic-ai/claude-agent-sdk").Options;
 
-/** Find claude binary path. Cached after first lookup. */
+/**
+ * Find claude binary path. Cached after first lookup.
+ *
+ * Exported because the SDK resolves its own path via `import.meta.url`, which
+ * returns undefined inside the bundled CJS build and crashes with
+ * `fileURLToPath(undefined)` (B-006 / D-121). Every direct `sdk.query()` call
+ * site must set `pathToClaudeCodeExecutable` to the result of this function.
+ */
 let _claudePath: string | undefined;
-function findClaudePath(): string | undefined {
+export function findClaudePath(): string | undefined {
   if (_claudePath !== undefined) return _claudePath || undefined;
   try {
     _claudePath = execSync("which claude", { encoding: "utf-8" }).trim();
