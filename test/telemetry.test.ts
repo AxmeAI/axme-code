@@ -220,6 +220,71 @@ describe("classifyError", () => {
     assert.equal(classifyError(new Error("Invalid JSON output")), "parse_error");
   });
 
+  it("classifies node ERR_INVALID_ARG_TYPE / fileURLToPath(undefined) — B-006", () => {
+    // Actual B-006 message from audit-worker-logs:
+    const b006 = new TypeError(
+      'The "path" argument must be of type string or an instance of URL. Received undefined',
+    );
+    (b006 as any).code = "ERR_INVALID_ARG_TYPE";
+    assert.equal(classifyError(b006), "node_invalid_arg");
+    // ERR_ code in the message also matches:
+    assert.equal(
+      classifyError(new Error("ERR_INVALID_ARG_TYPE: path must be string")),
+      "node_invalid_arg",
+    );
+    // fileURLToPath specifically:
+    assert.equal(
+      classifyError(new Error("fileURLToPath received undefined")),
+      "node_invalid_arg",
+    );
+  });
+
+  it("classifies module-not-found errors", () => {
+    assert.equal(
+      classifyError(new Error("Cannot find module '@anthropic-ai/claude-agent-sdk'")),
+      "module_not_found",
+    );
+    assert.equal(
+      classifyError(new Error("ERR_MODULE_NOT_FOUND")),
+      "module_not_found",
+    );
+    assert.equal(
+      classifyError(new Error("Cannot find package 'foo' imported from bar")),
+      "module_not_found",
+    );
+  });
+
+  it("classifies subprocess spawn errors", () => {
+    assert.equal(classifyError(new Error("spawn ENOENT")), "spawn_error");
+    assert.equal(classifyError(new Error("spawn EACCES")), "spawn_error");
+  });
+
+  it("classifies out-of-memory errors", () => {
+    assert.equal(
+      classifyError(new Error("JavaScript heap out of memory")),
+      "out_of_memory",
+    );
+    assert.equal(classifyError(new Error("ENOMEM")), "out_of_memory");
+    assert.equal(classifyError(new Error("allocation failed")), "out_of_memory");
+  });
+
+  it("classifies bare TypeError / ReferenceError by name (last-resort fallback)", () => {
+    // A TypeError whose message matches no specific rule should still land in
+    // type_error (not unknown), so a bundler shape bug is distinguishable from
+    // a fully opaque error on the dashboard.
+    assert.equal(classifyError(new TypeError("x is not a function")), "type_error");
+    assert.equal(classifyError(new ReferenceError("foo is not defined")), "reference_error");
+  });
+
+  it("ERR_INVALID_ARG_TYPE beats the generic type_error fallback (order matters)", () => {
+    const err = new TypeError(
+      'The "path" argument must be of type string or an instance of URL. Received undefined',
+    );
+    // Must NOT degrade to type_error — the specific Node code gives us B-006
+    // triage signal that bare type_error does not.
+    assert.equal(classifyError(err), "node_invalid_arg");
+  });
+
   it("returns 'unknown' for unrecognized errors", () => {
     assert.equal(classifyError(new Error("something completely random")), "unknown");
     assert.equal(classifyError("string error"), "unknown");
