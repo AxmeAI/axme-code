@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.2.8] - 2026-04-14
+
+### Fixed
+- **Audit worker crash on every session close** (B-006): bundled CJS build called the Claude Agent SDK without an explicit `pathToClaudeCodeExecutable`. The SDK resolves its own binary via `import.meta.url`, which is `undefined` in CJS, so it crashed inside `fileURLToPath()` with `TypeError [ERR_INVALID_ARG_TYPE]`. The D-121 fix had landed in `buildAgentQueryOptions()` but `runSingleAuditCall`, `formatAuditResult` and `runMemoryExtraction` built their SDK options by hand and bypassed the helper. Result on v0.2.7: 14+ consecutive `audit_complete=failed` events in telemetry, auto-extraction effectively dead. Fix exports `findClaudePath()` from `src/utils/agent-options.ts` and sets `pathToClaudeCodeExecutable` on all three direct call sites. Smoke-tested on a real failed session: `auditStatus` flipped from `failed` to `done`, full LLM round-trip, no crash. (#105)
+- **`#!axme` safety gate falsely blocked commits when the marker was placed inside `-m "..."` quotes** (B-008): regex `\bpr=(\S+)` and `\brepo=(\S+)` greedily captured the closing quote of the surrounding commit message, producing malformed `gh pr view --repo "OWNER/REPO\""` calls that `gh` rejected. The hook then fail-closed with `Cannot verify PR #N status (gh CLI error)` on every retry. Fix tightens the value capture to forbid quote/backtick characters, defensively strips trailing `)`, `]`, `,`, `;`, `.`, and updates the gate instruction to remind agents that the marker belongs **after** the closing quote. (#107)
+
+### Added
+- **Extended `classifyError` vocabulary** (B-007): added bounded slugs `node_invalid_arg`, `module_not_found`, `spawn_error`, `out_of_memory`, plus generic `type_error` / `reference_error` fallbacks via `err.name`. Match order is load-bearing: specific Node `ERR_*` codes are checked before generic JS error kinds so B-006-class failures keep their triage signal instead of collapsing into `unknown`. Network catches now also include `econnreset`. (#106)
+- **`audit_complete` failures now stamp `category: "audit"` and `fatal: false`** so they land in the backend's `(category, error_class)` composite index. Previously every failed audit had `category=NULL`, making the admin "Top error classes" panel useless for triage — all 16 prod failures over the last 30 days collapsed into a single opaque bucket. (#106)
+
+### Tests
+- 14 new unit tests covering the three fixes (5 in `test/axme-gate.test.ts` for the regex regression, 6 in `test/telemetry.test.ts` for the new error classes, 3 in `test/agent-sdk-paths.test.ts` static guard against any future `sdk.query()` site that forgets `pathToClaudeCodeExecutable`).
+- Total test count: 475 → 489.
+
 ## [0.2.7] - 2026-04-10
 
 ### Added
