@@ -81,6 +81,40 @@ describe("parseAxmeGate", () => {
     const result = parseAxmeGate(cmd);
     assert.deepEqual(result, { pr: "42", repo: "AxmeAI/test" });
   });
+
+  // --- B-008 regression: greedy \S+ used to swallow the closing quote ---
+
+  it("strips trailing closing quote when marker is inside -m \"...\" string", () => {
+    // This is the B-008 reproducer: marker placed INSIDE the quoted message.
+    const cmd = 'git commit -m "fix: blah #!axme pr=6 repo=AxmeAI/axme-blog"';
+    const result = parseAxmeGate(cmd);
+    assert.deepEqual(result, { pr: "6", repo: "AxmeAI/axme-blog" });
+  });
+
+  it("strips trailing single quote", () => {
+    const cmd = "git commit -m 'fix #!axme pr=6 repo=AxmeAI/axme-blog'";
+    const result = parseAxmeGate(cmd);
+    assert.deepEqual(result, { pr: "6", repo: "AxmeAI/axme-blog" });
+  });
+
+  it("strips trailing backtick", () => {
+    const cmd = "git commit -m `fix #!axme pr=6 repo=AxmeAI/axme-blog`";
+    const result = parseAxmeGate(cmd);
+    assert.deepEqual(result, { pr: "6", repo: "AxmeAI/axme-blog" });
+  });
+
+  it("strips trailing punctuation like ) and ,", () => {
+    const cmd1 = 'git commit -m "$(echo fix #!axme pr=6 repo=AxmeAI/axme-blog)"';
+    assert.deepEqual(parseAxmeGate(cmd1), { pr: "6", repo: "AxmeAI/axme-blog" });
+    const cmd2 = 'git commit -m "fix #!axme pr=6 repo=AxmeAI/axme-blog,"';
+    assert.deepEqual(parseAxmeGate(cmd2), { pr: "6", repo: "AxmeAI/axme-blog" });
+  });
+
+  it("returns null when stripping leaves an empty value", () => {
+    // pr=" — value is just a quote, after strip nothing left.
+    const cmd = 'git commit -m "x #!axme pr=" repo=AxmeAI/x"';
+    assert.equal(parseAxmeGate(cmd), null);
+  });
 });
 
 // ===== checkGit - gate enforcement =====
