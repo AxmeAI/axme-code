@@ -329,7 +329,22 @@ export function checkBash(rules: SafetyRules, command: string): SafetyVerdict {
  * sees the full command before execution and parses the metadata.
  *
  * Returns null if no #!axme marker found.
+ *
+ * Value capture: `[^\s"'` + "`" + `]+` rather than `\S+`, so a stray
+ * closing quote/backtick from a surrounding `-m "..."` string doesn't
+ * get glued onto the captured value (B-008). Trailing punctuation
+ * (`)`, `,`, `;`, `.`) is stripped defensively for the same reason —
+ * common when the marker ends up inside a HEREDOC or after a `$(...)`.
  */
+const GATE_VALUE = /[^\s"'`]+/.source;
+const PR_RE = new RegExp(`\\bpr=(${GATE_VALUE})`);
+const REPO_RE = new RegExp(`\\brepo=(${GATE_VALUE})`);
+const TRAILING_PUNCT_RE = /[)\],;.]+$/;
+
+function cleanGateValue(raw: string): string {
+  return raw.replace(TRAILING_PUNCT_RE, "");
+}
+
 export function parseAxmeGate(command: string): { pr: string; repo: string } | null {
   // Use the LAST occurrence of #!axme (the suffix), not one inside a commit message.
   const lastIdx = command.lastIndexOf("#!axme");
@@ -338,16 +353,21 @@ export function parseAxmeGate(command: string): { pr: string; repo: string } | n
   const match = suffix.match(/^#!axme\s+(.*)/);
   if (!match) return null;
   const pairs = match[1].trim();
-  const prMatch = pairs.match(/\bpr=(\S+)/);
-  const repoMatch = pairs.match(/\brepo=(\S+)/);
+  const prMatch = pairs.match(PR_RE);
+  const repoMatch = pairs.match(REPO_RE);
   if (!prMatch || !repoMatch) return null;
-  return { pr: prMatch[1], repo: repoMatch[1] };
+  const pr = cleanGateValue(prMatch[1]);
+  const repo = cleanGateValue(repoMatch[1]);
+  if (!pr || !repo) return null;
+  return { pr, repo };
 }
 
 const AXME_GATE_INSTRUCTION =
   'BLOCKED: git commit/push requires #!axme safety metadata. ' +
   'Retry with: `<your command> #!axme pr=<PR_NUMBER|none> repo=<OWNER/REPO>` ' +
-  '(pr=none if no PR created yet).';
+  '(pr=none if no PR created yet). ' +
+  'Place the marker AFTER the closing `"` of any `-m "..."` argument, ' +
+  'not inside it — otherwise the closing quote gets parsed as part of the repo name.';
 
 /**
  * Check if a PR is merged via gh CLI. Returns true if merged, false otherwise.
