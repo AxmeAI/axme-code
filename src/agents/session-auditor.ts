@@ -21,7 +21,7 @@ import { basename, relative } from "node:path";
 import type { Memory, Decision, SessionHandoff, WorkspaceInfo } from "../types.js";
 import { DEFAULT_AUDITOR_MODEL } from "../types.js";
 import { extractCostFromResult, zeroCost, type CostInfo } from "../utils/cost-extractor.js";
-import { findClaudePath } from "../utils/agent-options.js";
+import { buildAgentEnv, findClaudePath } from "../utils/agent-options.js";
 import { toMemorySlug } from "../storage/memory.js";
 import { toSlug, listDecisions } from "../storage/decisions.js";
 import { listMemories } from "../storage/memory.js";
@@ -647,7 +647,7 @@ async function runSingleAuditCall(opts: {
     // auto-loading the project's .claude/settings.json, but users or CI may
     // register hooks via environment or other means, so the belt-and-braces
     // env check in every hook handler is what actually stops the recursion.
-    env: { ...process.env, AXME_SKIP_HOOKS: "1", AXME_TELEMETRY_DISABLED: "1" },
+    env: buildAgentEnv(),
   };
 
   const isMultiChunk = opts.totalChunks > 1;
@@ -901,7 +901,7 @@ ${freeTextAnalysis}`;
       "Read", "Grep", "Glob", "Write", "Edit", "NotebookEdit", "Agent",
       "Skill", "TodoWrite", "WebFetch", "WebSearch", "Bash", "ToolSearch",
     ],
-    env: { ...process.env, AXME_SKIP_HOOKS: "1", AXME_TELEMETRY_DISABLED: "1" },
+    env: buildAgentEnv(),
   };
 
   const q = sdk.query({ prompt: formatPrompt, options: queryOpts });

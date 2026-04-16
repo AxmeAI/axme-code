@@ -3,6 +3,7 @@
  */
 
 import { execSync } from "node:child_process";
+import { resolveAuthMode } from "./auth-config.js";
 
 type Options = import("@anthropic-ai/claude-agent-sdk").Options;
 
@@ -54,6 +55,35 @@ const ROLE_TOOLS: Record<AgentRole, { allowed: string[]; disallowed: string[] }>
   },
 };
 
+/**
+ * Build the env passed to every Claude Code subprocess we spawn for LLM work.
+ *
+ * Two things happen here:
+ *   1. `AXME_TELEMETRY_DISABLED` and `AXME_SKIP_HOOKS` are set to suppress
+ *      recursive startup events and ghost AXME sessions when the sub-claude
+ *      inadvertently launches axme-code as its own MCP server.
+ *   2. If the user has selected `subscription` as the auth mode (either via
+ *      `axme-code auth` / `axme-code setup`, or by heuristic when only the
+ *      subscription is detected), we delete `ANTHROPIC_API_KEY` before
+ *      handing env to the subprocess. Claude Code checks the env var before
+ *      its OAuth credentials, so leaving an empty-balance key in env would
+ *      surface as "Credit balance is too low" or 401 auth errors even when
+ *      the user has an active subscription. Delete, not empty string: Claude
+ *      Code treats an empty-string value as "set" and still prefers it over
+ *      OAuth.
+ */
+export function buildAgentEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    AXME_TELEMETRY_DISABLED: "1",
+    AXME_SKIP_HOOKS: "1",
+  };
+  if (resolveAuthMode() === "subscription") {
+    delete env.ANTHROPIC_API_KEY;
+  }
+  return env;
+}
+
 export function buildAgentQueryOptions(base: {
   cwd: string;
   model: string;
@@ -78,11 +108,6 @@ export function buildAgentQueryOptions(base: {
     allowedTools: tools.allowed,
     disallowedTools: tools.disallowed,
     includePartialMessages: true,
-    // Disable telemetry in spawned subprocesses. Sub-claude sessions started
-    // by scanners/auditors may pick up the parent's .mcp.json and re-launch
-    // axme-code as an MCP server. Each re-launch would otherwise fire its
-    // own startup event, inflating DAU and skewing scanner cost metrics.
-    // The parent process owns the lifecycle event for this user action.
-    env: { ...process.env, AXME_TELEMETRY_DISABLED: "1", AXME_SKIP_HOOKS: "1" },
+    env: buildAgentEnv(),
   };
 }

@@ -370,3 +370,12 @@ export const DEFAULT_AGENT_PERMISSIONS: AgentPermissions = {
 };
 
 export type E2EMode = "after-task" | "after-stage" | "manual";
+
+// --- Auth ---
+
+export type AuthMode = "subscription" | "api_key";
+
+export interface AuthConfig {
+  mode: AuthMode;
+  chosenAt: string;
+}
