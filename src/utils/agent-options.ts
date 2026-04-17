@@ -55,8 +55,17 @@ export function findClaudePath(): string | undefined {
   try {
     const lookup = process.platform === "win32" ? "where.exe claude" : "which claude";
     const p = execSync(lookup, { encoding: "utf-8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] }).trim();
-    // `where` may return multiple lines (one per match); take the first.
-    const first = p.split(/\r?\n/)[0].trim();
+    const lines = p.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+    // On Windows, `where.exe claude` returns every matching entry including
+    // the bare-name shebang file that npm ships for Unix compatibility
+    // (e.g. C:\node\claude with no extension). cmd.exe / the Agent SDK
+    // cannot execute such files — they need .cmd/.exe/.bat/.ps1. Pick the
+    // first Windows-executable from the list; fall back to the first entry
+    // only if nothing else matches (unlikely but keeps behaviour defined).
+    const preferred = process.platform === "win32"
+      ? lines.find((r) => /\.(cmd|exe|bat|ps1)$/i.test(r))
+      : undefined;
+    const first = preferred ?? lines[0];
     if (first && existsSync(first)) {
       _claudePath = first;
       return _claudePath;
