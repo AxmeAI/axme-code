@@ -84,7 +84,9 @@ Decisions enforce verification requirements: agent must run tests and show proof
 curl -fsSL https://raw.githubusercontent.com/AxmeAI/axme-code/main/install.sh | bash
 ```
 
-Installs to `~/.local/bin/axme-code`. Supports Linux and macOS (x64 and ARM64). Native Windows is not yet supported.
+Installs to `~/.local/bin/axme-code`. Supports Linux and macOS (x64 and ARM64).
+
+**Windows via WSL2** is supported. Install a WSL2 distro (`wsl --install -d Ubuntu-22.04`), then install both Claude Code and axme-code **inside** your WSL distro — not on the Windows host. Native Windows is not yet supported.
 
 ### Setup
 
