@@ -110,6 +110,25 @@ export function _resetFindClaudePath(): void {
   _claudePath = undefined;
 }
 
+/**
+ * Value to pass as the SDK's `pathToClaudeCodeExecutable` option.
+ *
+ * On POSIX this is the same as findClaudePath() — the SDK needs the concrete
+ * path because its own `require.resolve("./cli.js")` fallback can hit
+ * `fileURLToPath(undefined)` inside CJS bundles (B-006 / D-121).
+ *
+ * On Windows we return undefined, deliberately. The SDK's fallback in its own
+ * bundled cli.js path works correctly there; meanwhile passing our PATH-
+ * resolved `claude.cmd` triggers `spawn EINVAL` on every call because Node's
+ * child_process.spawn refuses .cmd/.bat without `shell: true` since CVE-
+ * 2024-27980, and the SDK does not set shell:true. Every site that constructs
+ * queryOpts and calls `sdk.query()` MUST use this helper, not findClaudePath
+ * directly, otherwise scanners/auditor/extractor all break on Windows.
+ */
+export function claudePathForSdk(): string | undefined {
+  return process.platform === "win32" ? undefined : findClaudePath();
+}
+
 export type AgentRole = "scanner" | "tester" | "reviewer" | "engineer" | "architect" | "auditor";
 
 const ROLE_TOOLS: Record<AgentRole, { allowed: string[]; disallowed: string[] }> = {
@@ -176,7 +195,8 @@ export function buildAgentQueryOptions(base: {
 }, role: AgentRole): Options {
   const tools = ROLE_TOOLS[role];
 
-  const claudePath = findClaudePath();
+  // See claudePathForSdk() docstring for why this isn't just findClaudePath().
+  const claudePath = claudePathForSdk();
 
   return {
     cwd: base.cwd,

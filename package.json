@@ -18,7 +18,7 @@
     "node": ">=20"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.84",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.112",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "js-yaml": "^4.1.0"
   },
@@ -34,8 +34,19 @@
     "url": "https://github.com/AxmeAI/axme-code.git"
   },
   "license": "MIT",
-  "keywords": ["mcp", "claude-code", "ai-agent", "developer-tools"],
-  "files": ["dist", "templates", ".claude-plugin", "README.md", "LICENSE"],
+  "keywords": [
+    "mcp",
+    "claude-code",
+    "ai-agent",
+    "developer-tools"
+  ],
+  "files": [
+    "dist",
+    "templates",
+    ".claude-plugin",
+    "README.md",
+    "LICENSE"
+  ],
   "overrides": {
     "@anthropic-ai/sdk": ">=0.81.0"
   }
