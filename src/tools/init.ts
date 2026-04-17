@@ -5,7 +5,7 @@
  * Workspace init runs repos with concurrency limit.
  */
 
-import { join } from "node:path";
+import { join, basename } from "node:path";
 import { existsSync } from "node:fs";
 import { ensureDir, pathExists } from "../storage/engine.js";
 import { writeOracleFiles, initOracleDeterministic, oracleExists } from "../storage/oracle.js";
@@ -142,7 +142,7 @@ export async function initProjectWithLLM(projectPath: string, opts?: {
 
   // --- LLM scanners in PARALLEL ---
   const log = opts?.onProgress ?? (() => {});
-  const projectName = projectPath.split("/").pop();
+  const projectName = basename(projectPath);
 
   let oracleLlm = false;
   let oracleFiles = 0;
@@ -319,7 +319,7 @@ export async function initWorkspaceWithLLM(workspacePath: string, opts?: {
     const ws = detectWorkspace(workspacePath);
     if (ws.type !== "single") {
       const wsYaml = yaml.dump({
-        name: ws.root.split("/").pop(),
+        name: basename(ws.root),
         type: ws.type,
         manifest: ws.manifestPath,
         projects: ws.projects,
@@ -361,7 +361,7 @@ export async function initWorkspaceWithLLM(workspacePath: string, opts?: {
         completed++;
         if (settled.status === "fulfilled") {
           const r = settled.value;
-          const name = r.projectPath.split("/").pop();
+          const name = basename(r.projectPath);
           if (r.durationMs === 0) {
             log(`  [${completed}/${gitRepos.length}] ${name}: skipped (already initialized)`);
           } else {

@@ -7,7 +7,7 @@
  */
 
 import { readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, resolve, basename } from "node:path";
 import { atomicWrite, ensureDir, pathExists } from "./engine.js";
 import { logDecisionSaved, logDecisionSuperseded } from "./worklog.js";
 import type { Decision } from "../types.js";
@@ -218,7 +218,7 @@ export function saveScopedDecisions(
   decisions: Array<Omit<Decision, "id">>, projectPath: string, workspacePath?: string,
 ): { saved: number; crossProject: number } {
   let saved = 0, crossProject = 0;
-  const projectName = projectPath.split("/").pop() ?? "";
+  const projectName = basename(projectPath);
 
   for (const d of decisions) {
     const scope = d.scope;
@@ -263,7 +263,7 @@ export function listScopedDecisions(projectPath: string, workspacePath?: string)
   const projectDecisions = listDecisions(projectPath);
   if (!workspacePath || workspacePath === projectPath) return projectDecisions;
 
-  const projectName = projectPath.split("/").pop() ?? "";
+  const projectName = basename(projectPath);
   const wsDecisions = listDecisions(workspacePath);
   const relevantWs = wsDecisions.filter(d =>
     d.scope && (d.scope.includes(projectName) || d.scope.includes("all"))

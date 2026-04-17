@@ -8,7 +8,7 @@
  */
 
 import { readdirSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { join, basename } from "node:path";
 import { pathExists, readJson, removeFile } from "../storage/engine.js";
 import { AXME_CODE_DIR } from "../types.js";
 import type { SessionMeta } from "../types.js";
@@ -109,7 +109,7 @@ export function cleanupLegacyArtifacts(
   ];
   for (const p of legacyPaths) {
     if (!pathExists(p)) continue;
-    const name = p.split("/").pop() ?? p;
+    const name = basename(p) ?? p;
     if (opts.dryRun) {
       log(`  [dry-run] would remove legacy ${name}`);
     } else {

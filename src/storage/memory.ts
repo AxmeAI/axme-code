@@ -7,7 +7,7 @@
  */
 
 import { readFileSync, readdirSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, resolve, basename } from "node:path";
 import { atomicWrite, ensureDir, pathExists, removeFile } from "./engine.js";
 import type { Memory, MemoryType } from "../types.js";
 import { AXME_CODE_DIR } from "../types.js";
@@ -48,7 +48,7 @@ export function saveScopedMemories(
   memories: Memory[], projectPath: string, workspacePath?: string,
 ): { saved: number; crossProject: number } {
   let saved = 0, crossProject = 0;
-  const projectName = projectPath.split("/").pop() ?? "";
+  const projectName = basename(projectPath);
 
   for (const m of memories) {
     const scope = m.scope;
@@ -115,7 +115,7 @@ export function listScopedMemories(projectPath: string, workspacePath?: string):
   const projectMemories = listMemories(projectPath);
   if (!workspacePath || workspacePath === projectPath) return projectMemories;
 
-  const projectName = projectPath.split("/").pop() ?? "";
+  const projectName = basename(projectPath);
   const wsMemories = listMemories(workspacePath);
   const relevantWs = wsMemories.filter(m =>
     m.scope && (m.scope.includes(projectName) || m.scope.includes("all"))
