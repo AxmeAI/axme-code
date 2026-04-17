@@ -49,11 +49,16 @@ export function findClaudePath(): string | undefined {
     return _claudePath;
   }
 
-  // 3. which claude (PATH lookup)
+  // 3. PATH lookup — `which` on POSIX, `where.exe` on Windows.
+  // Use stdio:['ignore','pipe','ignore'] to suppress stderr leakage (Windows
+  // PowerShell renders tool-not-found messages even when we try/catch).
   try {
-    const p = execSync("which claude", { encoding: "utf-8", timeout: 5000 }).trim();
-    if (p && existsSync(p)) {
-      _claudePath = p;
+    const lookup = process.platform === "win32" ? "where.exe claude" : "which claude";
+    const p = execSync(lookup, { encoding: "utf-8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] }).trim();
+    // `where` may return multiple lines (one per match); take the first.
+    const first = p.split(/\r?\n/)[0].trim();
+    if (first && existsSync(first)) {
+      _claudePath = first;
       return _claudePath;
     }
   } catch { /* not in PATH — continue to standard locations */ }

@@ -8,7 +8,7 @@
  *   axme-code hook <name> <json> - Run hook (pre-tool-use, post-tool-use, session-end)
  */
 
-import { resolve, join } from "node:path";
+import { resolve, join, basename } from "node:path";
 import { writeFileSync, existsSync, readFileSync, appendFileSync, mkdirSync } from "node:fs";
 import yaml from "js-yaml";
 import { initProjectWithLLM, initWorkspaceWithLLM } from "./tools/init.js";
@@ -203,7 +203,7 @@ async function ensureAuthConfiguredForSetup(): Promise<void> {
 
 function generateWorkspaceYaml(workspacePath: string, ws: WorkspaceInfo): void {
   const wsYaml = yaml.dump({
-    name: workspacePath.split("/").pop(),
+    name: basename(workspacePath),
     type: ws.type,
     manifest: ws.manifestPath,
     projects: ws.projects,
@@ -405,7 +405,7 @@ async function main() {
           const totalCost = workspaceResult.cost.costUsd + projectResults.reduce((s, r) => s + r.cost.costUsd, 0);
           console.log(`  Workspace: ${workspaceResult.decisions.count} decisions, ${workspaceResult.memories.count} memories`);
           for (const r of projectResults) {
-            const name = r.projectPath.split("/").pop();
+            const name = basename(r.projectPath);
             console.log(`  ${name}: ${r.decisions.count} decisions (${r.decisions.fromScan} LLM + ${r.decisions.fromPresets} presets)`);
           }
           if (totalCost > 0) console.log(`  Total cost: $${totalCost.toFixed(2)}`);
