@@ -3,27 +3,97 @@
  */
 
 import { execSync } from "node:child_process";
+import { existsSync, readdirSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
 import { resolveAuthMode } from "./auth-config.js";
 
 type Options = import("@anthropic-ai/claude-agent-sdk").Options;
 
 /**
- * Find claude binary path. Cached after first lookup.
+ * Find the `claude` CLI binary path. Cached after first successful lookup.
  *
- * Exported because the SDK resolves its own path via `import.meta.url`, which
- * returns undefined inside the bundled CJS build and crashes with
- * `fileURLToPath(undefined)` (B-006 / D-121). Every direct `sdk.query()` call
- * site must set `pathToClaudeCodeExecutable` to the result of this function.
+ * The Claude Agent SDK resolves its own executable via `import.meta.url`,
+ * which is `undefined` inside our bundled CJS builds and crashes with
+ * `fileURLToPath(undefined)` (B-006 / D-121). Every `sdk.query()` call must
+ * set `pathToClaudeCodeExecutable` to the result of this function.
+ *
+ * Resolution order (B-009 — first match wins):
+ *   1. `AXME_CLAUDE_EXECUTABLE` env var — explicit override for CI / unusual installs
+ *   2. `CLAUDE_CODE_ENTRYPOINT` env var — set by Claude Code itself in some contexts
+ *   3. `which claude` — standard PATH lookup (works on most dev machines)
+ *   4. Standard install locations (no PATH dependency):
+ *      - ~/.local/bin/claude
+ *      - /usr/local/bin/claude
+ *      - /opt/homebrew/bin/claude (macOS Apple Silicon)
+ *      - /usr/bin/claude
+ *   5. nvm-managed installs: ~/.nvm/versions/node/* /bin/claude
+ *
+ * Returns undefined only if none of the above yields a readable file.
+ * Callers should treat undefined as "claude not installed" and either
+ * fail-fast with an actionable message or skip the LLM call.
  */
 let _claudePath: string | undefined;
 export function findClaudePath(): string | undefined {
   if (_claudePath !== undefined) return _claudePath || undefined;
-  try {
-    _claudePath = execSync("which claude", { encoding: "utf-8" }).trim();
-  } catch {
-    _claudePath = "";
+
+  // 1. Explicit override
+  if (process.env.AXME_CLAUDE_EXECUTABLE && existsSync(process.env.AXME_CLAUDE_EXECUTABLE)) {
+    _claudePath = process.env.AXME_CLAUDE_EXECUTABLE;
+    return _claudePath;
   }
-  return _claudePath || undefined;
+
+  // 2. SDK's own env var
+  if (process.env.CLAUDE_CODE_ENTRYPOINT && existsSync(process.env.CLAUDE_CODE_ENTRYPOINT)) {
+    _claudePath = process.env.CLAUDE_CODE_ENTRYPOINT;
+    return _claudePath;
+  }
+
+  // 3. which claude (PATH lookup)
+  try {
+    const p = execSync("which claude", { encoding: "utf-8", timeout: 5000 }).trim();
+    if (p && existsSync(p)) {
+      _claudePath = p;
+      return _claudePath;
+    }
+  } catch { /* not in PATH — continue to standard locations */ }
+
+  // 4. Standard install locations
+  const home = homedir();
+  const standardPaths = [
+    join(home, ".local", "bin", "claude"),
+    "/usr/local/bin/claude",
+    "/opt/homebrew/bin/claude",
+    "/usr/bin/claude",
+  ];
+  for (const candidate of standardPaths) {
+    if (existsSync(candidate)) {
+      _claudePath = candidate;
+      return _claudePath;
+    }
+  }
+
+  // 5. nvm-managed installs (common on dev machines)
+  try {
+    const nvmDir = join(home, ".nvm", "versions", "node");
+    if (existsSync(nvmDir)) {
+      for (const ver of readdirSync(nvmDir)) {
+        const candidate = join(nvmDir, ver, "bin", "claude");
+        if (existsSync(candidate)) {
+          _claudePath = candidate;
+          return _claudePath;
+        }
+      }
+    }
+  } catch { /* nvm not present — fine */ }
+
+  _claudePath = "";
+  return undefined;
+}
+
+/** @internal Reset cached claude path. Used in tests only. */
+export function _resetFindClaudePath(): void {
+  _claudePath = undefined;
 }
 
 export type AgentRole = "scanner" | "tester" | "reviewer" | "engineer" | "architect" | "auditor";
