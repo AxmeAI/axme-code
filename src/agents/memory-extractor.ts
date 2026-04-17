@@ -12,7 +12,7 @@
 import type { Memory } from "../types.js";
 import { extractCostFromResult, zeroCost, type CostInfo } from "../utils/cost-extractor.js";
 import { toMemorySlug } from "../storage/memory.js";
-import { findClaudePath } from "../utils/agent-options.js";
+import { buildAgentEnv, findClaudePath } from "../utils/agent-options.js";
 
 export interface MemoryExtractionResult {
   memories: Memory[];
@@ -78,6 +78,7 @@ export async function runMemoryExtraction(opts: {
     allowDangerouslySkipPermissions: true,
     allowedTools: [] as string[],
     disallowedTools: ["Write", "Edit", "Bash", "Glob", "Grep", "Read", "Agent", "NotebookEdit", "Skill", "TodoWrite"],
+    env: buildAgentEnv(),
   };
 
   const prompt = `${EXTRACTION_PROMPT}\n\nSession ID: ${opts.sessionId}\n\nSession transcript:\n${opts.sessionEvents}`;

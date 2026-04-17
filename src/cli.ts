@@ -16,7 +16,10 @@ import { statusTool } from "./tools/status.js";
 import { detectWorkspace } from "./utils/workspace-detector.js";
 import { atomicWrite, ensureDir } from "./storage/engine.js";
 import { saveMemory, toMemorySlug } from "./storage/memory.js";
-import type { WorkspaceInfo } from "./types.js";
+import { detectAuthOptions } from "./utils/auth-detect.js";
+import { authConfigPath, loadAuthConfig, saveAuthConfig } from "./utils/auth-config.js";
+import { formatDetectionBlock, hasAnyAuth, promptAuthChoice } from "./utils/auth-prompt.js";
+import type { AuthMode, WorkspaceInfo } from "./types.js";
 import { AXME_CODE_DIR } from "./types.js";
 
 const args = process.argv.slice(2);
@@ -150,6 +153,49 @@ function hasAuth(): boolean {
   return false;
 }
 
+/**
+ * Print detection block + saved choice (if any).
+ */
+function printAuthStatus(): void {
+  const options = detectAuthOptions();
+  console.log(formatDetectionBlock(options));
+  const saved = loadAuthConfig();
+  if (saved) {
+    console.log(`\nCurrent mode: ${saved.mode} (saved ${saved.chosenAt})`);
+    console.log(`Config file:  ${authConfigPath()}`);
+  } else {
+    console.log("\nCurrent mode: not configured (using heuristic fallback)");
+    console.log(`Config file:  ${authConfigPath()} (will be created on first choice)`);
+  }
+}
+
+/**
+ * Called from `axme-code setup` before LLM scanners launch. Persists a user
+ * choice to ~/.config/axme-code/auth.yaml exactly once on first setup, so
+ * subsequent runs (and all MCP server scanner/auditor subprocesses) use the
+ * same mode without re-prompting. In non-TTY contexts (CI, scripts) we skip
+ * the prompt and let `resolveAuthMode()` fall back to its heuristic — we do
+ * NOT persist a guessed choice silently.
+ */
+async function ensureAuthConfiguredForSetup(): Promise<void> {
+  if (loadAuthConfig()) return;
+  if (!process.stdin.isTTY) return;
+
+  const options = detectAuthOptions();
+  if (!hasAnyAuth(options)) return; // hasAuth preflight will fail anyway
+
+  console.log("\nAuthentication setup for LLM scanners");
+  console.log(formatDetectionBlock(options));
+  console.log("");
+  const choice = await promptAuthChoice(options);
+  if (!choice) {
+    console.log("  Auth selection cancelled. Heuristic fallback will be used.");
+    return;
+  }
+  saveAuthConfig(choice);
+  console.log(`  Saved auth mode: ${choice} (${authConfigPath()})`);
+}
+
 function generateWorkspaceYaml(workspacePath: string, ws: WorkspaceInfo): void {
   const wsYaml = yaml.dump({
     name: workspacePath.split("/").pop(),
@@ -256,6 +302,9 @@ Usage:
   axme-code setup [path] [--force]         Initialize project (LLM scan + .mcp.json + CLAUDE.md)
   axme-code serve                         Start MCP server (stdio transport)
   axme-code status [path]                 Show project status
+  axme-code auth                          Re-detect and choose auth mode (subscription/api_key)
+  axme-code auth status                   Show current auth mode + detected options
+  axme-code auth use <subscription|api_key>  Set auth mode non-interactively
   axme-code cleanup legacy-artifacts [--dry-run]  Remove pre-PR#7 sessions/logs
   axme-code cleanup decisions-normalize [--dry-run]  Add status:active to decisions
   axme-code audit-kb [path] [--all-repos]             KB audit: dedup, conflicts, compaction
@@ -338,6 +387,11 @@ async function main() {
         await sendSetupTelemetry();
         process.exit(1);
       }
+
+      // Auth mode selection — prompt once on first interactive setup, persist
+      // to ~/.config/axme-code/auth.yaml. Later runs and scanner subprocesses
+      // read the saved mode via resolveAuthMode() in buildAgentEnv().
+      await ensureAuthConfiguredForSetup();
 
       // Init with LLM scanners (parallel)
       try {
@@ -647,6 +701,51 @@ Do NOT skip — without context you will miss critical project rules.
         }
       }
       break;
+    }
+
+    case "auth": {
+      const sub = args[1];
+      if (sub === "status" || sub === "show") {
+        printAuthStatus();
+        break;
+      }
+      if (sub === "use" || sub === "set") {
+        const mode = args[2];
+        if (mode !== "subscription" && mode !== "api_key") {
+          console.error("Usage: axme-code auth use <subscription|api_key>");
+          process.exit(1);
+        }
+        saveAuthConfig(mode as AuthMode);
+        console.log(`Saved auth mode: ${mode} (${authConfigPath()})`);
+        break;
+      }
+      if (sub === undefined || sub === "choose") {
+        const options = detectAuthOptions();
+        console.log("Authentication setup for LLM scanners");
+        console.log(formatDetectionBlock(options));
+        const saved = loadAuthConfig();
+        if (saved) console.log(`\nCurrent mode: ${saved.mode} (saved ${saved.chosenAt})`);
+        console.log("");
+        if (!hasAnyAuth(options)) {
+          console.error("No authentication detected. Set ANTHROPIC_API_KEY or run `claude /login`, then re-run `axme-code auth`.");
+          process.exit(1);
+        }
+        if (!process.stdin.isTTY) {
+          console.error("`axme-code auth` requires an interactive terminal. Use `axme-code auth use <subscription|api_key>` non-interactively.");
+          process.exit(1);
+        }
+        const choice = await promptAuthChoice(options);
+        if (!choice) {
+          console.log("Cancelled. No change.");
+          break;
+        }
+        saveAuthConfig(choice);
+        console.log(`Saved auth mode: ${choice} (${authConfigPath()})`);
+        break;
+      }
+      console.error(`Unknown 'auth' subcommand: ${sub}`);
+      console.error("Available: (none)|choose, status|show, use|set <subscription|api_key>");
+      process.exit(1);
     }
 
     case "help":
