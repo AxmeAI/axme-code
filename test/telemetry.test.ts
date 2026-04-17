@@ -83,7 +83,7 @@ describe("getOrCreateMid", () => {
     assert.equal(readFileSync(filePath, "utf-8").trim(), mid);
   });
 
-  it("sets file mode 0600", () => {
+  it("sets file mode 0600", { skip: process.platform === "win32" ? "POSIX file modes not supported on Windows (security via ACLs)" : false }, () => {
     getOrCreateMid();
     const mode = statSync(_getMidFilePath()).mode & 0o777;
     assert.equal(mode, 0o600);
