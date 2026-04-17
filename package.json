@@ -11,7 +11,7 @@
     "build": "node build.mjs",
     "start": "node dist/server.js",
     "dev": "tsx src/cli.ts",
-    "test": "tsx --test test/*.test.ts",
+    "test": "node scripts/run-tests.mjs",
     "lint": "tsc --noEmit"
   },
   "engines": {

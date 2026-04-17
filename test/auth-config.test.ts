@@ -11,18 +11,24 @@ import {
 } from "../src/utils/auth-config.js";
 
 const originalHome = process.env.HOME;
+const originalUserProfile = process.env.USERPROFILE;
 const originalKey = process.env.ANTHROPIC_API_KEY;
 let tmpHome: string;
 
+// Node's os.homedir() reads $HOME on POSIX and %USERPROFILE% on Windows. We
+// mock both so the same test works across platforms.
 beforeEach(() => {
   tmpHome = mkdtempSync(join(tmpdir(), "axme-auth-"));
   process.env.HOME = tmpHome;
+  process.env.USERPROFILE = tmpHome;
   delete process.env.ANTHROPIC_API_KEY;
 });
 
 afterEach(() => {
   if (originalHome === undefined) delete process.env.HOME;
   else process.env.HOME = originalHome;
+  if (originalUserProfile === undefined) delete process.env.USERPROFILE;
+  else process.env.USERPROFILE = originalUserProfile;
   if (originalKey === undefined) delete process.env.ANTHROPIC_API_KEY;
   else process.env.ANTHROPIC_API_KEY = originalKey;
   rmSync(tmpHome, { recursive: true, force: true });

@@ -17,10 +17,14 @@
 
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import assert from "node:assert";
 
-const AGENTS_DIR = new URL("../src/agents/", import.meta.url).pathname;
+// `new URL(...).pathname` returns POSIX-style "/C:/..." on Windows, which
+// breaks readdirSync with a doubled drive prefix. fileURLToPath returns the
+// platform-native path ("C:\\..." on Windows, "/home/..." on POSIX).
+const AGENTS_DIR = fileURLToPath(new URL("../src/agents/", import.meta.url));
 
 function walk(dir: string, out: string[] = []): string[] {
   for (const entry of readdirSync(dir)) {
