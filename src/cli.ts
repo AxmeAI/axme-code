@@ -20,10 +20,15 @@ import { detectAuthOptions } from "./utils/auth-detect.js";
 import { authConfigPath, loadAuthConfig, saveAuthConfig } from "./utils/auth-config.js";
 import { formatDetectionBlock, hasAnyAuth, promptAuthChoice } from "./utils/auth-prompt.js";
 import type { AuthMode, WorkspaceInfo } from "./types.js";
-import { AXME_CODE_DIR } from "./types.js";
+import { AXME_CODE_DIR, AXME_CODE_VERSION } from "./types.js";
 
 const args = process.argv.slice(2);
 const command = args[0];
+
+if (command === "--version" || command === "-v") {
+  console.log(AXME_CODE_VERSION);
+  process.exit(0);
+}
 
 // --- CLAUDE.md templates ---
 

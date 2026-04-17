@@ -21,6 +21,7 @@ import { bundlesToDecisions, bundlesToMemories, bundlesToDeployChecklists, apply
 import { AXME_CODE_DIR, DEFAULT_PROJECT_CONFIG } from "../types.js";
 import { addCost, zeroCost, type CostInfo } from "../utils/cost-extractor.js";
 import { atomicWrite, removeFile } from "../storage/engine.js";
+import { findClaudePath } from "../utils/agent-options.js";
 import yaml from "js-yaml";
 
 export interface InitResult {
@@ -142,7 +143,6 @@ export async function initProjectWithLLM(projectPath: string, opts?: {
   // --- LLM scanners in PARALLEL ---
   const log = opts?.onProgress ?? (() => {});
   const projectName = projectPath.split("/").pop();
-  log(`  [${projectName}] LLM scanning (oracle + decisions + safety + deploy)...`);
 
   let oracleLlm = false;
   let oracleFiles = 0;
@@ -150,31 +150,45 @@ export async function initProjectWithLLM(projectPath: string, opts?: {
   let safetyLlm = false;
   let safetySummary = "";
 
-  const scanners = await Promise.allSettled([
-    // Oracle scan
-    (async () => {
-      if (oracleExists(projectPath)) return { type: "oracle" as const, skipped: true };
-      const { runOracleScan } = await import("../agents/scanners/oracle.js");
-      return { type: "oracle" as const, result: await runOracleScan({ projectPath, workspaceMode: opts?.workspaceMode }) };
-    })(),
-    // Decision scan — pass existing decisions (from presets) so scanner skips same-topic
-    (async () => {
-      const { runDecisionScan } = await import("../agents/scanners/decision.js");
-      const existing = listDecisions(projectPath);
-      return { type: "decision" as const, result: await runDecisionScan({ projectPath, existingDecisions: existing }) };
-    })(),
-    // Safety scan
-    (async () => {
-      if (safetyExists(projectPath)) return { type: "safety" as const, skipped: true };
-      const { runSafetyScan } = await import("../agents/scanners/safety.js");
-      return { type: "safety" as const, result: await runSafetyScan({ projectPath }) };
-    })(),
-    // Deploy scan
-    (async () => {
-      const { runDeployScan } = await import("../agents/scanners/deploy.js");
-      return { type: "deploy" as const, result: await runDeployScan({ projectPath }) };
-    })(),
-  ]);
+  // Pre-flight: require the `claude` CLI to be installed. Without it the Agent
+  // SDK bundled inside us crashes on `fileURLToPath(undefined)` before it can
+  // reach the user's OAuth/API key. Skip cleanly and surface a friendly error
+  // rather than leaking the SDK stack trace.
+  const claudePath = findClaudePath();
+  const scanners = claudePath
+    ? await (async () => {
+        log(`  [${projectName}] LLM scanning (oracle + decisions + safety + deploy)...`);
+        return Promise.allSettled([
+          // Oracle scan
+          (async () => {
+            if (oracleExists(projectPath)) return { type: "oracle" as const, skipped: true };
+            const { runOracleScan } = await import("../agents/scanners/oracle.js");
+            return { type: "oracle" as const, result: await runOracleScan({ projectPath, workspaceMode: opts?.workspaceMode }) };
+          })(),
+          // Decision scan — pass existing decisions (from presets) so scanner skips same-topic
+          (async () => {
+            const { runDecisionScan } = await import("../agents/scanners/decision.js");
+            const existing = listDecisions(projectPath);
+            return { type: "decision" as const, result: await runDecisionScan({ projectPath, existingDecisions: existing }) };
+          })(),
+          // Safety scan
+          (async () => {
+            if (safetyExists(projectPath)) return { type: "safety" as const, skipped: true };
+            const { runSafetyScan } = await import("../agents/scanners/safety.js");
+            return { type: "safety" as const, result: await runSafetyScan({ projectPath }) };
+          })(),
+          // Deploy scan
+          (async () => {
+            const { runDeployScan } = await import("../agents/scanners/deploy.js");
+            return { type: "deploy" as const, result: await runDeployScan({ projectPath }) };
+          })(),
+        ]);
+      })()
+    : [];
+  if (!claudePath) {
+    log(`  [${projectName}] Claude Code CLI not found on PATH — skipping LLM scanners (install with: npm install -g @anthropic-ai/claude-code)`);
+    errors.push("Claude Code CLI not installed — LLM scanners skipped, using deterministic fallback");
+  }
 
   // Process results
   log(`  [${projectName}] Scanners complete, processing results...`);
