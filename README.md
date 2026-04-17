@@ -84,7 +84,7 @@ Decisions enforce verification requirements: agent must run tests and show proof
 curl -fsSL https://raw.githubusercontent.com/AxmeAI/axme-code/main/install.sh | bash
 ```
 
-Installs to `~/.local/bin/axme-code`. Supports Linux, macOS, and Windows (x64 and ARM64).
+Installs to `~/.local/bin/axme-code`. Supports Linux and macOS (x64 and ARM64). Native Windows is not yet supported.
 
 ### Setup
 

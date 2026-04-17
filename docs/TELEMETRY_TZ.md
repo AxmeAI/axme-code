@@ -56,7 +56,7 @@ The server **never** returns an error to the client — invalid events are silen
 
 - 64 hex chars (32 random bytes hex-encoded)
 - Generate **once** per install on first run, persist to disk
-- Storage location: `~/.local/share/axme-code/machine-id` (Linux/macOS), platform-equivalent on Windows
+- Storage location: `~/.local/share/axme-code/machine-id` (Linux/macOS)
 - File mode `0600`
 - **Must NOT** be derived from hardware (no MAC address, no CPU serial, no hostname). Use `crypto.randomBytes(32).toString('hex')`
 - If file exists, read it. If not, generate and write
