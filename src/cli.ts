@@ -561,7 +561,34 @@ async function main() {
     }
 
     case "check-init": {
-      // Plugin SessionStart hook — ensures CLAUDE.md exists and outputs instruction
+      // Plugin SessionStart hook — lazy-install the SDK if we're running from
+      // a plugin root that hasn't had one yet, then ensure CLAUDE.md exists
+      // and output the instruction. Moving the lazy install inline here (vs.
+      // an inline shell test in hooks.json) makes SessionStart cross-platform
+      // — the previous `test -d ... || (cd ... && npm install) ; node ...`
+      // uses POSIX-only syntax that cmd.exe can't execute.
+      if (process.env.CLAUDE_PLUGIN_ROOT) {
+        const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT;
+        const sdkDir = join(pluginRoot, "node_modules", "@anthropic-ai", "claude-agent-sdk");
+        if (!existsSync(sdkDir)) {
+          try {
+            const { execSync } = await import("node:child_process");
+            // execSync always spawns through a shell (sh on POSIX, cmd.exe on
+            // Windows), so `npm` resolves to `npm.cmd` on Windows without any
+            // extra flag.
+            execSync("npm install --omit=dev --ignore-scripts", {
+              cwd: pluginRoot,
+              stdio: "ignore",
+              timeout: 25_000,
+            });
+          } catch {
+            // Silent — fall through. The plugin still works for deterministic
+            // paths (safety hooks, context lookup) even without the SDK;
+            // only LLM-backed scans need it and they'll fail loudly later.
+          }
+        }
+      }
+
       const checkPath = resolve(args[1] || ".");
       const claudeMdPath = join(checkPath, "CLAUDE.md");
       const axmeSection = `## AXME Code
