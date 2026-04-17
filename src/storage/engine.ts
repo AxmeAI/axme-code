@@ -36,11 +36,17 @@ export function atomicWrite(filePath: string, content: string): void {
 
   const tmpPath = join(dir, `.tmp-${randomUUID()}`);
   try {
-    writeFileSync(tmpPath, content, "utf-8");
-    // fsync before rename ensures content is on disk, not just in OS buffers.
-    // On crash between write and rename, the file is intact.
-    const fd = openSync(tmpPath, "r");
-    try { fsyncSync(fd); } finally { closeSync(fd); }
+    // Write and fsync through the same writable fd. Windows' FlushFileBuffers
+    // (Node maps fsyncSync to it) requires write access on the handle — a
+    // read-only fd returns EPERM. POSIX allows fsync on any fd, so the write-
+    // fd pattern is correct on both platforms.
+    const fd = openSync(tmpPath, "w");
+    try {
+      writeSync(fd, Buffer.from(content, "utf-8"));
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
     renameSync(tmpPath, filePath);
   } catch (err) {
     // Clean up temp file on failure
