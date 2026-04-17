@@ -31,10 +31,16 @@ await build({
   define,
 });
 
-// Create bin wrapper
+// Create bin wrappers — POSIX shebang entry + Windows .cmd wrapper. Shipping
+// both means install.sh/install.ps1 can place them side-by-side on any
+// platform; the one that matches the shell wins.
 import { writeFileSync, chmodSync, mkdirSync } from "fs";
 writeFileSync("dist/axme-code.js", '#!/usr/bin/env node\nimport("./cli.mjs");\n');
 chmodSync("dist/axme-code.js", 0o755);
+// Windows CMD wrapper — forwards all args to node + axme-code.js. %~dp0
+// resolves to the directory of the .cmd at runtime so this works regardless
+// of cwd or PATH entry style.
+writeFileSync("dist/axme-code.cmd", "@echo off\r\nnode \"%~dp0axme-code.js\" %*\r\n");
 
 // --- Plugin bundled builds (self-contained, zero external deps) ---
 
@@ -64,13 +70,15 @@ await build({
   define,
 });
 
-// Plugin bin wrapper — sets NODE_PATH so SDK can be found from CLAUDE_PLUGIN_DATA
+// Plugin bin wrappers — POSIX bash script + Windows .cmd. Both forward to
+// node + the plugin's bundled cli.mjs, located one directory up from bin/.
 mkdirSync("dist/plugin/bin", { recursive: true });
 writeFileSync("dist/plugin/bin/axme-code", `#!/bin/bash
 PLUGIN_DIR="\$(cd "\$(dirname "\$0")/.." && pwd)"
 exec node "\$PLUGIN_DIR/cli.mjs" "\$@"
 `);
 chmodSync("dist/plugin/bin/axme-code", 0o755);
+writeFileSync("dist/plugin/bin/axme-code.cmd", "@echo off\r\nnode \"%~dp0..\\cli.mjs\" %*\r\n");
 
 // Plugin package.json — only SDK for npm install in CLAUDE_PLUGIN_DATA
 writeFileSync("dist/plugin/package.json", JSON.stringify({

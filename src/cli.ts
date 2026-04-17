@@ -213,6 +213,22 @@ function generateWorkspaceYaml(workspacePath: string, ws: WorkspaceInfo): void {
   console.log("  workspace.yaml: created");
 }
 
+/**
+ * Build a shell-portable hook command: `"<node>" "<self>" hook <name>
+ * --workspace "<project>"`. Using the absolute node binary and the
+ * axme-code entry file makes the command independent of PATH, so hooks
+ * fire reliably even when the `axme-code`/`axme-code.cmd` wrapper
+ * is not on the session PATH (common on Windows). Quoting every segment
+ * lets Claude Code hand the string to `sh -c` or `cmd.exe /c` without
+ * word-splitting on spaces.
+ */
+function buildHookCommand(hookName: string, projectPath: string): string {
+  const nodeExec = process.execPath;
+  const self = resolve(process.argv[1] ?? "axme-code");
+  const q = (s: string) => `"${s}"`;
+  return `${q(nodeExec)} ${q(self)} hook ${hookName} --workspace ${q(projectPath)}`;
+}
+
 function configureHooks(projectPath: string): void {
   const claudeDir = join(projectPath, ".claude");
   const settingsPath = join(claudeDir, "settings.json");
@@ -239,7 +255,7 @@ function configureHooks(projectPath: string): void {
   settings.hooks.PreToolUse.push({
     hooks: [{
       type: "command",
-      command: `axme-code hook pre-tool-use --workspace ${projectPath}`,
+      command: buildHookCommand("pre-tool-use", projectPath),
       timeout: 5,
     }],
   });
@@ -251,7 +267,7 @@ function configureHooks(projectPath: string): void {
     matcher: "Edit|Write|NotebookEdit",
     hooks: [{
       type: "command",
-      command: `axme-code hook post-tool-use --workspace ${projectPath}`,
+      command: buildHookCommand("post-tool-use", projectPath),
       timeout: 10,
     }],
   });
@@ -261,7 +277,7 @@ function configureHooks(projectPath: string): void {
   settings.hooks.SessionEnd.push({
     hooks: [{
       type: "command",
-      command: `axme-code hook session-end --workspace ${projectPath}`,
+      command: buildHookCommand("session-end", projectPath),
       timeout: 120,
     }],
   });
