@@ -80,13 +80,19 @@ Decisions enforce verification requirements: agent must run tests and show proof
 
 **Requires [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (CLI or VS Code extension).**
 
+**Linux / macOS:**
 ```bash
 curl -fsSL https://raw.githubusercontent.com/AxmeAI/axme-code/main/install.sh | bash
 ```
+Installs to `~/.local/bin/axme-code`. Supports x64 and ARM64.
 
-Installs to `~/.local/bin/axme-code`. Supports Linux and macOS (x64 and ARM64).
+**Windows (native):**
+```powershell
+irm https://raw.githubusercontent.com/AxmeAI/axme-code/main/install.ps1 | iex
+```
+Installs to `%LOCALAPPDATA%\Programs\axme-code` and adds it to your User PATH. Requires Node.js 20+ on PATH. Supports x64 and ARM64.
 
-**Windows via WSL2** is supported. Install a WSL2 distro (`wsl --install -d Ubuntu-22.04`), then install both Claude Code and axme-code **inside** your WSL distro — not on the Windows host. Native Windows is not yet supported.
+**Windows via WSL2:** if you already live in WSL2, use the Linux install one-liner inside your distro. Install Claude Code and axme-code **inside** the WSL distro, not on the Windows host.
 
 ### Setup
 
