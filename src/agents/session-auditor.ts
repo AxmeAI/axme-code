@@ -21,7 +21,7 @@ import { basename, relative } from "node:path";
 import type { Memory, Decision, SessionHandoff, WorkspaceInfo } from "../types.js";
 import { DEFAULT_AUDITOR_MODEL } from "../types.js";
 import { extractCostFromResult, zeroCost, type CostInfo } from "../utils/cost-extractor.js";
-import { buildAgentEnv, findClaudePath } from "../utils/agent-options.js";
+import { buildAgentEnv, claudePathForSdk } from "../utils/agent-options.js";
 import { toMemorySlug } from "../storage/memory.js";
 import { toSlug, listDecisions } from "../storage/decisions.js";
 import { listMemories } from "../storage/memory.js";
@@ -625,7 +625,7 @@ async function runSingleAuditCall(opts: {
 }> {
   const sdk = await import("@anthropic-ai/claude-agent-sdk");
 
-  const claudePath = findClaudePath();
+  const claudePath = claudePathForSdk();
   const queryOpts = {
     cwd: opts.sessionOrigin,
     model: opts.model,
@@ -886,7 +886,7 @@ JSON SCHEMA:
 ANALYSIS TO FORMAT:
 ${freeTextAnalysis}`;
 
-  const claudePath = findClaudePath();
+  const claudePath = claudePathForSdk();
   const queryOpts = {
     cwd: sessionOrigin,
     model,

@@ -36,7 +36,7 @@ function walk(dir: string, out: string[] = []): string[] {
   return out;
 }
 
-test("every src/agents file calling sdk.query imports buildAgentQueryOptions or findClaudePath", () => {
+test("every src/agents file calling sdk.query imports buildAgentQueryOptions or claudePathForSdk", () => {
   const files = walk(AGENTS_DIR);
   const offenders: string[] = [];
 
@@ -45,7 +45,11 @@ test("every src/agents file calling sdk.query imports buildAgentQueryOptions or 
     if (!src.includes("sdk.query(")) continue;
 
     const hasBuilder = /import\s+[^;]*\bbuildAgentQueryOptions\b[^;]*from\s+["'][^"']*agent-options/.test(src);
-    const hasFinder = /import\s+[^;]*\bfindClaudePath\b[^;]*from\s+["'][^"']*agent-options/.test(src);
+    // Both `claudePathForSdk` and the older `findClaudePath` are accepted —
+    // the former is the correct Windows-safe choice (returns undefined on
+    // win32 to dodge `spawn EINVAL` on .cmd), the latter remains allowed
+    // only for backwards-compat regression surface.
+    const hasFinder = /import\s+[^;]*\b(claudePathForSdk|findClaudePath)\b[^;]*from\s+["'][^"']*agent-options/.test(src);
 
     if (!hasBuilder && !hasFinder) {
       offenders.push(file.replace(AGENTS_DIR, ""));
@@ -56,7 +60,7 @@ test("every src/agents file calling sdk.query imports buildAgentQueryOptions or 
     offenders,
     [],
     `The following files call sdk.query() but import neither buildAgentQueryOptions ` +
-    `nor findClaudePath from utils/agent-options. Without pathToClaudeCodeExecutable ` +
+    `nor claudePathForSdk from utils/agent-options. Without pathToClaudeCodeExecutable ` +
     `the bundled CJS build will crash with fileURLToPath(undefined) (B-006 / D-121):\n` +
     `  ${offenders.join("\n  ")}`,
   );
