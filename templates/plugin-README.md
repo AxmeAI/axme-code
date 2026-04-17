@@ -5,7 +5,7 @@
 Persistent memory, architectural decisions, and safety guardrails for Claude Code. Your agent starts every session with full project context — stack, decisions, patterns, safety rules, and a handoff from the previous session.
 
 [![Alpha](https://img.shields.io/badge/status-alpha-orange)]()
-[![Version](https://img.shields.io/badge/version-0.2.8-blue)]()
+[![Version](https://img.shields.io/badge/version-0.2.9-blue)]()
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 **[Main Repository](https://github.com/AxmeAI/axme-code)** · **[Website](https://code.axme.ai)** · **[Issues](https://github.com/AxmeAI/axme-code/issues)**

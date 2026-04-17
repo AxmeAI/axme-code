@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.2.9] - 2026-04-17
+
+### Added
+- **User-selectable auth mode** (#109): `axme-code setup` now detects both Claude subscription (OAuth) and `ANTHROPIC_API_KEY` in env. If both exist, prompts the user to choose. Choice persisted in `~/.config/axme-code/auth.yaml`. When `mode=subscription`, `ANTHROPIC_API_KEY` is deleted from subprocess env so Claude Code uses OAuth instead of hitting a zero-balance API key. New commands: `axme-code auth` (interactive), `axme-code auth status`, `axme-code auth use subscription|api_key`. All subprocesses (scanners, session-auditor, memory-extractor) go through the unified `buildAgentEnv()`.
+
+### Fixed
+- **`findClaudePath()` fallback for users without `claude` in PATH** (B-009, #110): v0.2.8 fixed B-006 by passing `pathToClaudeCodeExecutable`, but `findClaudePath()` used only `which claude` — new users with nvm-managed or non-global Claude installs still hit the original `fileURLToPath(undefined)` crash. Resolution now tries 5 sources in order: `AXME_CLAUDE_EXECUTABLE` env var, `CLAUDE_CODE_ENTRYPOINT` env var, `which claude`, standard install paths (`~/.local/bin`, `/usr/local/bin`, `/opt/homebrew/bin`, `/usr/bin`), and nvm glob (`~/.nvm/versions/node/*/bin/claude`). Each candidate verified via `existsSync`. E2E tested with `claude` stripped from PATH — resolver found `/usr/local/bin/claude` via fallback.
+
+### Security
+- **Dependency patches** (#110): `hono` 4.12.12 → 4.12.14 (moderate, HTML injection in JSX SSR, via `@modelcontextprotocol/sdk`). `protobufjs` 7.5.4 → 7.5.5 (critical, arbitrary code execution, in `benchmarks/` only — not in product bundle). Both lockfile-only, 0 vulnerabilities remaining.
+
+### Tests
+- 8 new unit tests for `findClaudePath()` resolver: env var priority, non-existent path skip, step-1-beats-step-2, caching, cache reset, dev-machine smoke test.
+- Total test count: 489 → 511.
+
 ## [0.2.8] - 2026-04-14
 
 ### Fixed
