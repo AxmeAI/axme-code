@@ -108,21 +108,26 @@ writeFileSync("dist/plugin/.mcp.json", JSON.stringify({
   },
 }, null, 2) + "\n");
 
-// Plugin hooks — safety enforcement via bundled CLI
+// Plugin hooks — safety enforcement via bundled CLI. All commands quote the
+// ${CLAUDE_PLUGIN_ROOT} expansion so paths with spaces survive sh -c and
+// cmd.exe /c unchanged. The SessionStart hook used to shell out to `test -d
+// ... || (cd ... && npm install)` which was POSIX-only; the lazy SDK
+// install is now inside the `check-init` subcommand so this command is a
+// plain Node invocation and works on Windows natively.
 writeFileSync("dist/plugin/hooks/hooks.json", JSON.stringify({
   description: "AXME Code safety enforcement and session tracking",
   hooks: {
     SessionStart: [{
       hooks: [{
         type: "command",
-        command: "test -d ${CLAUDE_PLUGIN_ROOT}/node_modules/@anthropic-ai/claude-agent-sdk || (cd ${CLAUDE_PLUGIN_ROOT} && npm install --omit=dev --ignore-scripts 2>/dev/null) ; node ${CLAUDE_PLUGIN_ROOT}/cli.mjs check-init",
+        command: 'node "${CLAUDE_PLUGIN_ROOT}/cli.mjs" check-init',
         timeout: 30,
       }],
     }],
     PreToolUse: [{
       hooks: [{
         type: "command",
-        command: "node ${CLAUDE_PLUGIN_ROOT}/cli.mjs hook pre-tool-use",
+        command: 'node "${CLAUDE_PLUGIN_ROOT}/cli.mjs" hook pre-tool-use',
         timeout: 5,
       }],
     }],
@@ -130,14 +135,14 @@ writeFileSync("dist/plugin/hooks/hooks.json", JSON.stringify({
       matcher: "Edit|Write|NotebookEdit",
       hooks: [{
         type: "command",
-        command: "node ${CLAUDE_PLUGIN_ROOT}/cli.mjs hook post-tool-use",
+        command: 'node "${CLAUDE_PLUGIN_ROOT}/cli.mjs" hook post-tool-use',
         timeout: 10,
       }],
     }],
     SessionEnd: [{
       hooks: [{
         type: "command",
-        command: "node ${CLAUDE_PLUGIN_ROOT}/cli.mjs hook session-end",
+        command: 'node "${CLAUDE_PLUGIN_ROOT}/cli.mjs" hook session-end',
         timeout: 120,
       }],
     }],
