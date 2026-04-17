@@ -487,7 +487,13 @@ export function clearLegacyActiveSession(projectPath: string): void {
  * Stale lock (>5s) auto-cleaned to handle crashed lock holders.
  */
 const LOCK_STALE_MS = 5_000;
-const LOCK_WAIT_MS = 500;
+// Bounded by the PreToolUse hook's 5-second timeout in .claude/settings.json —
+// leave ~2s headroom for the rest of the hook work after the lock is released.
+// The previous 500ms was too tight on slow I/O (WSL2, busy SSDs) where a
+// lock-holder could still be writing its mapping when waiters timed out and
+// each then created a duplicate session. LOCK_STALE_MS > LOCK_WAIT_MS keeps
+// the stale-lock recovery path independent of normal contention.
+const LOCK_WAIT_MS = 3_000;
 const LOCK_POLL_MS = 50;
 
 // Exported for testing
