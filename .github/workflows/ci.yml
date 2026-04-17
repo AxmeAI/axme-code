@@ -2,7 +2,12 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
+      - "feat/**"
+      - "fix/**"
+      - "docs/**"
+      - "chore/**"
   pull_request:
 
 jobs:
