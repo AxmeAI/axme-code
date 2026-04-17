@@ -143,19 +143,19 @@ function generateClaudeMd(projectPath: string, isWorkspace: boolean): void {
 
 /**
  * Check if Claude auth is available.
- * Checks: ANTHROPIC_API_KEY, or claude binary exists on disk.
+ * Checks: ANTHROPIC_API_KEY, or a locatable `claude` CLI (which is evidence
+ * the user has either an API key or a signed-in Claude subscription).
+ *
+ * Delegates to findClaudePath() so the PATH-separator (":" vs ";"), executable
+ * suffixes (".cmd", ".exe" on Windows), and standard-install locations are all
+ * handled the same way scanner agents resolve the binary — no divergence.
  */
 function hasAuth(): boolean {
   if (process.env.ANTHROPIC_API_KEY) return true;
-
-  // Check common claude binary locations directly (no shell needed)
-  const { env } = process;
-  const pathDirs = (env.PATH || "").split(":");
-  for (const dir of pathDirs) {
-    if (existsSync(join(dir, "claude"))) return true;
-  }
-
-  return false;
+  // findClaudePath already checks AXME_CLAUDE_EXECUTABLE, CLAUDE_CODE_ENTRYPOINT,
+  // PATH lookup, standard install locations, and nvm dirs, cross-platform.
+  const { findClaudePath } = require("./utils/agent-options.js") as typeof import("./utils/agent-options.js");
+  return !!findClaudePath();
 }
 
 /**
