@@ -80,15 +80,37 @@ Decisions enforce verification requirements: agent must run tests and show proof
 
 **Requires [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (CLI or VS Code extension).**
 
+### Option 1: Claude Code plugin (recommended)
+
+In Claude Code, run:
+
+```
+/plugin marketplace add anthropics/claude-plugins-community
+/plugin install axme-code@claude-community
+```
+
+Or from the terminal:
+
+```bash
+claude plugin marketplace add anthropics/claude-plugins-community
+claude plugin install axme-code@claude-community
+```
+
+Works on Linux, macOS, and Windows — anywhere Claude Code runs. The plugin ships with the MCP server, safety hooks, and CLI bundled together; no separate binary to install.
+
+On first use in a project, just ask the agent to call `axme_context` — the plugin auto-initializes the knowledge base on that session.
+
+### Option 2: Standalone binary
+
+Install the CLI system-wide (useful if you want to run `axme-code` outside Claude Code, e.g. for scripting):
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/AxmeAI/axme-code/main/install.sh | bash
 ```
 
-Installs to `~/.local/bin/axme-code`. Supports Linux and macOS (x64 and ARM64).
+Installs to `~/.local/bin/axme-code`. Supports Linux and macOS (x64 and ARM64). **Windows via WSL2** is supported — run the Linux one-liner inside your WSL distro and install Claude Code inside WSL too. Native Windows is not yet supported via this path (the plugin above works on Windows natively).
 
-**Windows via WSL2** is supported. Install a WSL2 distro (`wsl --install -d Ubuntu-22.04`), then install both Claude Code and axme-code **inside** your WSL distro — not on the Windows host. Native Windows is not yet supported.
-
-### Setup
+Then in each project:
 
 ```bash
 cd your-project          # or workspace root for multi-repo
