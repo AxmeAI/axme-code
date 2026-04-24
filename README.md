@@ -2,9 +2,9 @@
 
 ### Claude Code forgets your project every session. We fixed it.
 
-AXME Code is an [MCP server](https://modelcontextprotocol.io/) plugin for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) that gives your AI coding agent **persistent memory**, **architectural decisions**, and **safety guardrails** — across every session, automatically.
+AXME Code is a [Claude Code](https://docs.anthropic.com/en/docs/claude-code) plugin that adds **pre-execution safety hooks**, **architectural decision enforcement**, **session handoff**, and **persistent memory** to your AI coding agent — via an [MCP server](https://modelcontextprotocol.io/), across every session, automatically.
 
-Stop re-explaining your architecture on session 47. Stop losing context between sessions. Stop hoping the agent won't run `git push --force` to main. AXME Code handles context engineering, session continuity, and hard safety enforcement so you can focus on building.
+Stop re-explaining your architecture on session 47. Stop losing context between session handoffs. Stop hoping the agent won't run `git push --force` to main. AXME Code enforces architectural decisions, continues sessions where the last one stopped, and blocks dangerous commands before they execute — so you can focus on building.
 
 You keep using Claude Code exactly as before. AXME Code works transparently in the background.
 
@@ -12,6 +12,8 @@ You keep using Claude Code exactly as before. AXME Code works transparently in t
 [![GitHub Release](https://img.shields.io/github/v/release/AxmeAI/axme-code)](https://github.com/AxmeAI/axme-code/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Tests](https://img.shields.io/badge/tests-413%20passing-brightgreen)]()
+
+> ⭐ **Star this repo** if it saves you time · 🔔 **Watch releases** for new features · 💬 [**Discussions**](https://github.com/AxmeAI/axme-code/discussions)
 
 **[Quick Start](#quick-start)** · **[Before & After](#before--after)** · **[How It Works](#how-it-works)** · **[Architecture](docs/ARCHITECTURE.md)** · **[Website](https://code.axme.ai)**
 
