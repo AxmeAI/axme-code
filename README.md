@@ -2,9 +2,9 @@
 
 ### Claude Code forgets your project every session. We fixed it.
 
-AXME Code is a [Claude Code](https://docs.anthropic.com/en/docs/claude-code) plugin that adds **pre-execution safety hooks**, **architectural decision enforcement**, **session handoff**, and **persistent memory** to your AI coding agent — via an [MCP server](https://modelcontextprotocol.io/), across every session, automatically.
+AXME Code is a [Claude Code](https://docs.anthropic.com/en/docs/claude-code) plugin that gives your AI coding agent **persistent memory across sessions**, **pre-execution safety hooks**, **architectural decision enforcement**, and **structured session handoff** — via an [MCP server](https://modelcontextprotocol.io/), automatically, across every session.
 
-Stop re-explaining your architecture on session 47. Stop losing context between session handoffs. Stop hoping the agent won't run `git push --force` to main. AXME Code enforces architectural decisions, continues sessions where the last one stopped, and blocks dangerous commands before they execute — so you can focus on building.
+Stop re-explaining your architecture on session 47. Stop losing memory between session handoffs. Stop hoping the agent won't run `git push --force` to main. AXME Code remembers what happened, enforces your architectural decisions, continues where the last session stopped, and blocks dangerous commands before they execute — so you can focus on building.
 
 You keep using Claude Code exactly as before. AXME Code works transparently in the background.
 
