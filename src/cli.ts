@@ -8,7 +8,7 @@
  *   axme-code hook <name> <json> - Run hook (pre-tool-use, post-tool-use, session-end)
  */
 
-import { resolve, join } from "node:path";
+import { resolve, join, basename } from "node:path";
 import { writeFileSync, existsSync, readFileSync, appendFileSync, mkdirSync } from "node:fs";
 import yaml from "js-yaml";
 import { initProjectWithLLM, initWorkspaceWithLLM } from "./tools/init.js";
@@ -143,19 +143,19 @@ function generateClaudeMd(projectPath: string, isWorkspace: boolean): void {
 
 /**
  * Check if Claude auth is available.
- * Checks: ANTHROPIC_API_KEY, or claude binary exists on disk.
+ * Checks: ANTHROPIC_API_KEY, or a locatable `claude` CLI (which is evidence
+ * the user has either an API key or a signed-in Claude subscription).
+ *
+ * Delegates to findClaudePath() so the PATH-separator (":" vs ";"), executable
+ * suffixes (".cmd", ".exe" on Windows), and standard-install locations are all
+ * handled the same way scanner agents resolve the binary — no divergence.
  */
 function hasAuth(): boolean {
   if (process.env.ANTHROPIC_API_KEY) return true;
-
-  // Check common claude binary locations directly (no shell needed)
-  const { env } = process;
-  const pathDirs = (env.PATH || "").split(":");
-  for (const dir of pathDirs) {
-    if (existsSync(join(dir, "claude"))) return true;
-  }
-
-  return false;
+  // findClaudePath already checks AXME_CLAUDE_EXECUTABLE, CLAUDE_CODE_ENTRYPOINT,
+  // PATH lookup, standard install locations, and nvm dirs, cross-platform.
+  const { findClaudePath } = require("./utils/agent-options.js") as typeof import("./utils/agent-options.js");
+  return !!findClaudePath();
 }
 
 /**
@@ -203,7 +203,7 @@ async function ensureAuthConfiguredForSetup(): Promise<void> {
 
 function generateWorkspaceYaml(workspacePath: string, ws: WorkspaceInfo): void {
   const wsYaml = yaml.dump({
-    name: workspacePath.split("/").pop(),
+    name: basename(workspacePath),
     type: ws.type,
     manifest: ws.manifestPath,
     projects: ws.projects,
@@ -211,6 +211,22 @@ function generateWorkspaceYaml(workspacePath: string, ws: WorkspaceInfo): void {
   ensureDir(join(workspacePath, AXME_CODE_DIR));
   atomicWrite(join(workspacePath, AXME_CODE_DIR, "workspace.yaml"), wsYaml);
   console.log("  workspace.yaml: created");
+}
+
+/**
+ * Build a shell-portable hook command: `"<node>" "<self>" hook <name>
+ * --workspace "<project>"`. Using the absolute node binary and the
+ * axme-code entry file makes the command independent of PATH, so hooks
+ * fire reliably even when the `axme-code`/`axme-code.cmd` wrapper
+ * is not on the session PATH (common on Windows). Quoting every segment
+ * lets Claude Code hand the string to `sh -c` or `cmd.exe /c` without
+ * word-splitting on spaces.
+ */
+function buildHookCommand(hookName: string, projectPath: string): string {
+  const nodeExec = process.execPath;
+  const self = resolve(process.argv[1] ?? "axme-code");
+  const q = (s: string) => `"${s}"`;
+  return `${q(nodeExec)} ${q(self)} hook ${hookName} --workspace ${q(projectPath)}`;
 }
 
 function configureHooks(projectPath: string): void {
@@ -239,7 +255,7 @@ function configureHooks(projectPath: string): void {
   settings.hooks.PreToolUse.push({
     hooks: [{
       type: "command",
-      command: `axme-code hook pre-tool-use --workspace ${projectPath}`,
+      command: buildHookCommand("pre-tool-use", projectPath),
       timeout: 5,
     }],
   });
@@ -251,7 +267,7 @@ function configureHooks(projectPath: string): void {
     matcher: "Edit|Write|NotebookEdit",
     hooks: [{
       type: "command",
-      command: `axme-code hook post-tool-use --workspace ${projectPath}`,
+      command: buildHookCommand("post-tool-use", projectPath),
       timeout: 10,
     }],
   });
@@ -261,7 +277,7 @@ function configureHooks(projectPath: string): void {
   settings.hooks.SessionEnd.push({
     hooks: [{
       type: "command",
-      command: `axme-code hook session-end --workspace ${projectPath}`,
+      command: buildHookCommand("session-end", projectPath),
       timeout: 120,
     }],
   });
@@ -405,7 +421,7 @@ async function main() {
           const totalCost = workspaceResult.cost.costUsd + projectResults.reduce((s, r) => s + r.cost.costUsd, 0);
           console.log(`  Workspace: ${workspaceResult.decisions.count} decisions, ${workspaceResult.memories.count} memories`);
           for (const r of projectResults) {
-            const name = r.projectPath.split("/").pop();
+            const name = basename(r.projectPath);
             console.log(`  ${name}: ${r.decisions.count} decisions (${r.decisions.fromScan} LLM + ${r.decisions.fromPresets} presets)`);
           }
           if (totalCost > 0) console.log(`  Total cost: $${totalCost.toFixed(2)}`);
@@ -545,7 +561,34 @@ async function main() {
     }
 
     case "check-init": {
-      // Plugin SessionStart hook — ensures CLAUDE.md exists and outputs instruction
+      // Plugin SessionStart hook — lazy-install the SDK if we're running from
+      // a plugin root that hasn't had one yet, then ensure CLAUDE.md exists
+      // and output the instruction. Moving the lazy install inline here (vs.
+      // an inline shell test in hooks.json) makes SessionStart cross-platform
+      // — the previous `test -d ... || (cd ... && npm install) ; node ...`
+      // uses POSIX-only syntax that cmd.exe can't execute.
+      if (process.env.CLAUDE_PLUGIN_ROOT) {
+        const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT;
+        const sdkDir = join(pluginRoot, "node_modules", "@anthropic-ai", "claude-agent-sdk");
+        if (!existsSync(sdkDir)) {
+          try {
+            const { execSync } = await import("node:child_process");
+            // execSync always spawns through a shell (sh on POSIX, cmd.exe on
+            // Windows), so `npm` resolves to `npm.cmd` on Windows without any
+            // extra flag.
+            execSync("npm install --omit=dev --ignore-scripts", {
+              cwd: pluginRoot,
+              stdio: "ignore",
+              timeout: 25_000,
+            });
+          } catch {
+            // Silent — fall through. The plugin still works for deterministic
+            // paths (safety hooks, context lookup) even without the SDK;
+            // only LLM-backed scans need it and they'll fail loudly later.
+          }
+        }
+      }
+
       const checkPath = resolve(args[1] || ".");
       const claudeMdPath = join(checkPath, "CLAUDE.md");
       const axmeSection = `## AXME Code

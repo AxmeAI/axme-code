@@ -23,6 +23,16 @@ jobs:
           - os: macos-latest
             target: darwin-x64
             node-arch: x64
+          # Windows bundles are built on ubuntu-latest because esbuild output
+          # is platform-agnostic JS — the bundle runs under Node on any OS.
+          # install.ps1 generates the accompanying axme-code.cmd wrapper at
+          # install time so we ship a single file per Windows arch.
+          - os: ubuntu-latest
+            target: windows-x64
+            node-arch: x64
+          - os: ubuntu-latest
+            target: windows-arm64
+            node-arch: arm64
 
     runs-on: ${{ matrix.os }}
     permissions:

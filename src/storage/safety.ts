@@ -6,7 +6,7 @@
  */
 
 import { readFileSync, existsSync, readdirSync } from "node:fs";
-import { join, resolve, dirname } from "node:path";
+import { join, resolve, dirname, basename } from "node:path";
 import { execSync } from "node:child_process";
 import { homedir } from "node:os";
 import yaml from "js-yaml";
@@ -505,7 +505,7 @@ export function checkFilePath(rules: SafetyRules, filePath: string, operation: "
 
 function matchesPattern(filePath: string, pattern: string): boolean {
   if (filePath === pattern || filePath.startsWith(pattern)) return true;
-  const fileName = filePath.split("/").pop() ?? "";
+  const fileName = basename(filePath);
   // Basename match: ".env" matches "/any/path/.env"
   if (fileName === pattern) return true;
   if (pattern.includes("*")) {
@@ -610,7 +610,7 @@ export function saveScopedSafetyRule(
   } else {
     // Single-repo session with a scope list: just write to the project
     updateSafetyRule(projectPath, ruleType, value);
-    repos.push(projectPath.split("/").pop() ?? "");
+    repos.push(basename(projectPath));
   }
   return { target: "scoped", repos };
 }

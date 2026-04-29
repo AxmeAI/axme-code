@@ -4,7 +4,7 @@
 
 import { execSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { resolveAuthMode } from "./auth-config.js";
 
@@ -21,7 +21,11 @@ type Options = import("@anthropic-ai/claude-agent-sdk").Options;
  * Resolution order (B-009 — first match wins):
  *   1. `AXME_CLAUDE_EXECUTABLE` env var — explicit override for CI / unusual installs
  *   2. `CLAUDE_CODE_ENTRYPOINT` env var — set by Claude Code itself in some contexts
- *   3. `which claude` — standard PATH lookup (works on most dev machines)
+ *   3. `which`/`where.exe` PATH lookup. On Windows the npm shim is
+ *      `claude.cmd`, but spawn() of .cmd hits CVE-2024-27980 EINVAL — so we
+ *      derive the real `claude.exe` underneath
+ *      `<npm-prefix>/node_modules/@anthropic-ai/claude-code/bin/claude.exe`
+ *      and return that instead.
  *   4. Standard install locations (no PATH dependency):
  *      - ~/.local/bin/claude
  *      - /usr/local/bin/claude
@@ -49,12 +53,47 @@ export function findClaudePath(): string | undefined {
     return _claudePath;
   }
 
-  // 3. which claude (PATH lookup)
+  // 3. PATH lookup — `which` on POSIX, `where.exe` on Windows.
+  // Use stdio:['ignore','pipe','ignore'] to suppress stderr leakage (Windows
+  // PowerShell renders tool-not-found messages even when we try/catch).
   try {
-    const p = execSync("which claude", { encoding: "utf-8", timeout: 5000 }).trim();
-    if (p && existsSync(p)) {
-      _claudePath = p;
-      return _claudePath;
+    const lookup = process.platform === "win32" ? "where.exe claude" : "which claude";
+    const p = execSync(lookup, { encoding: "utf-8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] }).trim();
+    const lines = p.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+    if (process.platform === "win32") {
+      // npm's claude.cmd is a shim that ultimately invokes the real
+      // claude.exe under <npm-prefix>/node_modules/@anthropic-ai/claude-code/
+      // bin/claude.exe. The Agent SDK can spawn .exe directly (no
+      // CVE-2024-27980 EINVAL like .cmd/.bat) AND avoids the SDK's own
+      // import.meta.url-based fallback which crashes inside our esbuild
+      // bundle (fileURLToPath(undefined)). Always prefer the .exe.
+      const cmd = lines.find((r) => /\\claude\.cmd$/i.test(r));
+      if (cmd) {
+        const exeCandidate = join(
+          dirname(cmd),
+          "node_modules", "@anthropic-ai", "claude-code", "bin", "claude.exe",
+        );
+        if (existsSync(exeCandidate)) {
+          _claudePath = exeCandidate;
+          return _claudePath;
+        }
+      }
+      // Fallback: any .exe directly in the where.exe output (rare on npm
+      // installs but possible for custom layouts).
+      const directExe = lines.find((r) => /\.exe$/i.test(r) && existsSync(r));
+      if (directExe) {
+        _claudePath = directExe;
+        return _claudePath;
+      }
+      // Last resort on Windows: bare name / .ps1 / .cmd. SDK will likely
+      // fail on these (.cmd → spawn EINVAL, bare → not executable by
+      // cmd.exe), so caller's deterministic fallback kicks in.
+    } else {
+      const first = lines[0];
+      if (first && existsSync(first)) {
+        _claudePath = first;
+        return _claudePath;
+      }
     }
   } catch { /* not in PATH — continue to standard locations */ }
 
@@ -94,6 +133,19 @@ export function findClaudePath(): string | undefined {
 /** @internal Reset cached claude path. Used in tests only. */
 export function _resetFindClaudePath(): void {
   _claudePath = undefined;
+}
+
+/**
+ * Value to pass as the SDK's `pathToClaudeCodeExecutable` option.
+ *
+ * Always equal to findClaudePath() — the SDK needs an explicit path because
+ * its own `fileURLToPath(import.meta.url)` fallback crashes inside our
+ * esbuild bundle (import.meta.url is undefined there). On Windows
+ * findClaudePath() now resolves the `.cmd` shim back to the real `.exe`
+ * (CVE-2024-27980 only affected .cmd/.bat — passing .exe to spawn is safe).
+ */
+export function claudePathForSdk(): string | undefined {
+  return findClaudePath();
 }
 
 export type AgentRole = "scanner" | "tester" | "reviewer" | "engineer" | "architect" | "auditor";
@@ -162,7 +214,7 @@ export function buildAgentQueryOptions(base: {
 }, role: AgentRole): Options {
   const tools = ROLE_TOOLS[role];
 
-  const claudePath = findClaudePath();
+  const claudePath = claudePathForSdk();
 
   return {
     cwd: base.cwd,

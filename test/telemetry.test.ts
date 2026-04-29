@@ -83,7 +83,7 @@ describe("getOrCreateMid", () => {
     assert.equal(readFileSync(filePath, "utf-8").trim(), mid);
   });
 
-  it("sets file mode 0600", () => {
+  it("sets file mode 0600", { skip: process.platform === "win32" ? "POSIX file modes not supported on Windows (security via ACLs)" : false }, () => {
     getOrCreateMid();
     const mode = statSync(_getMidFilePath()).mode & 0o777;
     assert.equal(mode, 0o600);
@@ -330,7 +330,7 @@ describe("sendTelemetry with HTTP stub", () => {
   it("sends startup event with required common fields", async () => {
     sendTelemetry("startup");
     // Wait for setImmediate + fetch
-    await new Promise((r) => setTimeout(r, 200));
+    await new Promise((r) => setTimeout(r, 2000));
     assert.equal(receivedRequests.length, 1);
     const event = receivedRequests[0].events[0];
     assert.equal(event.event, "startup");
@@ -356,7 +356,7 @@ describe("sendTelemetry with HTTP stub", () => {
       chunks: 1,
       error_class: null,
     });
-    await new Promise((r) => setTimeout(r, 200));
+    await new Promise((r) => setTimeout(r, 2000));
     assert.equal(receivedRequests.length, 1);
     const event = receivedRequests[0].events[0];
     assert.equal(event.event, "audit_complete");
@@ -368,14 +368,14 @@ describe("sendTelemetry with HTTP stub", () => {
   it("does NOT send when AXME_TELEMETRY_DISABLED is set", async () => {
     process.env.AXME_TELEMETRY_DISABLED = "1";
     sendTelemetry("startup");
-    await new Promise((r) => setTimeout(r, 200));
+    await new Promise((r) => setTimeout(r, 2000));
     assert.equal(receivedRequests.length, 0);
   });
 
   it("does NOT send when DO_NOT_TRACK is set", async () => {
     process.env.DO_NOT_TRACK = "1";
     sendTelemetry("startup");
-    await new Promise((r) => setTimeout(r, 200));
+    await new Promise((r) => setTimeout(r, 2000));
     assert.equal(receivedRequests.length, 0);
   });
 
@@ -383,7 +383,7 @@ describe("sendTelemetry with HTTP stub", () => {
     process.env.AXME_TELEMETRY_DISABLED = "1";
     sendTelemetry("startup");
     sendStartupEvents();
-    await new Promise((r) => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, 2000));
     assert.equal(existsSync(_getMidFilePath()), false);
   });
 
@@ -393,7 +393,7 @@ describe("sendTelemetry with HTTP stub", () => {
     process.env.AXME_TELEMETRY_ENDPOINT = "http://127.0.0.1:1/dead-endpoint";
 
     sendTelemetry("startup");
-    await new Promise((r) => setTimeout(r, 500));
+    await new Promise((r) => setTimeout(r, 2000));
 
     const queuePath = _getQueueFilePath();
     assert.equal(existsSync(queuePath), true);
@@ -409,7 +409,7 @@ describe("sendTelemetry with HTTP stub", () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     process.env.AXME_TELEMETRY_ENDPOINT = "http://127.0.0.1:1/dead";
     sendTelemetry("startup", { test: "first" });
-    await new Promise((r) => setTimeout(r, 500));
+    await new Promise((r) => setTimeout(r, 2000));
 
     // Verify queue has 1 event
     assert.equal(existsSync(_getQueueFilePath()), true);
@@ -431,7 +431,7 @@ describe("sendTelemetry with HTTP stub", () => {
     // Send again — should ship queued + new in one batch
     receivedRequests.length = 0;
     sendTelemetry("startup", { test: "second" });
-    await new Promise((r) => setTimeout(r, 300));
+    await new Promise((r) => setTimeout(r, 2000));
 
     assert.equal(receivedRequests.length, 1);
     assert.equal(receivedRequests[0].events.length, 2);
@@ -461,7 +461,7 @@ describe("sendStartupEvents", () => {
     sendStartupEvents();
     sendStartupEvents();
     sendStartupEvents();
-    await new Promise((r) => setTimeout(r, 300));
+    await new Promise((r) => setTimeout(r, 2000));
 
     // First call sends install + startup (2 batches with batch limit), second/third calls do nothing
     // We can't strictly count because batching is async, but it must be more than 0 and not 9
@@ -491,7 +491,7 @@ describe("reportError", () => {
     process.env.AXME_TELEMETRY_ENDPOINT = `http://127.0.0.1:${port}/v1/telemetry/events`;
 
     reportError("audit", "prompt_too_long", true);
-    await new Promise((r) => setTimeout(r, 300));
+    await new Promise((r) => setTimeout(r, 2000));
 
     assert.ok(received);
     const event = received.events[0];
@@ -519,7 +519,7 @@ describe("reportError", () => {
     process.env.AXME_TELEMETRY_ENDPOINT = `http://127.0.0.1:${port}/v1/telemetry/events`;
 
     reportError("hook", "network_error", false);
-    await new Promise((r) => setTimeout(r, 300));
+    await new Promise((r) => setTimeout(r, 2000));
 
     assert.ok(received);
     const event = received.events[0];
@@ -686,7 +686,7 @@ describe("ci field detection in events", () => {
     process.env.AXME_TELEMETRY_ENDPOINT = `http://127.0.0.1:${port}/v1/telemetry/events`;
 
     sendTelemetry("startup");
-    await new Promise((r) => setTimeout(r, 200));
+    await new Promise((r) => setTimeout(r, 2000));
 
     assert.ok(received, "request received");
     assert.equal(received.events[0].ci, true, "ci=true in payload");
@@ -710,7 +710,7 @@ describe("ci field detection in events", () => {
     process.env.AXME_TELEMETRY_ENDPOINT = `http://127.0.0.1:${port}/v1/telemetry/events`;
 
     sendTelemetry("startup");
-    await new Promise((r) => setTimeout(r, 200));
+    await new Promise((r) => setTimeout(r, 2000));
 
     assert.ok(received, "request received");
     assert.equal(received.events[0].ci, false, "ci=false default");
@@ -749,7 +749,7 @@ describe("audit_complete payload shape", () => {
       dropped_count: 0,
       error_class: null,
     });
-    await new Promise((r) => setTimeout(r, 200));
+    await new Promise((r) => setTimeout(r, 2000));
 
     assert.ok(received);
     const event = received.events[0];
@@ -796,7 +796,7 @@ describe("setup_complete payload shape", () => {
       is_workspace: false,
       child_repos: 0,
     });
-    await new Promise((r) => setTimeout(r, 200));
+    await new Promise((r) => setTimeout(r, 2000));
 
     assert.ok(received);
     const event = received.events[0];

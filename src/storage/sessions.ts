@@ -858,10 +858,13 @@ export function attachClaudeSession(
   // meta.json is briefly unavailable due to concurrent write.
   let session = loadSession(projectPath, axmeSessionId);
   if (!session) {
+    // Cross-platform sync sleep: Atomics.wait blocks the current thread
+    // without spawning a subprocess (POSIX `sleep` isn't available in
+    // cmd.exe). A fresh SharedArrayBuffer is never notified, so wait
+    // always elapses the full timeout.
+    const waitArr = new Int32Array(new SharedArrayBuffer(4));
     for (let retry = 0; retry < 3 && !session; retry++) {
-      const { setTimeout: wait } = require("node:timers/promises");
-      // Sync sleep — hooks are short-lived subprocesses, blocking is OK.
-      try { require("child_process").execSync("sleep 0.05"); } catch {}
+      Atomics.wait(waitArr, 0, 0, 50);
       session = loadSession(projectPath, axmeSessionId);
     }
     if (!session) return;

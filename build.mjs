@@ -31,10 +31,16 @@ await build({
   define,
 });
 
-// Create bin wrapper
+// Create bin wrappers — POSIX shebang entry + Windows .cmd wrapper. Shipping
+// both means install.sh/install.ps1 can place them side-by-side on any
+// platform; the one that matches the shell wins.
 import { writeFileSync, chmodSync, mkdirSync } from "fs";
 writeFileSync("dist/axme-code.js", '#!/usr/bin/env node\nimport("./cli.mjs");\n');
 chmodSync("dist/axme-code.js", 0o755);
+// Windows CMD wrapper — forwards all args to node + axme-code.js. %~dp0
+// resolves to the directory of the .cmd at runtime so this works regardless
+// of cwd or PATH entry style.
+writeFileSync("dist/axme-code.cmd", "@echo off\r\nnode \"%~dp0axme-code.js\" %*\r\n");
 
 // --- Plugin bundled builds (self-contained, zero external deps) ---
 
@@ -64,13 +70,15 @@ await build({
   define,
 });
 
-// Plugin bin wrapper — sets NODE_PATH so SDK can be found from CLAUDE_PLUGIN_DATA
+// Plugin bin wrappers — POSIX bash script + Windows .cmd. Both forward to
+// node + the plugin's bundled cli.mjs, located one directory up from bin/.
 mkdirSync("dist/plugin/bin", { recursive: true });
 writeFileSync("dist/plugin/bin/axme-code", `#!/bin/bash
 PLUGIN_DIR="\$(cd "\$(dirname "\$0")/.." && pwd)"
 exec node "\$PLUGIN_DIR/cli.mjs" "\$@"
 `);
 chmodSync("dist/plugin/bin/axme-code", 0o755);
+writeFileSync("dist/plugin/bin/axme-code.cmd", "@echo off\r\nnode \"%~dp0..\\cli.mjs\" %*\r\n");
 
 // Plugin package.json — only SDK for npm install in CLAUDE_PLUGIN_DATA
 writeFileSync("dist/plugin/package.json", JSON.stringify({
@@ -100,21 +108,26 @@ writeFileSync("dist/plugin/.mcp.json", JSON.stringify({
   },
 }, null, 2) + "\n");
 
-// Plugin hooks — safety enforcement via bundled CLI
+// Plugin hooks — safety enforcement via bundled CLI. All commands quote the
+// ${CLAUDE_PLUGIN_ROOT} expansion so paths with spaces survive sh -c and
+// cmd.exe /c unchanged. The SessionStart hook used to shell out to `test -d
+// ... || (cd ... && npm install)` which was POSIX-only; the lazy SDK
+// install is now inside the `check-init` subcommand so this command is a
+// plain Node invocation and works on Windows natively.
 writeFileSync("dist/plugin/hooks/hooks.json", JSON.stringify({
   description: "AXME Code safety enforcement and session tracking",
   hooks: {
     SessionStart: [{
       hooks: [{
         type: "command",
-        command: "test -d ${CLAUDE_PLUGIN_ROOT}/node_modules/@anthropic-ai/claude-agent-sdk || (cd ${CLAUDE_PLUGIN_ROOT} && npm install --omit=dev --ignore-scripts 2>/dev/null) ; node ${CLAUDE_PLUGIN_ROOT}/cli.mjs check-init",
+        command: 'node "${CLAUDE_PLUGIN_ROOT}/cli.mjs" check-init',
         timeout: 30,
       }],
     }],
     PreToolUse: [{
       hooks: [{
         type: "command",
-        command: "node ${CLAUDE_PLUGIN_ROOT}/cli.mjs hook pre-tool-use",
+        command: 'node "${CLAUDE_PLUGIN_ROOT}/cli.mjs" hook pre-tool-use',
         timeout: 5,
       }],
     }],
@@ -122,14 +135,14 @@ writeFileSync("dist/plugin/hooks/hooks.json", JSON.stringify({
       matcher: "Edit|Write|NotebookEdit",
       hooks: [{
         type: "command",
-        command: "node ${CLAUDE_PLUGIN_ROOT}/cli.mjs hook post-tool-use",
+        command: 'node "${CLAUDE_PLUGIN_ROOT}/cli.mjs" hook post-tool-use',
         timeout: 10,
       }],
     }],
     SessionEnd: [{
       hooks: [{
         type: "command",
-        command: "node ${CLAUDE_PLUGIN_ROOT}/cli.mjs hook session-end",
+        command: 'node "${CLAUDE_PLUGIN_ROOT}/cli.mjs" hook session-end',
         timeout: 120,
       }],
     }],
