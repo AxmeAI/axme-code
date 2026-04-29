@@ -22,6 +22,9 @@ import { saveMemoryTool } from "./tools/memory-tools.js";
 import { saveDecisionTool } from "./tools/decision-tools.js";
 import { updateSafetyTool, showSafetyTool } from "./tools/safety-tools.js";
 import { statusTool, worklogTool } from "./tools/status.js";
+import { getMemoryTool, getDecisionTool, searchKbTool } from "./tools/kb-search.js";
+import { embedKbEntry } from "./storage/embeddings.js";
+import { readConfig } from "./storage/config.js";
 import { detectWorkspace } from "./utils/workspace-detector.js";
 import {
   findOrphanSessions,
@@ -432,6 +435,10 @@ server.tool(
     const sid = getOwnedSessionIdForLogging();
     const resolved = ppWithScope(project_path, scope);
     const result = saveMemoryTool(resolved, { type, title, description, body, keywords, scope }, sid);
+    // Update the embeddings index when search mode is on. Awaited so the
+    // index is consistent on return; ~50-200ms once the embedder is warm.
+    // Skips silently in full mode and on missing runtime.
+    await embedKbEntry(resolved, result.slug, "memory", title, description, readConfig(resolved).contextMode);
     return { content: [{ type: "text" as const, text: `Memory saved: ${result.slug} (${type}) -> ${resolved}` }] };
   },
 );
@@ -452,6 +459,9 @@ server.tool(
 
     const resolved = ppWithScope(project_path, scope);
     const result = saveDecisionTool(resolved, { title, decision, reasoning, enforce, scope });
+    // Use decision text as description so the search index returns hits
+    // ranked by the actual rule, not just the title.
+    await embedKbEntry(resolved, result.id, "decision", title, decision, readConfig(resolved).contextMode);
     return { content: [{ type: "text" as const, text: `Decision saved: ${result.id} - ${title} -> ${resolved}` }] };
   },
 );
@@ -482,6 +492,48 @@ server.tool(
   async ({ project_path }) => {
 
     return { content: [{ type: "text" as const, text: showSafetyTool(pp(project_path)) }] };
+  },
+);
+
+// --- axme_get_memory ---
+server.tool(
+  "axme_get_memory",
+  "Fetch the full body of one memory by slug. Use after seeing the slug in axme_context (search mode catalog) or axme_search_kb results.",
+  {
+    project_path: z.string().optional().describe("Absolute path to the project root (defaults to server cwd)"),
+    slug: z.string().describe("Memory slug, e.g. 'always-call-axme-context-first'"),
+  },
+  async ({ project_path, slug }) => {
+    return { content: [{ type: "text" as const, text: getMemoryTool(pp(project_path), slug) }] };
+  },
+);
+
+// --- axme_get_decision ---
+server.tool(
+  "axme_get_decision",
+  "Fetch the full body of one decision by ID (e.g. 'D-110') or slug. Use after seeing it in axme_context (search mode catalog) or axme_search_kb results.",
+  {
+    project_path: z.string().optional().describe("Absolute path to the project root (defaults to server cwd)"),
+    id_or_slug: z.string().describe("Decision ID like 'D-110' or its slug"),
+  },
+  async ({ project_path, id_or_slug }) => {
+    return { content: [{ type: "text" as const, text: getDecisionTool(pp(project_path), id_or_slug) }] };
+  },
+);
+
+// --- axme_search_kb ---
+server.tool(
+  "axme_search_kb",
+  "Semantic search across memories and decisions. Useful for fuzzy lookups mid-session ('how did we handle X?'). Requires the embeddings runtime — install with `axme-code config set context.mode search`.",
+  {
+    project_path: z.string().optional().describe("Absolute path to the project root (defaults to server cwd)"),
+    query: z.string().describe("Search query in natural language"),
+    k: z.number().int().min(1).max(50).optional().describe("Top K results to return (default 5, max 50)"),
+    type: z.enum(["memory", "decision"]).optional().describe("Filter results to one type. Omit to search both."),
+  },
+  async ({ project_path, query, k, type }) => {
+    const text = await searchKbTool(pp(project_path), { query, k, type });
+    return { content: [{ type: "text" as const, text }] };
   },
 );
 

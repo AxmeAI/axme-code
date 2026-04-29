@@ -252,6 +252,16 @@ export interface SessionMeta {
 
 // --- Config ---
 
+/**
+ * Context-loading strategy at session start.
+ *   "full"   — every memory and decision body loaded into agent context (default).
+ *   "search" — only catalog (title + 1-line description + type/enforce) loaded;
+ *              full bodies fetched on demand via axme_get_memory / axme_get_decision /
+ *              axme_search_kb. Requires the embeddings runtime, installed by
+ *              `axme-code config set context.mode search`.
+ */
+export type ContextMode = "full" | "search";
+
 export interface ProjectConfig {
   /** Default model for agent sessions (architect, engineer, reviewer, tester) */
   model: string;
@@ -259,6 +269,8 @@ export interface ProjectConfig {
   auditorModel: string;
   reviewEnabled: boolean;
   presets: string[];
+  /** Context-loading strategy. Defaults to "full". See ContextMode docstring. */
+  contextMode: ContextMode;
 }
 
 export const DEFAULT_PROJECT_CONFIG: ProjectConfig = {
@@ -266,6 +278,7 @@ export const DEFAULT_PROJECT_CONFIG: ProjectConfig = {
   auditorModel: DEFAULT_AUDITOR_MODEL,
   reviewEnabled: true,
   presets: ["essential-safety", "ai-agent-guardrails"],
+  contextMode: "full",
 };
 
 // --- Plans ---

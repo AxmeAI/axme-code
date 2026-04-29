@@ -8,7 +8,8 @@
 import { oracleContext, showOracle, oracleExists, loadOracleFiles } from "../storage/oracle.js";
 import { decisionsContext, showDecisions, enforceableDecisionsContext, listDecisions } from "../storage/decisions.js";
 import { pathExists, readSafe } from "../storage/engine.js";
-import { configExists } from "../storage/config.js";
+import { configExists, readConfig } from "../storage/config.js";
+import { isRuntimeInstalled } from "../storage/embeddings.js";
 import { join } from "node:path";
 import { existsSync } from "node:fs";
 import { AXME_CODE_DIR } from "../types.js";
@@ -165,19 +166,152 @@ export function getFullContextSections(projectPath: string, workspacePath?: stri
     parts.push(lines.join("\n"));
   }
 
-  // Parallel loading instructions
-  parts.push([
-    "## Load Full Knowledge Base",
-    "",
-    "Call these three tools **in parallel** now to load the complete knowledge base:",
-    "1. `axme_oracle` - project stack, structure, patterns, glossary",
-    "2. `axme_decisions` - architectural decisions with enforce levels",
-    "3. `axme_memories` - feedback and validated patterns",
-    "",
-    "**IMPORTANT**: if any tool output is truncated or saved to a file, use the Read tool to read the full file content into your context. Do not proceed with partial data.",
-  ].join("\n"));
+  // Context-loading branch: full mode (load everything) vs search mode
+  // (catalog only + on-demand fetch via axme_get_*/axme_search_kb).
+  const config = readConfig(projectPath);
+  const totalKbSize = listMemoriesMerged(projectPath, workspacePath).length
+    + listDecisionsMerged(projectPath, workspacePath).length;
+
+  if (config.contextMode === "search") {
+    parts.push(buildSearchModeCatalog(projectPath, workspacePath));
+    parts.push(buildSearchModeInstructions(isRuntimeInstalled()));
+  } else {
+    // Full mode (default) — keep existing parallel-load instruction.
+    parts.push([
+      "## Load Full Knowledge Base",
+      "",
+      "Call these three tools **in parallel** now to load the complete knowledge base:",
+      "1. `axme_oracle` - project stack, structure, patterns, glossary",
+      "2. `axme_decisions` - architectural decisions with enforce levels",
+      "3. `axme_memories` - feedback and validated patterns",
+      "",
+      "**IMPORTANT**: if any tool output is truncated or saved to a file, use the Read tool to read the full file content into your context. Do not proceed with partial data.",
+    ].join("\n"));
+
+    // Directive hint for users still on full mode whose KB has grown past
+    // the point where loading every body becomes wasteful. Threshold (100)
+    // is a recommendation, not a cutoff — full mode keeps working at any
+    // size. Worded as a MUST so the agent reliably surfaces the option to
+    // the user instead of silently absorbing the warning.
+    if (totalKbSize > 100) {
+      parts.push([
+        "## ⚠️ Knowledge base size — action required",
+        "",
+        `This project has **${totalKbSize} KB entries** (memories + decisions). Loading every body at`,
+        "session start is wasteful at this size — both in tokens and in your time waiting for the",
+        "context to load.",
+        "",
+        "**MUST** tell the user, in your first response:",
+        "",
+        `> Your AXME knowledge base has ${totalKbSize} entries. Search mode would cut session-start`,
+        "> tokens by ~10x — the agent gets a catalog (titles + 1-line summaries) at start and fetches",
+        "> full bodies on demand via axme_search_kb / axme_get_memory / axme_get_decision.",
+        "> ",
+        "> Switching is opt-in. The CLI command is:",
+        "> ",
+        "> ```bash",
+        "> axme-code config set context.mode search",
+        "> ```",
+        "> ",
+        "> It installs ~100 MB of local embedding runtime (transformers.js + MiniLM model — runs on",
+        "> your CPU, no API calls, no token cost). On install failure the config rolls back to full",
+        "> automatically. Revert any time with `axme-code config set context.mode full`.",
+        "> ",
+        "> Want me to run the command for you now, or will you run it yourself in your terminal?",
+        "",
+        "Then **WAIT** for the user's decision before continuing with the original task:",
+        "",
+        "- If the user says \"run it\" / \"yes\" / \"go ahead\" → execute the command via Bash and proceed.",
+        "- If the user says \"I'll do it\" / \"later\" / \"skip\" → do NOT run it; continue the task in full mode.",
+        "- If the user is silent or asks an unrelated question → continue in full mode; do not nag again",
+        "  this session.",
+        "",
+        "Do NOT switch the mode without explicit user confirmation. Do NOT nag again in the same",
+        "session if the user declines or moves on.",
+      ].join("\n"));
+    }
+  }
 
   return parts;
+}
+
+/** Memories merged across workspace+project for KB-size accounting. */
+function listMemoriesMerged(projectPath: string, workspacePath?: string) {
+  return workspacePath && workspacePath !== projectPath
+    ? mergeMemories(listMemories(workspacePath), listMemories(projectPath))
+    : listMemories(projectPath);
+}
+
+/** Decisions merged across workspace+project for KB-size accounting. */
+function listDecisionsMerged(projectPath: string, workspacePath?: string) {
+  return workspacePath && workspacePath !== projectPath
+    ? mergeDecisions(listDecisions(workspacePath), listDecisions(projectPath))
+    : listDecisions(projectPath);
+}
+
+/**
+ * Render the search-mode catalog: title + 1-line description for every
+ * memory and decision, prefixed with [type] / [enforce] so the agent can
+ * prioritize what to fetch in full.
+ *
+ * No bodies. No keywords. Compact. Typically 5-10x smaller than full mode.
+ */
+function buildSearchModeCatalog(projectPath: string, workspacePath?: string): string {
+  const memories = listMemoriesMerged(projectPath, workspacePath);
+  const decisions = listDecisionsMerged(projectPath, workspacePath);
+  const lines: string[] = [
+    "## Knowledge Base Catalog (search mode)",
+    "",
+    `${decisions.length} decision(s), ${memories.length} memory(ies). Bodies are NOT loaded.`,
+    "",
+  ];
+  if (decisions.length > 0) {
+    lines.push("### Decisions");
+    lines.push("");
+    for (const d of decisions) {
+      const enforce = d.enforce ?? "info";
+      const desc = d.decision ? d.decision.replace(/\s+/g, " ").slice(0, 200) : "";
+      lines.push(`- [${enforce}] **${d.id}** — ${d.title}${desc ? ` — ${desc}` : ""}`);
+    }
+    lines.push("");
+  }
+  if (memories.length > 0) {
+    lines.push("### Memories");
+    lines.push("");
+    for (const m of memories) {
+      const desc = m.description ? m.description.replace(/\s+/g, " ").slice(0, 200) : "";
+      lines.push(`- [${m.type}] **${m.slug}** — ${m.title}${desc ? ` — ${desc}` : ""}`);
+    }
+    lines.push("");
+  }
+  return lines.join("\n");
+}
+
+/**
+ * Instructions agent must follow in search mode: scan the catalog, fetch
+ * bodies via the three new MCP tools, never write code from titles alone.
+ */
+function buildSearchModeInstructions(runtimeInstalled: boolean): string {
+  const searchAvailable = runtimeInstalled
+    ? "- `axme_search_kb(query, type?, k?)` — semantic search across both"
+    : "- `axme_search_kb(query, ...)` — currently UNAVAILABLE (transformers runtime not installed; falls back to a hint message)";
+  return [
+    "## Search mode active — bodies fetched on demand",
+    "",
+    "You have a catalog of every memory and decision above (titles + descriptions only).",
+    "Bodies are NOT loaded. Token cost at session start is ~10x lower than full mode.",
+    "",
+    "**MUST**: scan the catalog before generating code. If a title is relevant to your task,",
+    "fetch the full body **before** writing.",
+    "",
+    "- `axme_get_memory(slug)` — full body of one memory",
+    "- `axme_get_decision(id_or_slug)` — full body of one decision",
+    searchAvailable,
+    "",
+    runtimeInstalled
+      ? "Use `axme_search_kb` for fuzzy lookups (\"how did we handle X?\"). Use `axme_get_*` when you already know the slug from the catalog."
+      : "Without the runtime, navigate the catalog above by topic and fetch bodies via `axme_get_*`. To enable semantic search: `axme-code config set context.mode search` (re-runs install).",
+  ].join("\n");
 }
 
 /** Legacy joined output (for backward compat where needed). */

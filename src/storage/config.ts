@@ -49,12 +49,26 @@ function formatConfig(config: ProjectConfig): string {
     `presets:`,
     ...config.presets.map(p => `  - ${p}`),
     "",
+    "# Context-loading mode at session start.",
+    "#   full   — every memory and decision body loaded (default; best for KBs <=100 entries)",
+    "#   search — only catalog loaded, bodies fetched via axme_get_memory / axme_get_decision /",
+    "#            axme_search_kb. Recommended for KBs >100 entries. Requires embeddings runtime,",
+    "#            installed by: axme-code config set context.mode search",
+    "context:",
+    `  mode: ${config.contextMode}`,
+    "",
   ].join("\n");
 }
 
 function parseConfig(content: string): ProjectConfig {
   const doc = yaml.load(content) as Record<string, any> | null;
   if (!doc || typeof doc !== "object") return { ...DEFAULT_PROJECT_CONFIG };
+
+  let contextMode: "full" | "search" = DEFAULT_PROJECT_CONFIG.contextMode;
+  const ctxRaw = doc.context;
+  if (ctxRaw && typeof ctxRaw === "object" && (ctxRaw.mode === "full" || ctxRaw.mode === "search")) {
+    contextMode = ctxRaw.mode;
+  }
 
   return {
     model: String(doc.model ?? DEFAULT_PROJECT_CONFIG.model),
@@ -71,5 +85,6 @@ function parseConfig(content: string): ProjectConfig {
           return true; // keep all, just warn
         })
       : DEFAULT_PROJECT_CONFIG.presets,
+    contextMode,
   };
 }

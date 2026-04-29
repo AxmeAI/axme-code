@@ -796,6 +796,89 @@ Do NOT skip — without context you will miss critical project rules.
       process.exit(1);
     }
 
+    case "config": {
+      // axme-code config get <key>
+      // axme-code config set <key> <value>
+      // Currently supported keys: context.mode (full|search). The set path
+      // for context.mode = search atomically installs the transformers
+      // runtime + builds the initial embeddings index, and rolls the
+      // config back to "full" if either step fails (D-136 / B-005 design).
+      const sub = args[1];
+      const key = args[2];
+      const value = args[3];
+      const projectPath = resolve(".");
+      const { readConfig: rc, writeConfig: wc } = await import("./storage/config.js");
+
+      if (sub === "get") {
+        if (!key) {
+          console.error("usage: axme-code config get <key>  (e.g. context.mode)");
+          process.exit(1);
+        }
+        const cfg = rc(projectPath);
+        if (key === "context.mode") console.log(cfg.contextMode);
+        else if (key === "model") console.log(cfg.model);
+        else if (key === "auditor_model") console.log(cfg.auditorModel);
+        else if (key === "review_enabled") console.log(String(cfg.reviewEnabled));
+        else { console.error(`Unknown config key: ${key}`); process.exit(1); }
+        break;
+      }
+
+      if (sub === "set") {
+        if (!key || value === undefined) {
+          console.error("usage: axme-code config set <key> <value>");
+          process.exit(1);
+        }
+        if (key !== "context.mode") {
+          console.error(`Set is currently supported only for context.mode. Got: ${key}`);
+          process.exit(1);
+        }
+        if (value !== "full" && value !== "search") {
+          console.error(`context.mode must be 'full' or 'search'. Got: ${value}`);
+          process.exit(1);
+        }
+        const cfg = rc(projectPath);
+        const prevMode = cfg.contextMode;
+
+        if (value === "full") {
+          wc(projectPath, { ...cfg, contextMode: "full" });
+          console.log("Saved: context.mode = full");
+          break;
+        }
+
+        // value === "search" — install runtime if missing, then reindex.
+        const { runConfigSetSearch } = await import("./tools/search-install.js");
+        const result = await runConfigSetSearch(projectPath);
+        if (result.ok) {
+          wc(projectPath, { ...cfg, contextMode: "search" });
+          console.log(`Saved: context.mode = search (indexed ${result.indexed} entries)`);
+        } else {
+          // Rollback config to whatever it was before — we never changed it
+          // in the failure path, but be explicit so future edits don't drop
+          // this guarantee.
+          wc(projectPath, { ...cfg, contextMode: prevMode });
+          console.error(`\nFailed to enable search mode: ${result.error}`);
+          console.error(`Config left at context.mode = ${prevMode}.`);
+          process.exit(1);
+        }
+        break;
+      }
+
+      console.error("Unknown 'config' subcommand. Available: get <key>, set <key> <value>");
+      process.exit(1);
+    }
+
+    case "reindex": {
+      // Rebuild the embeddings index from every memory + decision on disk.
+      // No-op if context.mode = full and runtime is missing — caller should
+      // run `axme-code config set context.mode search` first.
+      const projectPath = resolve(args[1] || ".");
+      const { reindexAll } = await import("./tools/search-install.js");
+      const result = await reindexAll(projectPath);
+      if (result.ok) console.log(`Reindexed ${result.indexed} entries.`);
+      else { console.error(`Reindex failed: ${result.error}`); process.exit(1); }
+      break;
+    }
+
     case "help":
     case "--help":
     case "-h":
