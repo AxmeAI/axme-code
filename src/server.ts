@@ -13,7 +13,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
-import { getFullContextSections, getOracle, getDecisions } from "./tools/context.js";
+import { getFullContextSections, getOracle, getDecisions, buildDecisionsCatalogString, buildMemoriesCatalogString } from "./tools/context.js";
 import { allMemoryContext, getMemorySections } from "./storage/memory.js";
 import { getOracleSections } from "./storage/oracle.js";
 import { getDecisionSections } from "./storage/decisions.js";
@@ -341,7 +341,7 @@ server.tool(
 // --- axme_decisions ---
 server.tool(
   "axme_decisions",
-  "Show all project decisions with enforce levels.",
+  "Show project decisions. Output adapts to context.mode: full → enforce levels + decision body; search → catalog (id + title + 1-line description, fetch bodies via axme_get_decision).",
   {
     project_path: z.string().optional().describe("Absolute path to the project root (defaults to server cwd)"),
     page: z.number().optional().describe("Page number (1-based). Omit for first page. Follow pagination instructions if output is split."),
@@ -349,10 +349,18 @@ server.tool(
   async ({ project_path, page }) => {
     const resolved = pp(project_path);
     deliveredContext.add("decisions:" + resolved);
-    let sections = getDecisionSections(resolved);
-    // If requesting repo decisions and workspace decisions already delivered, return repo-only
-    if (isWorkspace && defaultWorkspacePath && resolved !== defaultWorkspacePath
-        && deliveredContext.has("decisions:" + defaultWorkspacePath)) {
+    const config = readConfig(resolved);
+    const wsAlreadyDelivered = isWorkspace && defaultWorkspacePath && resolved !== defaultWorkspacePath
+      && deliveredContext.has("decisions:" + defaultWorkspacePath);
+    let sections: string[];
+    if (config.contextMode === "search") {
+      const wsForMerge = isWorkspace && defaultWorkspacePath && resolved !== defaultWorkspacePath && !wsAlreadyDelivered
+        ? defaultWorkspacePath : undefined;
+      sections = [buildDecisionsCatalogString(resolved, wsForMerge)];
+    } else {
+      sections = getDecisionSections(resolved);
+    }
+    if (wsAlreadyDelivered) {
       sections = [...sections, "*(Workspace decisions already loaded)*"];
     }
     const result = paginateSections(sections, page ?? 1, "axme_decisions", { project_path });
@@ -363,7 +371,7 @@ server.tool(
 // --- axme_memories ---
 server.tool(
   "axme_memories",
-  "Show all project memories (feedback + patterns). Call at session start alongside axme_oracle and axme_decisions.",
+  "Show project memories (feedback + patterns). Output adapts to context.mode: full → titles + descriptions grouped by type; search → catalog (slug + title + 1-line description, fetch bodies via axme_get_memory). Call at session start alongside axme_oracle and axme_decisions.",
   {
     project_path: z.string().optional().describe("Absolute path to the project root (defaults to server cwd)"),
     page: z.number().optional().describe("Page number (1-based). Omit for first page. Follow pagination instructions if output is split."),
@@ -371,21 +379,32 @@ server.tool(
   async ({ project_path, page }) => {
     const resolved = pp(project_path);
     deliveredContext.add("memories:" + resolved);
+    const config = readConfig(resolved);
+
+    const wsAlreadyDelivered = isWorkspace && defaultWorkspacePath && resolved !== defaultWorkspacePath
+      && deliveredContext.has("memories:" + defaultWorkspacePath);
+    const isRepoCall = isWorkspace && defaultWorkspacePath && resolved !== defaultWorkspacePath;
+    const wsForMerge = isRepoCall && !wsAlreadyDelivered ? defaultWorkspacePath : undefined;
 
     let sections: string[];
 
-    // If requesting repo memories and workspace memories already delivered: repo-only
-    if (isWorkspace && defaultWorkspacePath && resolved !== defaultWorkspacePath
-        && deliveredContext.has("memories:" + defaultWorkspacePath)) {
+    if (config.contextMode === "search") {
+      // Search mode: catalog only — bodies fetched on demand by the agent.
+      sections = [buildMemoriesCatalogString(resolved, wsForMerge ?? undefined)];
+      if (wsAlreadyDelivered) sections.push("*(Workspace memories already loaded)*");
+      const result = paginateSections(sections, page ?? 1, "axme_memories", { project_path });
+      return { content: [{ type: "text" as const, text: result.text }] };
+    }
+
+    // Full mode: existing behaviour (titles + descriptions grouped by type, with workspace merge).
+    if (wsAlreadyDelivered) {
       sections = getMemorySections(resolved);
       if (sections.length === 0) sections = ["No repo-specific memories."];
       sections.push("*(Workspace memories already loaded)*");
-    }
-    // If requesting repo memories but workspace NOT yet delivered: merged (workspace + repo)
-    else if (isWorkspace && defaultWorkspacePath && resolved !== defaultWorkspacePath) {
+    } else if (wsForMerge) {
       const { listMemories } = await import("./storage/memory.js");
       const { mergeMemories } = await import("./storage/workspace-merge.js");
-      const wsMemories = listMemories(defaultWorkspacePath);
+      const wsMemories = listMemories(wsForMerge);
       const projMemories = listMemories(resolved);
       const merged = mergeMemories(wsMemories, projMemories);
       if (merged.length === 0) {
@@ -402,9 +421,7 @@ server.tool(
         sections.push(`### Patterns (${patterns.length}):\n` +
           patterns.map(m => `- **${m.title}**: ${m.description}`).join("\n"));
       }
-    }
-    // Workspace call or single-repo: return as-is
-    else {
+    } else {
       sections = getMemorySections(resolved);
       if (sections.length === 0) {
         return { content: [{ type: "text" as const, text: "No memories recorded." }] };

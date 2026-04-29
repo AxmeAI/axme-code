@@ -6,6 +6,8 @@ import {
   getFullContextSections,
   getFullContext,
   getCloseContext,
+  buildDecisionsCatalogString,
+  buildMemoriesCatalogString,
 } from "../src/tools/context.js";
 
 const TEST_ROOT = "/tmp/axme-context-test";
@@ -91,5 +93,78 @@ describe("uninitialized project", () => {
     const sections = getFullContextSections(UNINIT_PATH);
     const joined = sections.join("\n");
     assert.ok(joined.toLowerCase().includes("not initialized"));
+  });
+});
+
+describe("search-mode catalog rendering", () => {
+  function setupSearchMode() {
+    setupTestProject();
+    const axme = join(PROJECT, ".axme-code");
+    // Switch project to search mode + add a memory so both tools have data.
+    writeFileSync(join(axme, "config.yaml"),
+      "model: claude-sonnet-4-6\npresets:\n  - essential-safety\ncontext:\n  mode: search\n");
+    writeFileSync(join(axme, "memory", "feedback", "test-memo.md"),
+      `---\nslug: test-memo\ntype: feedback\ntitle: Test memo\nsource: manual\ndate: "2026-04-01"\nkeywords: [test]\n---\n\n# Test memo\n\nA short description that should appear in the catalog row.\n\n## Details\n\nLong body that must NOT appear in the catalog string.\n`);
+  }
+
+  it("buildDecisionsCatalogString renders id + title + short description, no body", () => {
+    setupSearchMode();
+    const out = buildDecisionsCatalogString(PROJECT);
+    assert.ok(out.includes("Decisions Catalog (search mode)"));
+    assert.ok(out.includes("D-001"));
+    assert.ok(out.includes("Test decision"));
+    assert.ok(out.includes("axme_get_decision"));
+    // Decision body line is short here ("Test decision body.") so we just assert
+    // the id+title shape is present and the announcement says bodies are not loaded.
+    assert.ok(out.includes("Bodies NOT loaded"));
+  });
+
+  it("buildDecisionsCatalogString reports empty when no decisions", () => {
+    setupTestProject();
+    rmSync(join(PROJECT, ".axme-code", "decisions", "D-001-test-decision.md"));
+    writeFileSync(join(PROJECT, ".axme-code", "decisions", "index.md"), "# Decisions\n");
+    const out = buildDecisionsCatalogString(PROJECT);
+    assert.ok(out.includes("No decisions recorded."));
+  });
+
+  it("buildMemoriesCatalogString renders slug + title + description, no body", () => {
+    setupSearchMode();
+    const out = buildMemoriesCatalogString(PROJECT);
+    assert.ok(out.includes("Memories Catalog (search mode)"));
+    assert.ok(out.includes("test-memo"));
+    assert.ok(out.includes("Test memo"));
+    assert.ok(out.includes("axme_get_memory"));
+    // Body content must be excluded — only description appears
+    assert.ok(!out.includes("Long body that must NOT appear"));
+  });
+
+  it("buildMemoriesCatalogString reports empty when no memories", () => {
+    setupTestProject();
+    const out = buildMemoriesCatalogString(PROJECT);
+    assert.ok(out.includes("No memories recorded."));
+  });
+
+  it("getFullContextSections in search mode emits Active KB usage block with triggers", () => {
+    setupSearchMode();
+    const sections = getFullContextSections(PROJECT);
+    const joined = sections.join("\n");
+    assert.ok(joined.includes("Search mode active"));
+    assert.ok(joined.includes("Active KB usage"));
+    // Concrete trigger predicates we promised to surface
+    assert.ok(joined.includes("how did we"));
+    assert.ok(joined.includes("axme_search_kb"));
+    assert.ok(joined.includes("axme_get_memory"));
+    assert.ok(joined.includes("axme_get_decision"));
+    // Full-mode load instruction must NOT appear in search mode
+    assert.ok(!joined.includes("Load Full Knowledge Base"));
+  });
+
+  it("getFullContextSections in full mode does NOT emit search-mode catalog or instructions", () => {
+    setupTestProject();
+    const sections = getFullContextSections(PROJECT);
+    const joined = sections.join("\n");
+    assert.ok(joined.includes("Load Full Knowledge Base"));
+    assert.ok(!joined.includes("Search mode active"));
+    assert.ok(!joined.includes("Active KB usage"));
   });
 });
