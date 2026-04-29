@@ -11,7 +11,7 @@ You keep using Claude Code exactly as before. AXME Code works transparently in t
 [![Alpha](https://img.shields.io/badge/status-alpha-orange)]()
 [![GitHub Release](https://img.shields.io/github/v/release/AxmeAI/axme-code)](https://github.com/AxmeAI/axme-code/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-413%20passing-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-536%20passing-brightgreen)]()
 
 > ⭐ **Star this repo** if it saves you time · 🔔 **Watch releases** for new features · 💬 [**Discussions**](https://github.com/AxmeAI/axme-code/discussions)
 

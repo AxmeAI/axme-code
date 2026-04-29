@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.5.0] - 2026-04-29
+
+Skips 0.3.0 / 0.4.0 — combined release for native Windows support, multi-client docs surfacing, and the semantic-search MCP tools (B-005).
+
+### Added
+
+- **Native Windows support** (#122). axme-code now runs natively on Windows (x64 + arm64) without WSL2. Single TypeScript codebase produces 6 binary artifacts from one source tree (D-133, supersedes the now-obsolete D-120). New `install.ps1` downloads the standalone Node bundle into `%LOCALAPPDATA%\Programs\axme-code\`, generates a `.cmd` wrapper, and adds the dir to the User PATH. Three-OS CI matrix (ubuntu / macos / windows-latest) gates every PR. Production fixes: `atomicWrite` fsync uses a write-fd (Windows FlushFileBuffers needs write access); `findClaudePath` switches to `where.exe` and prefers the underlying `claude.exe` from `node_modules\@anthropic-ai\claude-code\bin\` over npm's `.cmd` shim (CVE-2024-27980 EINVAL avoided); `execSync("sleep")` replaced with `Atomics.wait` (POSIX `sleep` is missing on cmd.exe); 13 instances of `path.split("/").pop()` replaced with `path.basename()`. Hook commands written by `axme-code setup` now use absolute `node` + script path, all segments quoted, so they work cross-platform without PATH dependency. The plugin's SessionStart shell fragment moved into the new `check-init` Node subcommand. Verified end-to-end on Azure Win11 Pro 24H2 with real OAuth Claude session + detached audit worker (`audit_complete` event written, parent process can exit cleanly without orphaning the worker).
+- **Semantic search MCP tools** (B-005, #124). Three new read-only tools: `axme_get_memory(slug)`, `axme_get_decision(id_or_slug)`, `axme_search_kb(query, type?, k?)`. The first two fetch full bodies on demand (useful in any mode). The third does brute-force cosine over Float32 embeddings of every memory + decision (~10ms at 1000 vectors, no native bindings). Embeddings produced locally by `Xenova/all-MiniLM-L6-v2` via `@huggingface/transformers` — runs on CPU, **no token cost**, no API calls, no key required.
+- **Tiered context-loading mode** (B-005, #124). New `config.context.mode` field with values `full` (default, every memory + decision body loaded at session start — existing behaviour) and `search` (catalog only — title + 1-line description + `[type/enforce]` label, ~10× lower startup tokens). Switching is user-driven only: `axme-code config set context.mode search` (or env var `AXME_CONTEXT_MODE`, or hand-edit of `config.yaml`). When the user is on `full` mode and the KB exceeds 100 entries, `axme_context` emits a directive (MUST-style) instruction telling the agent to surface the option to the user and ask whether to run the install command.
+- **Lazy install of the embeddings runtime** (B-005, #124). `@huggingface/transformers` (~100MB node_modules + ~30MB MiniLM ONNX weights cached at `~/.cache/huggingface/`) is **not** bundled into the binary. It installs into `~/.local/share/axme-code/runtime/` only when the user opts in via `axme-code config set context.mode search`. That command is atomic: install → reindex every memory + decision → write `context.mode = search`. If install or reindex fails, the config rolls back to `full` and an actionable error is printed.
+- **`axme-code config get / set` CLI subcommand** (#124). Reads and writes `.axme-code/config.yaml` from the terminal. Currently supported keys: `context.mode` (the only set-able key in this release; get also exposes `model`, `auditor_model`, `review_enabled`).
+- **`axme-code reindex` CLI subcommand** (#124). Force a full re-embed of every memory + decision into `.axme-code/_index/embeddings.json`. Useful after hand-editing markdown files or upgrading the runtime.
+- **"Works With Any MCP Client" section in README** (#123). Surfaces multi-client compatibility (Cursor, Windsurf, Cline, Claude Desktop, any MCP client) that was previously documented only in `docs/MULTI_CLIENT.md`. Includes a compatibility matrix, the universal MCP server entry snippet, and per-client config-file paths. Hook-based features (safety enforcement, post-tool-use file tracker, background auditor) remain Claude Code-specific; MCP tools work everywhere.
+- **Glama MCP directory validation Dockerfile** (#121). Minimal `Dockerfile` at repo root so https://glama.ai/mcp/servers/AxmeAI/axme-code can validate the server. Image installs via standard `install.sh` and exposes `axme-code serve` as ENTRYPOINT.
+- **Glama directory claim** (#120). `glama.json` for ownership verification.
+- **README SEO + star/watch CTA** (#119). First paragraph leads with niche keywords (persistent memory across sessions, pre-execution safety hooks, architectural decision enforcement, structured session handoff). ⭐/🔔/💬 CTA below badges. Description rewritten in same order. Topics expanded to 14. Homepage = code.axme.ai. GitHub Discussions enabled.
+- **Plugin marketplace install instructions** (#118). README and site list `claude plugin marketplace add anthropics/claude-plugins-community` + `claude plugin install axme-code@claude-community` as the **recommended** install path. Standalone binary install demoted to "Option 2 — useful for scripting outside Claude Code".
+
+### Fixed
+
+- **Standalone bundle on Windows: SDK fallback crash** (#122 + #124). The Claude Agent SDK's own claude-binary resolution path (`fileURLToPath(import.meta.url)` followed by `require.resolve("./cli.js")`) crashes inside our esbuild-bundled CJS distribution because esbuild stubs `import_meta` as `{}` so `import_meta.url` is undefined. The pre-#122 workaround returned `undefined` from `claudePathForSdk()` on win32 to let the SDK use its fallback — that worked when running from `dist/` + `node_modules/` (SDK loaded as ESM, `import.meta.url` defined) but broke on the standalone bundle that `install.ps1` actually deploys. Fix (D-136): `claudePathForSdk()` now returns the concrete `claude.exe` path (derived from npm's `claude.cmd` shim location → `node_modules\@anthropic-ai\claude-code\bin\claude.exe`) on every platform, not undefined. Spawning `claude.exe` directly avoids both the SDK fallback crash AND CVE-2024-27980 EINVAL.
+- **Cross-platform dynamic import of the embeddings runtime** (#124). `await import(absolutePath)` throws on Windows because Node treats raw `C:\...` paths as bare specifiers. Wrapping the resolved path with `pathToFileURL(...).href` produces a `file:///C:/...` URL that imports cleanly on every platform.
+
+### Known requirement (Windows)
+
+- **`axme-code config set context.mode search` requires Microsoft Visual C++ Redistributable** to be installed on Windows. The `onnxruntime-node` native binding (transitively required by `@huggingface/transformers`) loads `onnxruntime_binding.node` which depends on `vcruntime140.dll` / `msvcp140.dll`. On a fresh Windows install without VC++ Redist, `axme-code` now prints an actionable hint pointing to https://aka.ms/vs/17/release/vc_redist.x64.exe (~25 MB silent install) and the retry command. After installing the Redist, reindex completes in 5s for ~30 entries.
+
+### Changed
+
+- **Test count: 511 → 536** (+25 new tests across `test/embeddings.test.ts` (cosine math, topK ranking, JSON round-trip, mtime staleness, runtime detection) and `test/kb-search.test.ts` (3 handlers' fallback paths + format round-trip)).
+
 ## [0.2.9] - 2026-04-17
 
 ### Added
