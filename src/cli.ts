@@ -320,17 +320,29 @@ function usage(): void {
   console.log(`AXME Code - Persistent memory, decisions, and safety guardrails for Claude Code
 
 Usage:
-  axme-code setup [path] [--force]         Initialize project (LLM scan + .mcp.json + CLAUDE.md)
-  axme-code serve                         Start MCP server (stdio transport)
-  axme-code status [path]                 Show project status
-  axme-code auth                          Re-detect and choose auth mode (subscription/api_key)
-  axme-code auth status                   Show current auth mode + detected options
-  axme-code auth use <subscription|api_key>  Set auth mode non-interactively
-  axme-code cleanup legacy-artifacts [--dry-run]  Remove pre-PR#7 sessions/logs
-  axme-code cleanup decisions-normalize [--dry-run]  Add status:active to decisions
-  axme-code audit-kb [path] [--all-repos]             KB audit: dedup, conflicts, compaction
-  axme-code stats [path]                  Worklog statistics (sessions, costs, safety blocks)
-  axme-code help                          Show this help
+  axme-code setup [path] [--force]              Initialize project (LLM scan + .mcp.json + CLAUDE.md)
+  axme-code serve                               Start MCP server (stdio transport)
+  axme-code status [path]                       Show project status
+  axme-code --version | -v                      Print the installed version
+
+  axme-code config get <key>                    Read a value from .axme-code/config.yaml
+                                                (keys: context.mode, model, auditor_model, review_enabled)
+  axme-code config set context.mode <full|search>
+                                                Switch context-loading mode. 'search' installs the
+                                                semantic-search runtime (~100MB, one-time) and
+                                                builds an embeddings index of every memory + decision.
+                                                Rolls back to 'full' on install or reindex failure.
+  axme-code reindex [path]                      Force a full re-embed of all memories + decisions
+                                                into .axme-code/_index/embeddings.json (search mode only)
+
+  axme-code auth                                Re-detect and choose auth mode (subscription/api_key)
+  axme-code auth status                         Show current auth mode + detected options
+  axme-code auth use <subscription|api_key>     Set auth mode non-interactively
+  axme-code cleanup legacy-artifacts [--dry-run]   Remove pre-PR#7 sessions/logs
+  axme-code cleanup decisions-normalize [--dry-run]   Add status:active to decisions
+  axme-code audit-kb [path] [--all-repos]       KB audit: dedup, conflicts, compaction
+  axme-code stats [path]                        Worklog statistics (sessions, costs, safety blocks)
+  axme-code help                                Show this help
 
 After setup, run 'claude' as usual. AXME tools are available automatically.`);
 }
