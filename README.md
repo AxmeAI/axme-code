@@ -185,6 +185,44 @@ AXME Code complements CLAUDE.md — it reads your existing CLAUDE.md during setu
 
 ---
 
+## Works With Any MCP Client
+
+AXME Code is a [stdio MCP server](https://modelcontextprotocol.io/) — every MCP-compatible AI coding assistant gets the full set of `axme_*` tools (knowledge base read/write, safety queries, status, worklog).
+
+| Client | MCP Tools | Safety Hooks | Auto Auditor |
+|---|---|---|---|
+| **Claude Code** (CLI / VS Code) | ✅ Full | ✅ Full | ✅ Yes |
+| **Cursor** | ✅ Full | ❌ | ❌ |
+| **Windsurf** | ✅ Full | ❌ | ❌ |
+| **Cline** (VS Code) | ✅ Full | ❌ | ❌ |
+| **Claude Desktop** | ✅ Full | ❌ | ❌ |
+| **Any other MCP client** | ✅ Full | ❌ | ❌ |
+
+The MCP server entry is identical in every client:
+
+```json
+{
+  "mcpServers": {
+    "axme": {
+      "command": "axme-code",
+      "args": ["serve"]
+    }
+  }
+}
+```
+
+Just place it in your client's MCP config file:
+- **Cursor:** `~/.cursor/mcp.json` or `.cursor/mcp.json` (per-project)
+- **Windsurf:** `~/.codeium/windsurf/mcp_config.json`
+- **Cline:** VS Code Settings → Cline MCP → `cline_mcp_settings.json`
+- **Claude Desktop:** `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or equivalent
+
+Pre-execution safety hooks, the post-tool-use file tracker, and the background session auditor are Claude Code-specific (they require Claude Code's hook system). In other clients, the agent must call AXME tools explicitly — same knowledge base, same `.axme-code/` storage, just no automatic enforcement layer.
+
+See [docs/MULTI_CLIENT.md](docs/MULTI_CLIENT.md) for full per-client setup, hook workarounds, and concurrent-client semantics.
+
+---
+
 ## Comparison
 
 | | AXME Code | MemPalace | Mastra | Zep | Mem0 | Supermemory |
