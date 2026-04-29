@@ -188,24 +188,46 @@ export function getFullContextSections(projectPath: string, workspacePath?: stri
       "**IMPORTANT**: if any tool output is truncated or saved to a file, use the Read tool to read the full file content into your context. Do not proceed with partial data.",
     ].join("\n"));
 
-    // Soft hint for users still on full mode whose KB has grown past the
-    // point where loading every body becomes wasteful. Threshold (100) is a
-    // recommendation, not a cutoff — full mode keeps working at any size.
+    // Directive hint for users still on full mode whose KB has grown past
+    // the point where loading every body becomes wasteful. Threshold (100)
+    // is a recommendation, not a cutoff — full mode keeps working at any
+    // size. Worded as a MUST so the agent reliably surfaces the option to
+    // the user instead of silently absorbing the warning.
     if (totalKbSize > 100) {
       parts.push([
-        "## Knowledge base size hint",
+        "## ⚠️ Knowledge base size — action required",
         "",
-        `Your KB has ${totalKbSize} entries (memories + decisions). For KBs >100 entries,`,
-        "switching to **search mode** loads only a catalog at session start and fetches",
-        "full bodies on demand via `axme_get_memory(slug)` / `axme_get_decision(id)` /",
-        "`axme_search_kb(query)`. Cuts startup tokens by ~10x. To enable:",
+        `This project has **${totalKbSize} KB entries** (memories + decisions). Loading every body at`,
+        "session start is wasteful at this size — both in tokens and in your time waiting for the",
+        "context to load.",
         "",
-        "```bash",
-        "axme-code config set context.mode search",
-        "```",
+        "**MUST** tell the user, in your first response:",
         "",
-        "(One-time install of ~100MB transformers.js + ~30MB MiniLM model. Falls back to",
-        "full mode if install fails. Run `axme-code config set context.mode full` to revert.)",
+        `> Your AXME knowledge base has ${totalKbSize} entries. Search mode would cut session-start`,
+        "> tokens by ~10x — the agent gets a catalog (titles + 1-line summaries) at start and fetches",
+        "> full bodies on demand via axme_search_kb / axme_get_memory / axme_get_decision.",
+        "> ",
+        "> Switching is opt-in. The CLI command is:",
+        "> ",
+        "> ```bash",
+        "> axme-code config set context.mode search",
+        "> ```",
+        "> ",
+        "> It installs ~100 MB of local embedding runtime (transformers.js + MiniLM model — runs on",
+        "> your CPU, no API calls, no token cost). On install failure the config rolls back to full",
+        "> automatically. Revert any time with `axme-code config set context.mode full`.",
+        "> ",
+        "> Want me to run the command for you now, or will you run it yourself in your terminal?",
+        "",
+        "Then **WAIT** for the user's decision before continuing with the original task:",
+        "",
+        "- If the user says \"run it\" / \"yes\" / \"go ahead\" → execute the command via Bash and proceed.",
+        "- If the user says \"I'll do it\" / \"later\" / \"skip\" → do NOT run it; continue the task in full mode.",
+        "- If the user is silent or asks an unrelated question → continue in full mode; do not nag again",
+        "  this session.",
+        "",
+        "Do NOT switch the mode without explicit user confirmation. Do NOT nag again in the same",
+        "session if the user declines or moves on.",
       ].join("\n"));
     }
   }
