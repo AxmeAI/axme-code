@@ -26,6 +26,7 @@ import { createRequire } from "node:module";
 import { existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { atomicWrite, ensureDir, readSafe } from "./engine.js";
 
 export type EmbedType = "memory" | "decision";
@@ -89,15 +90,36 @@ export async function loadEmbedder(): Promise<Embedder | null> {
   if (!isRuntimeInstalled()) return null;
 
   // Dynamic import via createRequire so we can resolve from the lazy runtime
-  // location at runtime regardless of where the CLI bundle lives. Typed as
-  // `any` because @huggingface/transformers is intentionally NOT a build-time
+  // location regardless of where the CLI bundle lives. Typed as `any`
+  // because @huggingface/transformers is intentionally NOT a build-time
   // dependency — it's lazy-installed on opt-in.
+  //
+  // pathToFileURL is mandatory on Windows: Node's dynamic import refuses
+  // raw absolute paths like `C:\...\index.js` (treats them as bare
+  // specifiers and looks for a package). file:// URLs work everywhere.
   const runtimeRequire = createRequire(join(RUNTIME_DIR, "node_modules", ".package-lock.json"));
   let mod: any;
   try {
     const requirePath = runtimeRequire.resolve("@huggingface/transformers");
-    mod = await import(requirePath);
-  } catch {
+    mod = await import(pathToFileURL(requirePath).href);
+  } catch (e) {
+    // The most common Windows failure mode here is "specified module could
+    // not be found" thrown while loading onnxruntime-node's native
+    // .node binding because Microsoft Visual C++ Redistributable isn't
+    // installed. Surface an actionable hint instead of returning null
+    // silently and leaving the user to interpret the deferred error.
+    const msg = (e as Error)?.message ?? String(e);
+    if (process.platform === "win32" && /could not be found|onnxruntime_binding\.node/i.test(msg)) {
+      process.stderr.write(
+        "AXME: failed to load semantic-search runtime. The most common cause on Windows is\n" +
+        "      a missing Microsoft Visual C++ Redistributable (required by onnxruntime-node).\n" +
+        "      Install from https://aka.ms/vs/17/release/vc_redist.x64.exe and retry\n" +
+        "      `axme-code config set context.mode search` (or `axme-code reindex`).\n" +
+        `      Underlying error: ${msg}\n`,
+      );
+    } else {
+      process.stderr.write(`AXME: failed to load semantic-search runtime: ${msg}\n`);
+    }
     return null;
   }
 
