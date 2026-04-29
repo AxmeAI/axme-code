@@ -58,7 +58,7 @@ $arch = Get-Arch
 $platform = "windows-$arch"
 
 $version = if ($args.Count -ge 1 -and $args[0]) { $args[0] } else { Get-LatestTag }
-if (-not $version) { throw 'Could not determine version. Specify as first argument, e.g. install.ps1 v0.2.9' }
+if (-not $version) { throw 'Could not determine version. Specify as first argument, e.g. install.ps1 v0.5.0' }
 
 Write-Host "Installing axme-code $version ($platform) to $InstallDir..."
 
