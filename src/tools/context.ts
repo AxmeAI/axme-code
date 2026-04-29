@@ -269,9 +269,7 @@ function buildSearchModeCatalog(projectPath: string, workspacePath?: string): st
     lines.push("### Decisions");
     lines.push("");
     for (const d of decisions) {
-      const enforce = d.enforce ?? "info";
-      const desc = d.decision ? d.decision.replace(/\s+/g, " ").slice(0, 200) : "";
-      lines.push(`- [${enforce}] **${d.id}** — ${d.title}${desc ? ` — ${desc}` : ""}`);
+      lines.push(renderDecisionCatalogLine(d));
     }
     lines.push("");
   }
@@ -279,23 +277,83 @@ function buildSearchModeCatalog(projectPath: string, workspacePath?: string): st
     lines.push("### Memories");
     lines.push("");
     for (const m of memories) {
-      const desc = m.description ? m.description.replace(/\s+/g, " ").slice(0, 200) : "";
-      lines.push(`- [${m.type}] **${m.slug}** — ${m.title}${desc ? ` — ${desc}` : ""}`);
+      lines.push(renderMemoryCatalogLine(m));
     }
     lines.push("");
   }
   return lines.join("\n");
 }
 
+function renderDecisionCatalogLine(d: { id: string; title: string; enforce?: string | null; decision?: string }): string {
+  const enforce = d.enforce ?? "info";
+  const desc = d.decision ? d.decision.replace(/\s+/g, " ").slice(0, 200) : "";
+  return `- [${enforce}] **${d.id}** — ${d.title}${desc ? ` — ${desc}` : ""}`;
+}
+
+function renderMemoryCatalogLine(m: { slug: string; title: string; type: string; description?: string }): string {
+  const desc = m.description ? m.description.replace(/\s+/g, " ").slice(0, 200) : "";
+  return `- [${m.type}] **${m.slug}** — ${m.title}${desc ? ` — ${desc}` : ""}`;
+}
+
+/**
+ * Build the catalog string returned by `axme_decisions` in search mode.
+ * Lists all decisions (project + workspace-merged when applicable) as
+ * `[enforce] D-NNN — title — short description (≤200 chars)`. No bodies.
+ *
+ * Format intentionally matches page-2 of `axme_context` so the agent sees
+ * the same shape regardless of which entry point loaded the data.
+ */
+export function buildDecisionsCatalogString(projectPath: string, workspacePath?: string): string {
+  const decisions = listDecisionsMerged(projectPath, workspacePath);
+  const lines: string[] = [
+    "## Decisions Catalog (search mode)",
+    "",
+    `${decisions.length} decision(s). Bodies NOT loaded — fetch via axme_get_decision(id_or_slug) or axme_search_kb(query).`,
+    "",
+  ];
+  if (decisions.length === 0) {
+    lines.push("No decisions recorded.");
+    return lines.join("\n");
+  }
+  for (const d of decisions) lines.push(renderDecisionCatalogLine(d));
+  return lines.join("\n");
+}
+
+/**
+ * Build the catalog string returned by `axme_memories` in search mode.
+ * Same shape as decisions catalog but keyed by slug + memory type.
+ */
+export function buildMemoriesCatalogString(projectPath: string, workspacePath?: string): string {
+  const memories = listMemoriesMerged(projectPath, workspacePath);
+  const lines: string[] = [
+    "## Memories Catalog (search mode)",
+    "",
+    `${memories.length} memory(ies). Bodies NOT loaded — fetch via axme_get_memory(slug) or axme_search_kb(query).`,
+    "",
+  ];
+  if (memories.length === 0) {
+    lines.push("No memories recorded.");
+    return lines.join("\n");
+  }
+  for (const m of memories) lines.push(renderMemoryCatalogLine(m));
+  return lines.join("\n");
+}
+
 /**
  * Instructions agent must follow in search mode: scan the catalog, fetch
  * bodies via the three new MCP tools, never write code from titles alone.
+ *
+ * The "Active KB usage" block lists concrete trigger predicates so the
+ * agent calls search proactively instead of relying on memory of past
+ * sessions. Triggers are phrased as situations the agent can recognize
+ * in the user's task text ("how did we ...", file/area names, library
+ * names) — no enforcement, but explicit MUSTs.
  */
 function buildSearchModeInstructions(runtimeInstalled: boolean): string {
   const searchAvailable = runtimeInstalled
     ? "- `axme_search_kb(query, type?, k?)` — semantic search across both"
     : "- `axme_search_kb(query, ...)` — currently UNAVAILABLE (transformers runtime not installed; falls back to a hint message)";
-  return [
+  const lines = [
     "## Search mode active — bodies fetched on demand",
     "",
     "You have a catalog of every memory and decision above (titles + descriptions only).",
@@ -308,10 +366,27 @@ function buildSearchModeInstructions(runtimeInstalled: boolean): string {
     "- `axme_get_decision(id_or_slug)` — full body of one decision",
     searchAvailable,
     "",
-    runtimeInstalled
-      ? "Use `axme_search_kb` for fuzzy lookups (\"how did we handle X?\"). Use `axme_get_*` when you already know the slug from the catalog."
-      : "Without the runtime, navigate the catalog above by topic and fetch bodies via `axme_get_*`. To enable semantic search: `axme-code config set context.mode search` (re-runs install).",
-  ].join("\n");
+    "## Active KB usage (when to call search/get)",
+    "",
+    "**MUST** call `axme_search_kb` (or `axme_get_*` when slug is known) when ANY of these triggers fire:",
+    "",
+    "- User asks \"how did we…\", \"why did we…\", \"что мы решили про…\", \"why is X this way?\" → search the topic.",
+    "- About to write or modify code that touches: git, safety hooks, storage, agent SDK, build, release, telemetry, auth, MCP tools → search the area first.",
+    "- About to suggest a fix for a bug → search similar past failures (memory type=feedback) before proposing.",
+    "- User mentions a library, platform, tool, or error message by name → search that name.",
+    "- A catalog title looks partially relevant but its 1-line description is too short to decide → fetch the body.",
+    "- Before any architectural recommendation or new pattern → search decisions for that subsystem to avoid contradiction or duplication.",
+    "- Before saving a new decision/memory → search to check if a similar one already exists (avoids dupes).",
+    "",
+    "Skipping search has caused real regressions in this project (force-pushing main, missing #!axme gate suffix,",
+    "duplicating an existing decision). The catalog scan is free; semantic search is sub-second and uses zero",
+    "API tokens (runs locally on CPU). When in doubt, search.",
+  ];
+  lines.push("");
+  lines.push(runtimeInstalled
+    ? "Use `axme_search_kb` for fuzzy lookups. Use `axme_get_*` when you already know the slug from the catalog."
+    : "Runtime not installed: navigate the catalog above by topic and fetch bodies via `axme_get_*`. To enable semantic search: `axme-code config set context.mode search` (re-runs install).");
+  return lines.join("\n");
 }
 
 /** Legacy joined output (for backward compat where needed). */

@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **`axme_decisions` and `axme_memories` now adapt their output to `config.context.mode`.** In `full` mode (default) both tools return full bodies grouped by enforce / type, exactly as before. In `search` mode they return a compact catalog (id/slug + title + 1-line description, ≤200 chars) and instruct the agent to fetch full bodies via `axme_get_decision` / `axme_get_memory` / `axme_search_kb`. This closes a regression in v0.5.0 where the catalog was loaded by `axme_context` but a subsequent agent call to `axme_decisions` or `axme_memories` would silently re-load every body, defeating search mode's ~10× token saving. `axme_oracle` is unaffected — it always returns the full stack/structure/patterns/glossary because those are connected documents, not catalog entries.
+- **`buildSearchModeInstructions` (rendered by `axme_context` in search mode) gained an "Active KB usage" block** with concrete trigger predicates ("how did we…", touching git/safety/hooks/storage/release subsystems, mentioning a library by name, before architectural recommendation, before saving a new decision/memory). Replaces a generic "use search for fuzzy lookups" line with imperative MUSTs tied to recognizable situations in the user's task. Designed to make the agent call `axme_search_kb` proactively instead of relying on session-start memory of past KBs.
+
+### Fixed
+
+- **Stale memory `transformers-js-install-size-is-102mb` removed** (Q-003). The original v0.2.x memory cited 102 MB for `@huggingface/transformers`; the v0.5.0 release session measured 773 MB on Linux because `onnxruntime-node` pulls prebuilt binaries for 5 platforms (linux-x64, linux-arm64, darwin-x64, darwin-arm64, windows-x64). Since B-005 is shipped and the lazy-install pattern is now embedded in the product (not future guidance), the memory was deleted rather than amended. The auditor's intermediate stub `transformers-js-actual-install-size-is-773-mb-not-102-mb-on-` was also removed. KB reindexed (198 entries).
+
 ## [0.5.0] - 2026-04-29
 
 Skips 0.3.0 / 0.4.0 — combined release for native Windows support, multi-client docs surfacing, and the semantic-search MCP tools (B-005).
