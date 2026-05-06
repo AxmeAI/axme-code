@@ -82,9 +82,7 @@ main() {
   echo "Installed axme-code to ${INSTALL_DIR}/axme-code"
 
   if ! echo "$PATH" | tr ':' '\n' | grep -qx "$INSTALL_DIR"; then
-    echo ""
-    echo "Add to your PATH:"
-    echo "  export PATH=\"${INSTALL_DIR}:\$PATH\""
+    print_path_instruction "$INSTALL_DIR"
   fi
 
   echo ""
@@ -93,4 +91,84 @@ main() {
   echo "  axme-code setup"
 }
 
-main "$@"
+# Detect the user's login shell from $SHELL (most reliable across distros);
+# fallback to getent passwd. Returns the shell base name (bash/zsh/fish/tcsh/
+# csh/...) or "unknown" so the caller can print a generic hint.
+detect_shell() {
+  local shell_path=""
+  if [ -n "${SHELL:-}" ]; then
+    shell_path="$SHELL"
+  elif command -v getent &>/dev/null && [ -n "${USER:-}" ]; then
+    shell_path="$(getent passwd "$USER" 2>/dev/null | cut -d: -f7)"
+  fi
+  case "$(basename "${shell_path:-unknown}")" in
+    bash)  echo "bash" ;;
+    zsh)   echo "zsh" ;;
+    fish)  echo "fish" ;;
+    tcsh)  echo "tcsh" ;;
+    csh)   echo "csh" ;;
+    *)     echo "unknown" ;;
+  esac
+}
+
+# Print shell-aware instructions for adding $1 to PATH. Covers bash/zsh/fish/
+# tcsh/csh; unknown shells get the bash/zsh form as a safe default plus a
+# pointer to manually consult the shell's docs. We do NOT auto-edit any rc
+# file — the user runs the command themselves so they can audit the change.
+print_path_instruction() {
+  local dir="$1" shell rc add_line
+  shell="$(detect_shell)"
+  echo ""
+  echo "${dir} is not on your PATH."
+  case "$shell" in
+    bash)
+      rc="$HOME/.bashrc"
+      add_line="export PATH=\"${dir}:\$PATH\""
+      echo "Detected shell: bash. Add it with:"
+      echo "  echo '${add_line}' >> ${rc}"
+      echo "  source ${rc}"
+      ;;
+    zsh)
+      rc="$HOME/.zshrc"
+      add_line="export PATH=\"${dir}:\$PATH\""
+      echo "Detected shell: zsh. Add it with:"
+      echo "  echo '${add_line}' >> ${rc}"
+      echo "  source ${rc}"
+      ;;
+    fish)
+      rc="$HOME/.config/fish/config.fish"
+      add_line="set -gx PATH ${dir} \$PATH"
+      echo "Detected shell: fish. Add it with:"
+      echo "  mkdir -p $(dirname "$rc") && echo '${add_line}' >> ${rc}"
+      echo "  source ${rc}"
+      ;;
+    tcsh)
+      rc="$HOME/.tcshrc"
+      add_line="setenv PATH ${dir}:\$PATH"
+      echo "Detected shell: tcsh. Add it with:"
+      echo "  echo '${add_line}' >> ${rc}"
+      echo "  source ${rc}"
+      ;;
+    csh)
+      rc="$HOME/.cshrc"
+      add_line="setenv PATH ${dir}:\$PATH"
+      echo "Detected shell: csh. Add it with:"
+      echo "  echo '${add_line}' >> ${rc}"
+      echo "  source ${rc}"
+      ;;
+    *)
+      echo "Could not detect your shell (\$SHELL=${SHELL:-unset}). Pick the form that matches:"
+      echo "  bash/zsh:  export PATH=\"${dir}:\$PATH\"      (in ~/.bashrc or ~/.zshrc)"
+      echo "  fish:      set -gx PATH ${dir} \$PATH         (in ~/.config/fish/config.fish)"
+      echo "  tcsh/csh:  setenv PATH ${dir}:\$PATH          (in ~/.tcshrc or ~/.cshrc)"
+      echo "Then open a new terminal or 'source' the rc file."
+      ;;
+  esac
+}
+
+# Only run main when executed directly, not when sourced. Lets us source
+# the script for unit testing of detect_shell / print_path_instruction
+# without triggering a real download+install.
+if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then
+  main "$@"
+fi

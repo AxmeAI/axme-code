@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`install.sh` now detects the user's login shell and prints PATH-add instructions in the right syntax for that shell.** Previously `install.sh` printed only the `export PATH=...` form (bash/zsh syntax) regardless of the actual shell, leaving tcsh / csh / fish users with a non-working snippet — and `~/.local/bin` is not on PATH by default for tcsh, so those users effectively could not run `axme-code` after install. Detection uses `$SHELL` first (most reliable) and falls back to `getent passwd` for the login shell. Coverage: bash → `~/.bashrc`, zsh → `~/.zshrc`, fish → `~/.config/fish/config.fish` with `set -gx`, tcsh → `~/.tcshrc` with `setenv`, csh → `~/.cshrc` with `setenv`. Unknown shells get a fallback printout listing all four forms. The script does NOT auto-edit any rc file — the user runs the printed command themselves so they can audit the change. Same model as `deno`, `starship`, `nvm`. (`install.ps1` is unaffected — Windows installer already auto-writes the User PATH via `[Environment]::SetEnvironmentVariable`.)
+- **`install.sh` is now safely sourceable.** The bottom-of-file `main "$@"` is gated behind a `BASH_SOURCE[0] = $0` guard so `source install.sh` no longer triggers a real download + install side effect. Lets the new helper functions (`detect_shell`, `print_path_instruction`) be unit-tested without touching the live binary.
+
 ### Changed
 
 - **`axme_decisions` and `axme_memories` now adapt their output to `config.context.mode`.** In `full` mode (default) both tools return full bodies grouped by enforce / type, exactly as before. In `search` mode they return a compact catalog (id/slug + title + 1-line description, ≤200 chars) and instruct the agent to fetch full bodies via `axme_get_decision` / `axme_get_memory` / `axme_search_kb`. This closes a regression in v0.5.0 where the catalog was loaded by `axme_context` but a subsequent agent call to `axme_decisions` or `axme_memories` would silently re-load every body, defeating search mode's ~10× token saving. `axme_oracle` is unaffected — it always returns the full stack/structure/patterns/glossary because those are connected documents, not catalog entries.
