@@ -609,3 +609,71 @@ describe("mixed content blocks", () => {
     assert.equal(result.turns[2].kind, "tool_use");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Cursor JSONL transcript shape (top-level role)
+// ---------------------------------------------------------------------------
+
+describe("Cursor JSONL transcript parsing", () => {
+  function cursorUser(text: string): object {
+    return { role: "user", message: { content: [{ type: "text", text }] } };
+  }
+  function cursorAssistant(text: string): object {
+    return { role: "assistant", message: { content: [{ type: "text", text }] } };
+  }
+
+  it("parses Cursor format with role at top level (ide='cursor')", () => {
+    const path = join(ROOT, "cursor.jsonl");
+    writeFileSync(path, jsonl(
+      cursorUser("Hello, please refactor the auth module"),
+      cursorAssistant("A".repeat(120) + " — done."),
+    ));
+    const result = parseTranscriptFromOffset(path, 0, "cursor");
+    assert.equal(result.turns.length, 2);
+    assert.equal(result.turns[0].role, "user");
+    assert.equal(result.turns[0].kind, "text");
+    assert.match(result.turns[0].content, /refactor the auth/);
+    assert.equal(result.turns[1].role, "assistant");
+    assert.equal(result.turns[1].kind, "text");
+  });
+
+  it("Cursor format works even without ide param (defensive top-level role fallback)", () => {
+    // ClaudeSessionRef.ide is optional for backward compat. If a Cursor
+    // transcript is parsed with the default ide="claude-code", the parser's
+    // defensive fallback (`event.role ?? msg.role`) should still pick up
+    // the top-level role.
+    const path = join(ROOT, "cursor-no-ide.jsonl");
+    writeFileSync(path, jsonl(cursorAssistant("B".repeat(120))));
+    const result = parseTranscriptFromOffset(path);  // default ide
+    assert.equal(result.turns.length, 1);
+    assert.equal(result.turns[0].role, "assistant");
+  });
+
+  it("text-only Cursor transcript yields zero tool_use turns", () => {
+    // Real Cursor transcripts contain only text blocks (verified empirically
+    // 2026-05-10). Confirm parser doesn't synthesize fake tool_use turns.
+    const path = join(ROOT, "cursor-text-only.jsonl");
+    writeFileSync(path, jsonl(
+      cursorUser("Q1"),
+      cursorAssistant("A".repeat(100)),
+      cursorUser("Q2"),
+      cursorAssistant("B".repeat(100)),
+    ));
+    const result = parseTranscriptFromOffset(path, 0, "cursor");
+    assert.equal(result.turns.filter(t => t.kind === "tool_use").length, 0);
+    assert.equal(result.turns.filter(t => t.kind === "thinking").length, 0);
+    assert.equal(result.turns.filter(t => t.kind === "text").length, 4);
+  });
+
+  it("Claude Code format still parses correctly with ide='claude-code' (regression)", () => {
+    const path = join(ROOT, "claude.jsonl");
+    writeFileSync(path, jsonl(
+      { message: { role: "user", content: [{ type: "text", text: "hello" }] } },
+      { message: { role: "assistant", content: [{ type: "text", text: "B".repeat(100) }] } },
+    ));
+    const result = parseTranscriptFromOffset(path, 0, "claude-code");
+    assert.equal(result.turns.length, 2);
+    assert.equal(result.turns[0].role, "user");
+    assert.equal(result.turns[1].role, "assistant");
+  });
+});
