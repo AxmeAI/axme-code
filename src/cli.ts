@@ -558,16 +558,19 @@ async function main() {
       // Parse --workspace flag from CLI args
       const wsIdx = args.indexOf("--workspace");
       const workspacePath = wsIdx >= 0 && args[wsIdx + 1] ? args[wsIdx + 1] : undefined;
+      // Parse --ide flag from CLI args (defaults to claude-code).
+      const { parseIdeFlag } = await import("./utils/ide-detect.js");
+      const ide = parseIdeFlag(args) ?? "claude-code";
 
       if (hookName === "pre-tool-use") {
         const { runPreToolUseHook } = await import("./hooks/pre-tool-use.js");
-        await runPreToolUseHook(workspacePath);
+        await runPreToolUseHook(workspacePath, ide);
       } else if (hookName === "post-tool-use") {
         const { runPostToolUseHook } = await import("./hooks/post-tool-use.js");
-        await runPostToolUseHook(workspacePath);
+        await runPostToolUseHook(workspacePath, ide);
       } else if (hookName === "session-end") {
         const { runSessionEndHook } = await import("./hooks/session-end.js");
-        await runSessionEndHook(workspacePath);
+        await runSessionEndHook(workspacePath, ide);
       }
       break;
     }

@@ -1,42 +1,48 @@
 /**
- * PostToolUse hook - runs after Edit/Write tool calls.
+ * PostToolUse hook — runs after Edit/Write tool calls.
  *
- * Tracks filesChanged in session metadata, and attaches the Claude Code
- * session (session_id + transcript_path from the hook event) to the current
- * AXME session so the LLM auditor can later read the full transcript.
+ * Tracks filesChanged in session metadata, and attaches the IDE's session
+ * (id + transcript_path from the hook event) to the current AXME session
+ * so the LLM auditor can later read the full transcript.
  *
- * Input: JSON on stdin from Claude Code hooks system.
- * Workspace path: passed via --workspace flag (hardcoded at setup time).
+ * Input: JSON on stdin from the IDE's hooks system. Stdin shape varies by
+ * IDE (Claude Code vs Cursor); the adapter in src/hooks/adapters/ handles
+ * the per-IDE field renames before the handler core runs.
  *
- * Session ID: read from .axme-code/active-session (written by MCP server),
- * NOT from Claude Code's session_id (which is a different ID).
+ * Session ID: read from `.axme-code/active-sessions/<ide-session-id>.txt`
+ * (written by MCP server / earlier hooks), NOT from the IDE's session id
+ * directly (which is a different ID space).
  */
 
 import { trackFileChanged, ensureAxmeSessionForClaude } from "../storage/sessions.js";
 import { pathExists } from "../storage/engine.js";
 import { join } from "node:path";
 import { AXME_CODE_DIR } from "../types.js";
+import type { IdeKind } from "../types.js";
+import { claudeCodeInputAdapter } from "./adapters/claude-code.js";
+import { cursorInputAdapter } from "./adapters/cursor.js";
+import type { HookInputAdapter, NormalizedHookEvent } from "./adapters/types.js";
 
-interface HookInput {
-  tool_name: string;
-  tool_input: Record<string, any>;
-  session_id?: string;
-  transcript_path?: string;
+function inputAdapterFor(ide: IdeKind): HookInputAdapter {
+  return ide === "cursor" ? cursorInputAdapter : claudeCodeInputAdapter;
 }
 
-function handlePostToolUse(workspacePath: string, event: HookInput): void {
-  const { tool_name, tool_input } = event;
+function handlePostToolUse(workspacePath: string, event: NormalizedHookEvent): void {
+  const tool_name = event.toolName ?? "";
+  const tool_input = (event.toolInput ?? {}) as Record<string, any>;
 
   if (!pathExists(join(workspacePath, AXME_CODE_DIR))) return;
 
   // Ensure the AXME session exists for this Claude session_id (lazy creation).
   // Without session_id we cannot route this hook call — silently skip.
-  if (!event.session_id || !event.transcript_path) return;
+  if (!event.sessionId || !event.transcriptPath) return;
 
   const axmeSessionId = ensureAxmeSessionForClaude(
     workspacePath,
-    event.session_id,
-    event.transcript_path,
+    event.sessionId,
+    event.transcriptPath,
+    undefined,
+    event.ide,
   );
 
   // filesChanged tracking only for mutation tools
@@ -52,8 +58,9 @@ function handlePostToolUse(workspacePath: string, event: HookInput): void {
 /**
  * CLI entry point - reads JSON from stdin.
  * @param workspacePath - from --workspace CLI flag
+ * @param ide - from --ide CLI flag (defaults to "claude-code")
  */
-export async function runPostToolUseHook(workspacePath?: string): Promise<void> {
+export async function runPostToolUseHook(workspacePath?: string, ide: IdeKind = "claude-code"): Promise<void> {
   if (!workspacePath) workspacePath = process.cwd();
   if (!workspacePath) return;
 
@@ -66,8 +73,9 @@ export async function runPostToolUseHook(workspacePath?: string): Promise<void> 
   try {
     const chunks: Buffer[] = [];
     for await (const chunk of process.stdin) chunks.push(chunk);
-    const input = JSON.parse(Buffer.concat(chunks).toString("utf-8")) as HookInput;
-    handlePostToolUse(workspacePath, input);
+    const raw = JSON.parse(Buffer.concat(chunks).toString("utf-8"));
+    const event = inputAdapterFor(ide).parse(raw, "postToolUse");
+    handlePostToolUse(workspacePath, event);
   } catch (err) {
     // Hook failures must be silent — but reported to telemetry for visibility.
     // Use blocking send: hook subprocess exits ms after this catch and would

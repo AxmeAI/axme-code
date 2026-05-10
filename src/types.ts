@@ -189,7 +189,19 @@ export interface ClaudeSessionRef {
   firstSeen: string;
   /** Role in the AXME session. Defaults to "main". Reserved for future multi-agent. */
   role?: string;
+  /**
+   * Which IDE produced this attached session. Optional for backward
+   * compatibility with sessions created before Cursor support landed —
+   * absent value is interpreted as "claude-code" by readers.
+   */
+  ide?: IdeKind;
 }
+
+/**
+ * Which IDE the current session/hook event came from. Used to dispatch the
+ * right hook stdin parser, deny-output emitter, and (later) LLM SDK adapter.
+ */
+export type IdeKind = "claude-code" | "cursor";
 
 /**
  * Status of the LLM audit lifecycle on this session. Used to prevent parallel

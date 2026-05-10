@@ -23,50 +23,55 @@ import {
 import { spawnDetachedAuditWorker } from "../audit-spawner.js";
 import { pathExists } from "../storage/engine.js";
 import { AXME_CODE_DIR } from "../types.js";
+import type { IdeKind } from "../types.js";
+import { claudeCodeInputAdapter } from "./adapters/claude-code.js";
+import { cursorInputAdapter } from "./adapters/cursor.js";
+import type { HookInputAdapter, NormalizedHookEvent } from "./adapters/types.js";
 
-interface SessionEndInput {
-  session_id?: string;
-  transcript_path?: string;
-  source?: string;
+function inputAdapterFor(ide: IdeKind): HookInputAdapter {
+  return ide === "cursor" ? cursorInputAdapter : claudeCodeInputAdapter;
 }
 
-function handleSessionEnd(workspacePath: string, input: SessionEndInput): void {
+function handleSessionEnd(workspacePath: string, event: NormalizedHookEvent): void {
   if (!pathExists(join(workspacePath, AXME_CODE_DIR))) return;
 
-  // SessionEnd must know which Claude session is ending. If it does not,
+  // SessionEnd must know which IDE session is ending. If it does not,
   // there is nothing we can safely do — we cannot guess which of possibly
   // several parallel sessions is closing.
-  if (!input.session_id) return;
+  if (!event.sessionId) return;
 
   // If PreToolUse / PostToolUse already created the AXME session for this
-  // Claude session, we find it via the mapping. If not (e.g. the session
-  // only made read-only MCP tool calls), create it now so the audit still
-  // runs against whatever filesChanged/worklog we have.
-  let axmeSessionId = readClaudeSessionMapping(workspacePath, input.session_id);
-  if (!axmeSessionId && input.transcript_path) {
+  // IDE session, we find it via the mapping. If not (e.g. the session only
+  // made read-only MCP tool calls), create it now so the audit still runs
+  // against whatever filesChanged/worklog we have.
+  let axmeSessionId = readClaudeSessionMapping(workspacePath, event.sessionId);
+  if (!axmeSessionId && event.transcriptPath) {
     axmeSessionId = ensureAxmeSessionForClaude(
       workspacePath,
-      input.session_id,
-      input.transcript_path,
+      event.sessionId,
+      event.transcriptPath,
+      undefined,
+      event.ide,
     );
   }
   if (!axmeSessionId) return;
 
   // Spawn a detached audit worker and return immediately. The worker lives
-  // in its own process group and survives SIGKILL to Claude Code / the hook
+  // in its own process group and survives SIGKILL to the IDE / the hook
   // subprocess. We do NOT await runSessionCleanup here — the hook's 120s
-  // timeout and Claude Code's shutdown clock together make synchronous
-  // auditing unreliable in practice.
-  spawnDetachedAuditWorker(workspacePath, axmeSessionId);
-  // Clear this Claude session's mapping file — the session is over.
-  clearClaudeSessionMapping(workspacePath, input.session_id);
+  // timeout and the IDE's shutdown clock together make synchronous auditing
+  // unreliable in practice.
+  spawnDetachedAuditWorker(workspacePath, axmeSessionId, event.ide);
+  // Clear this IDE session's mapping file — the session is over.
+  clearClaudeSessionMapping(workspacePath, event.sessionId);
 }
 
 /**
  * CLI entry point — reads JSON from stdin.
  * @param workspacePath - from --workspace CLI flag
+ * @param ide - from --ide CLI flag (defaults to "claude-code")
  */
-export async function runSessionEndHook(workspacePath?: string): Promise<void> {
+export async function runSessionEndHook(workspacePath?: string, ide: IdeKind = "claude-code"): Promise<void> {
   if (!workspacePath) workspacePath = process.cwd();
   if (!workspacePath) return;
 
@@ -80,13 +85,14 @@ export async function runSessionEndHook(workspacePath?: string): Promise<void> {
   try {
     const chunks: Buffer[] = [];
     for await (const chunk of process.stdin) chunks.push(chunk);
-    let input: SessionEndInput = {};
+    let raw: unknown = {};
     try {
-      input = JSON.parse(Buffer.concat(chunks).toString("utf-8")) as SessionEndInput;
+      raw = JSON.parse(Buffer.concat(chunks).toString("utf-8"));
     } catch {
       // Empty/invalid stdin is fine — we'll proceed without transcript attachment
     }
-    handleSessionEnd(workspacePath, input);
+    const event = inputAdapterFor(ide).parse(raw, "sessionEnd");
+    handleSessionEnd(workspacePath, event);
   } catch (err) {
     // Hook failures must be silent — but reported to telemetry for visibility.
     // Use blocking send: hook subprocess exits ms after this catch.
