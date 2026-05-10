@@ -34,18 +34,17 @@ export const cursorInputAdapter: HookInputAdapter = {
     const toolName = asString(obj.tool_name);
     const toolInput = asObject(obj.tool_input);
 
-    // Pre/postToolUse: Cursor identifies the running session via
-    // conversation_id (per-conversation) + generation_id (per-turn).
-    // Use conversation_id as the stable session id so consecutive tool calls
-    // in the same conversation route to the same AXME session.
-    // sessionEnd: Cursor sends a top-level session_id that may differ from
-    // conversation_id (it identifies the SDK session, not the chat).
-    let sessionId: string | undefined;
-    if (kind === "sessionEnd") {
-      sessionId = asString(obj.session_id) ?? asString(obj.conversation_id);
-    } else {
-      sessionId = asString(obj.conversation_id) ?? asString(obj.session_id);
-    }
+    // Use conversation_id as the stable AXME session key across ALL three
+    // hook events. conversation_id is part of Cursor's common-base fields
+    // (present in preToolUse, postToolUse, AND sessionEnd payloads), and
+    // it represents one chat thread — exactly the granularity AXME wants
+    // for one filesChanged trail / one audit. session_id is only event-
+    // specific to sessionStart/sessionEnd and may identify a coarser SDK
+    // session that spans multiple conversations; using it would break the
+    // mapping created by pre/postToolUse (which only sees conversation_id),
+    // leaving the work as an orphan at audit time. Fall back to session_id
+    // only if conversation_id is somehow missing.
+    const sessionId = asString(obj.conversation_id) ?? asString(obj.session_id);
 
     // transcript_path may legitimately be null on Cursor (e.g. very first
     // turn). Preserve null so callers can distinguish "no transcript yet"

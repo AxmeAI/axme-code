@@ -43,7 +43,13 @@ describe("cursorInputAdapter.parse — preToolUse", () => {
 });
 
 describe("cursorInputAdapter.parse — sessionEnd", () => {
-  it("uses session_id (not conversation_id) for sessionEnd", () => {
+  it("uses conversation_id (not session_id) for sessionEnd — consistency with pre/postToolUse", () => {
+    // Cursor's sessionEnd payload includes BOTH conversation_id (common
+    // base) and session_id (event-specific). We deliberately prefer
+    // conversation_id so all three hook events route to the same AXME
+    // session via the same key. Otherwise pre/postToolUse would map by
+    // conversation_id and sessionEnd would look up by session_id, leaving
+    // the work as an orphan.
     const ev = cursorInputAdapter.parse(
       {
         cursor_version: "1.7",
@@ -58,11 +64,19 @@ describe("cursorInputAdapter.parse — sessionEnd", () => {
     );
     assert.equal(ev.kind, "sessionEnd");
     assert.equal(ev.ide, "cursor");
-    assert.equal(ev.sessionId, "sdk-session-b");
+    assert.equal(ev.sessionId, "conv-a");
     assert.equal(ev.reason, "user_close");
   });
 
-  it("falls back to conversation_id when session_id absent", () => {
+  it("falls back to session_id when conversation_id absent", () => {
+    const ev = cursorInputAdapter.parse(
+      { cursor_version: "1.7", session_id: "sdk-session-only", reason: "completed" },
+      "sessionEnd",
+    );
+    assert.equal(ev.sessionId, "sdk-session-only");
+  });
+
+  it("falls back to conversation_id when session_id absent (older Cursor versions)", () => {
     const ev = cursorInputAdapter.parse(
       { cursor_version: "1.7", conversation_id: "conv-a", reason: "completed" },
       "sessionEnd",
