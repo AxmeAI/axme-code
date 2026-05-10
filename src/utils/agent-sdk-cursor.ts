@@ -50,7 +50,9 @@ interface CursorSdkModule {
 
 function resolveSystemPrompt(q: AgentQuery): string {
   const sp = q.options.systemPrompt;
+  if (sp === undefined) return "";
   if (typeof sp === "string") return sp;
+  if (Array.isArray(sp)) return sp.join("\n\n");
   // The Claude-Code preset is meaningless for Cursor — only the `append`
   // text contains the role-specific instructions worth forwarding.
   return sp.append ?? "";
@@ -114,10 +116,11 @@ export async function createCursorAgentSdk(
   return {
     ide: "cursor",
     async *query(q: AgentQuery): AsyncIterable<AgentMessage> {
-      const cwd = factoryOpts?.cwd ?? q.options.cwd;
+      const cwd = factoryOpts?.cwd ?? q.options.cwd ?? process.cwd();
+      const modelId = q.options.model ?? "composer-2";
       const agent = await cursorMod.Agent.create({
         apiKey,
-        model: { id: q.options.model },
+        model: { id: modelId },
         local: { cwd, settingSources: [], mcpServers: [] },
         agentId: `axme-${_role}`,
       });

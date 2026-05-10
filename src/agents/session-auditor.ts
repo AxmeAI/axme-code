@@ -22,6 +22,7 @@ import type { Memory, Decision, SessionHandoff, WorkspaceInfo } from "../types.j
 import { DEFAULT_AUDITOR_MODEL } from "../types.js";
 import { extractCostFromResult, zeroCost, type CostInfo } from "../utils/cost-extractor.js";
 import { buildAgentEnv, claudePathForSdk } from "../utils/agent-options.js";
+import { createAgentSdk } from "../utils/agent-sdk.js";
 import { toMemorySlug } from "../storage/memory.js";
 import { toSlug, listDecisions } from "../storage/decisions.js";
 import { listMemories } from "../storage/memory.js";
@@ -623,7 +624,7 @@ async function runSingleAuditCall(opts: {
   cost?: CostInfo;
   promptChars: number;
 }> {
-  const sdk = await import("@anthropic-ai/claude-agent-sdk");
+  const sdk = await createAgentSdk("auditor", { cwd: opts.sessionOrigin });
 
   const claudePath = claudePathForSdk();
   const queryOpts = {
@@ -860,7 +861,7 @@ export async function formatAuditResult(
   model: string,
   sessionOrigin: string,
 ): Promise<{ json: any; cost?: CostInfo }> {
-  const sdk = await import("@anthropic-ai/claude-agent-sdk");
+  const sdk = await createAgentSdk("auditor", { cwd: sessionOrigin });
 
   const formatPrompt = `You are a formatting assistant. Convert the following free-text audit analysis into a JSON object.
 

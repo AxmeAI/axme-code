@@ -10,6 +10,7 @@
 import type { Decision } from "../../types.js";
 import { extractCostFromResult, zeroCost, type CostInfo } from "../../utils/cost-extractor.js";
 import { buildAgentQueryOptions } from "../../utils/agent-options.js";
+import { createAgentSdk } from "../../utils/agent-sdk.js";
 import { toSlug } from "../../storage/decisions.js";
 
 export interface DecisionScanResult {
@@ -103,7 +104,7 @@ export async function runDecisionScan(opts: {
   /** Existing decisions (e.g. from presets) — scanner skips same-topic. */
   existingDecisions?: Decision[];
 }): Promise<DecisionScanResult> {
-  const sdk = await import("@anthropic-ai/claude-agent-sdk");
+  const sdk = await createAgentSdk("scanner", { cwd: opts.projectPath });
   const startTime = Date.now();
   const model = opts.model ?? "claude-sonnet-4-6";
 

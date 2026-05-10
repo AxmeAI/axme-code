@@ -52,23 +52,35 @@ export interface AgentMessage {
   [key: string]: unknown;
 }
 
+/**
+ * AgentQuery.options is intentionally permissive — every field is optional,
+ * so existing call sites built via `buildAgentQueryOptions(...)` (which
+ * returns the Claude Agent SDK `Options` type, where most fields are
+ * declared optional) type-check without rewrapping. The Claude wrapper
+ * passes the object straight to `sdk.query()`. The Cursor wrapper reads
+ * only the fields it needs (`cwd`, `model`, `systemPrompt`) and ignores
+ * the rest.
+ */
+export interface AgentQueryOptions {
+  cwd?: string;
+  model?: string;
+  systemPrompt?:
+    | string
+    | string[]
+    | { type: "preset"; preset: "claude_code"; append?: string; excludeDynamicSections?: boolean };
+  allowedTools?: string[];
+  disallowedTools?: string[];
+  maxTurns?: number;
+  env?: NodeJS.ProcessEnv;
+  settingSources?: string[];
+  permissionMode?: string;
+  pathToClaudeCodeExecutable?: string;
+  [key: string]: unknown;
+}
+
 export interface AgentQuery {
   prompt: string;
-  options: {
-    cwd: string;
-    model: string;
-    systemPrompt:
-      | string
-      | { type: "preset"; preset: "claude_code"; append?: string };
-    allowedTools: string[];
-    disallowedTools: string[];
-    maxTurns?: number;
-    env: NodeJS.ProcessEnv;
-    settingSources?: string[];
-    permissionMode?: "bypassPermissions";
-    pathToClaudeCodeExecutable?: string;
-    [key: string]: unknown;
-  };
+  options: AgentQueryOptions;
 }
 
 export interface AgentSdk {

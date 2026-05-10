@@ -16,6 +16,7 @@
 import { DEFAULT_AUDITOR_MODEL } from "../types.js";
 import { extractCostFromResult, type CostInfo } from "../utils/cost-extractor.js";
 import { buildAgentQueryOptions } from "../utils/agent-options.js";
+import { createAgentSdk } from "../utils/agent-sdk.js";
 
 export interface KbAuditResult {
   decisionsReviewed: number;
@@ -143,7 +144,7 @@ export async function runKbAudit(opts: {
 }): Promise<KbAuditResult> {
   const startTime = Date.now();
   const model = opts.model ?? DEFAULT_AUDITOR_MODEL;
-  const sdk = await import("@anthropic-ai/claude-agent-sdk");
+  const sdk = await createAgentSdk("auditor", { cwd: opts.targetPath });
 
   const prompt = opts.allRepos ? KB_AUDIT_PROMPT_ALL_REPOS : KB_AUDIT_PROMPT_SINGLE;
 
