@@ -398,9 +398,30 @@ export type E2EMode = "after-task" | "after-stage" | "manual";
 
 // --- Auth ---
 
-export type AuthMode = "subscription" | "api_key";
+/**
+ * Authentication mode for LLM agent invocations.
+ *
+ * - `subscription`: Claude Code OAuth subscription. The factory deletes
+ *   ANTHROPIC_API_KEY from the subprocess env so Claude Code doesn't pick
+ *   an empty-balance key over OAuth.
+ * - `api_key`: Direct ANTHROPIC_API_KEY in env, passed through unchanged.
+ * - `cursor_sdk`: Cursor SDK API key issued at cursor.com (Integrations).
+ *   The actual key is stored at ~/.config/axme-code/cursor.yaml (chmod 600);
+ *   `auth.yaml` only carries the mode flag.
+ */
+export type AuthMode = "subscription" | "api_key" | "cursor_sdk";
 
 export interface AuthConfig {
   mode: AuthMode;
+  chosenAt: string;
+}
+
+/**
+ * Cursor SDK API key payload, stored separately at
+ * ~/.config/axme-code/cursor.yaml so the secret is not co-mingled with
+ * the auth-mode flag and can be permission-locked (chmod 600) on its own.
+ */
+export interface CursorApiKeyConfig {
+  apiKey: string;
   chosenAt: string;
 }

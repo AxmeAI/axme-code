@@ -22,6 +22,9 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "js-yaml": "^4.1.0"
   },
+  "optionalDependencies": {
+    "@cursor/sdk": "1.0.12"
+  },
   "devDependencies": {
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.0.0",

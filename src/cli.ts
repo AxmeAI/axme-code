@@ -197,6 +197,18 @@ async function ensureAuthConfiguredForSetup(): Promise<void> {
     console.log("  Auth selection cancelled. Heuristic fallback will be used.");
     return;
   }
+  if (choice === "cursor_sdk" && !options.cursorSdk?.present) {
+    // User picked Cursor SDK but no key is detected yet — paste flow.
+    const { promptCursorApiKey } = await import("./utils/auth-prompt.js");
+    const { saveCursorApiKey } = await import("./utils/auth-config.js");
+    const key = await promptCursorApiKey();
+    if (!key) {
+      console.log("  Cursor API key paste cancelled. Auth not saved.");
+      return;
+    }
+    saveCursorApiKey(key);
+    console.log(`  Saved Cursor API key: ~/.config/axme-code/cursor.yaml (chmod 600)`);
+  }
   saveAuthConfig(choice);
   console.log(`  Saved auth mode: ${choice} (${authConfigPath()})`);
 }
@@ -320,7 +332,10 @@ function usage(): void {
   console.log(`AXME Code - Persistent memory, decisions, and safety guardrails for Claude Code
 
 Usage:
-  axme-code setup [path] [--force]              Initialize project (LLM scan + .mcp.json + CLAUDE.md)
+  axme-code setup [path] [--force] [--ide=<claude-code|cursor>]
+                                                Initialize project (LLM scan + .mcp.json + CLAUDE.md
+                                                for Claude Code, or .cursor/{mcp,hooks}.json + rules
+                                                /axme-code.mdc for Cursor). Defaults to claude-code.
   axme-code serve                               Start MCP server (stdio transport)
   axme-code status [path]                       Show project status
   axme-code --version | -v                      Print the installed version
@@ -335,9 +350,11 @@ Usage:
   axme-code reindex [path]                      Force a full re-embed of all memories + decisions
                                                 into .axme-code/_index/embeddings.json (search mode only)
 
-  axme-code auth                                Re-detect and choose auth mode (subscription/api_key)
+  axme-code auth                                Re-detect and choose auth mode
+                                                (subscription / api_key / cursor_sdk)
   axme-code auth status                         Show current auth mode + detected options
-  axme-code auth use <subscription|api_key>     Set auth mode non-interactively
+  axme-code auth use <subscription|api_key|cursor_sdk>
+                                                Set auth mode non-interactively
   axme-code cleanup legacy-artifacts [--dry-run]   Remove pre-PR#7 sessions/logs
   axme-code cleanup decisions-normalize [--dry-run]   Add status:active to decisions
   axme-code audit-kb [path] [--all-repos]       KB audit: dedup, conflicts, compaction
@@ -367,7 +384,22 @@ async function main() {
       const setupStartMs = Date.now();
       const forceSetup = args.includes("--force");
       const pluginMode = args.includes("--plugin") || !!process.env.CLAUDE_PLUGIN_ROOT;
-      const setupArgs = args.filter(a => a !== "--force" && a !== "--plugin");
+      const { parseIdeFlag } = await import("./utils/ide-detect.js");
+      const ide = parseIdeFlag(args) ?? "claude-code";
+      if (ide === "cursor" && pluginMode) {
+        console.error("Error: --ide=cursor is not supported with --plugin in this release.");
+        console.error("Run setup without --plugin (Cursor plugin packaging is a Phase 2 follow-up).");
+        process.exit(1);
+      }
+      // Strip --force, --plugin, --ide and its value from positional args.
+      const setupArgs: string[] = [];
+      for (let i = 0; i < args.length; i++) {
+        const a = args[i];
+        if (a === "--force" || a === "--plugin") continue;
+        if (a === "--ide") { i++; continue; } // also skip the value
+        if (a.startsWith("--ide=")) continue;
+        setupArgs.push(a);
+      }
       const projectPath = resolve(setupArgs[1] || ".");
       const hasGitDir = existsSync(join(projectPath, ".git"));
       const ws = detectWorkspace(projectPath);
@@ -481,7 +513,10 @@ async function main() {
       const isPlugin = pluginMode;
 
       if (!isPlugin) {
-        // Create or update .mcp.json (workspace root + each child repo)
+        // Create or update .mcp.json (workspace root + each child repo).
+        // Cursor reads BOTH .mcp.json AND .cursor/mcp.json — we always write
+        // the root file regardless of --ide so a repo configured for Cursor
+        // can also be opened in Claude Code without re-running setup.
         const mcpEntry = { command: "axme-code", args: ["serve"] };
         const mcpPaths = [projectPath];
         if (isWorkspace) {
@@ -504,14 +539,30 @@ async function main() {
         console.log(`  .mcp.json: skipped (plugin provides MCP server)`);
       }
 
-      // Generate CLAUDE.md
-      generateClaudeMd(projectPath, isWorkspace);
-
-      if (!isPlugin) {
-        // Configure Claude Code hooks in .claude/settings.json
-        configureHooks(projectPath);
+      if (ide === "cursor") {
+        // Cursor branch: write .cursor/{mcp,hooks}.json + rules/axme-code.mdc.
+        // Skip .claude/CLAUDE.md (D-080: agent must never write to it) and
+        // .claude/settings.json (Cursor doesn't read it).
+        const { writeCursorMcpJson, writeCursorHooksJson, writeCursorRulesMdc } =
+          await import("./setup/cursor-writers.js");
+        const cursorPaths = [projectPath];
+        if (isWorkspace) {
+          for (const p of ws.projects) cursorPaths.push(join(projectPath, p.path));
+        }
+        for (const dir of cursorPaths) writeCursorMcpJson(dir);
+        console.log(`  .cursor/mcp.json: updated (${cursorPaths.length} locations)`);
+        writeCursorHooksJson(projectPath, buildHookCommand);
+        console.log("  .cursor/hooks.json: hooks configured (preToolUse + postToolUse + sessionEnd)");
+        writeCursorRulesMdc(projectPath, isWorkspace);
+        console.log("  .cursor/rules/axme-code.mdc: created");
       } else {
-        console.log(`  Hooks: skipped (plugin provides hooks)`);
+        // Claude Code branch (unchanged): CLAUDE.md + .claude/settings.json
+        generateClaudeMd(projectPath, isWorkspace);
+        if (!isPlugin) {
+          configureHooks(projectPath);
+        } else {
+          console.log(`  Hooks: skipped (plugin provides hooks)`);
+        }
       }
 
       // Add .axme-code/ to .gitignore
@@ -774,9 +825,25 @@ Do NOT skip — without context you will miss critical project rules.
       }
       if (sub === "use" || sub === "set") {
         const mode = args[2];
-        if (mode !== "subscription" && mode !== "api_key") {
-          console.error("Usage: axme-code auth use <subscription|api_key>");
+        if (mode !== "subscription" && mode !== "api_key" && mode !== "cursor_sdk") {
+          console.error("Usage: axme-code auth use <subscription|api_key|cursor_sdk>");
           process.exit(1);
+        }
+        if (mode === "cursor_sdk") {
+          // Non-interactive set still requires a key — read from
+          // CURSOR_API_KEY env or refuse politely.
+          const { loadCursorApiKey, saveCursorApiKey } = await import("./utils/auth-config.js");
+          if (!loadCursorApiKey() && !process.env.CURSOR_API_KEY) {
+            console.error(
+              "cursor_sdk mode requires a key. Set CURSOR_API_KEY in env, or run\n" +
+                "  axme-code auth          (interactive — paste key when prompted)",
+            );
+            process.exit(1);
+          }
+          if (process.env.CURSOR_API_KEY && !loadCursorApiKey()) {
+            saveCursorApiKey(process.env.CURSOR_API_KEY);
+            console.log("  Saved Cursor API key from env to ~/.config/axme-code/cursor.yaml (chmod 600)");
+          }
         }
         saveAuthConfig(mode as AuthMode);
         console.log(`Saved auth mode: ${mode} (${authConfigPath()})`);
@@ -794,7 +861,7 @@ Do NOT skip — without context you will miss critical project rules.
           process.exit(1);
         }
         if (!process.stdin.isTTY) {
-          console.error("`axme-code auth` requires an interactive terminal. Use `axme-code auth use <subscription|api_key>` non-interactively.");
+          console.error("`axme-code auth` requires an interactive terminal. Use `axme-code auth use <subscription|api_key|cursor_sdk>` non-interactively.");
           process.exit(1);
         }
         const choice = await promptAuthChoice(options);
@@ -802,12 +869,23 @@ Do NOT skip — without context you will miss critical project rules.
           console.log("Cancelled. No change.");
           break;
         }
+        if (choice === "cursor_sdk" && !options.cursorSdk?.present) {
+          const { promptCursorApiKey } = await import("./utils/auth-prompt.js");
+          const { saveCursorApiKey } = await import("./utils/auth-config.js");
+          const key = await promptCursorApiKey();
+          if (!key) {
+            console.log("Cursor API key paste cancelled. No change.");
+            break;
+          }
+          saveCursorApiKey(key);
+          console.log("  Saved Cursor API key: ~/.config/axme-code/cursor.yaml (chmod 600)");
+        }
         saveAuthConfig(choice);
         console.log(`Saved auth mode: ${choice} (${authConfigPath()})`);
         break;
       }
       console.error(`Unknown 'auth' subcommand: ${sub}`);
-      console.error("Available: (none)|choose, status|show, use|set <subscription|api_key>");
+      console.error("Available: (none)|choose, status|show, use|set <subscription|api_key|cursor_sdk>");
       process.exit(1);
     }
 

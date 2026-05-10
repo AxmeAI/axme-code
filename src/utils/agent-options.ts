@@ -6,7 +6,7 @@ import { execSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
-import { resolveAuthMode } from "./auth-config.js";
+import { resolveAuthMode, loadCursorApiKey } from "./auth-config.js";
 
 type Options = import("@anthropic-ai/claude-agent-sdk").Options;
 
@@ -200,10 +200,60 @@ export function buildAgentEnv(): NodeJS.ProcessEnv {
     AXME_TELEMETRY_DISABLED: "1",
     AXME_SKIP_HOOKS: "1",
   };
-  if (resolveAuthMode() === "subscription") {
+  const mode = resolveAuthMode();
+  if (mode === "subscription") {
+    delete env.ANTHROPIC_API_KEY;
+  }
+  if (mode === "cursor_sdk") {
+    // Hydrate CURSOR_API_KEY from cursor.yaml so the Cursor SDK adapter
+    // (lazy-imported at agent invocation time) can pick it up via env.
+    // If env already has a key, keep it — this lets users override the
+    // saved file on a per-run basis without rewriting cursor.yaml.
+    if (!env.CURSOR_API_KEY) {
+      const fileKey = loadCursorApiKey();
+      if (fileKey) env.CURSOR_API_KEY = fileKey;
+    }
+    // Cursor SDK doesn't read ANTHROPIC_API_KEY today, but if it ever
+    // adds dual-provider support, an empty-balance Anthropic key in env
+    // could surprise the user. Drop it explicitly.
     delete env.ANTHROPIC_API_KEY;
   }
   return env;
+}
+
+/**
+ * Map Claude-Agent-SDK tool names to Cursor SDK tool names.
+ *
+ * Most names pass through (Read/Glob/Grep/Edit/Write). Bash → Shell is
+ * the only rename. Tools not exposed by Cursor SDK (NotebookEdit, Agent,
+ * Skill, TodoWrite, WebFetch, WebSearch, ToolSearch) are dropped.
+ *
+ * Returns a deduplicated list. Used by the Cursor agent adapter to
+ * translate a buildAgentQueryOptions allowedTools/disallowedTools array
+ * into Cursor's vocabulary.
+ */
+export function mapClaudeToolsToCursor(tools: readonly string[]): string[] {
+  const mapping: Record<string, string | null> = {
+    Read: "Read",
+    Glob: "Glob",
+    Grep: "Grep",
+    Edit: "Edit",
+    Write: "Write",
+    Bash: "Shell",
+    NotebookEdit: null,
+    Agent: null,
+    Skill: null,
+    TodoWrite: null,
+    WebFetch: null,
+    WebSearch: null,
+    ToolSearch: null,
+  };
+  const out = new Set<string>();
+  for (const t of tools) {
+    const mapped = mapping[t];
+    if (mapped) out.add(mapped);
+  }
+  return [...out];
 }
 
 export function buildAgentQueryOptions(base: {

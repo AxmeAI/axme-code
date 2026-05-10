@@ -13,7 +13,8 @@
 import { execFileSync } from "node:child_process";
 import { homedir, userInfo } from "node:os";
 import { join } from "node:path";
-import { pathExists } from "../storage/engine.js";
+import { pathExists, readSafe } from "../storage/engine.js";
+import yaml from "js-yaml";
 import { findClaudePath } from "./agent-options.js";
 
 export interface ApiKeyOption {
@@ -32,9 +33,21 @@ export interface SubscriptionOption {
   binaryFound: boolean;
 }
 
+export interface CursorSdkOption {
+  /** True if a Cursor SDK API key is configured (env or cursor.yaml). */
+  present: boolean;
+  /** Where the key was found. */
+  source?: "env" | "filesystem";
+  /** Human-readable detail — env var name or file path. */
+  details?: string;
+  /** Masked representation for display. */
+  masked?: string;
+}
+
 export interface AuthOptions {
   apiKey: ApiKeyOption;
   subscription: SubscriptionOption;
+  cursorSdk?: CursorSdkOption;
 }
 
 function maskApiKey(key: string): string {
@@ -42,6 +55,42 @@ function maskApiKey(key: string): string {
   const last4 = trimmed.slice(-4);
   const prefix = trimmed.startsWith("sk-ant-") ? "sk-ant-" : "";
   return `${prefix}...${last4}`;
+}
+
+function maskCursorKey(key: string): string {
+  const trimmed = key.trim();
+  return `...${trimmed.slice(-4)}`;
+}
+
+function detectCursorSdk(): CursorSdkOption {
+  // 1. Env var
+  const envKey = process.env.CURSOR_API_KEY;
+  if (envKey && envKey.trim()) {
+    return {
+      present: true,
+      source: "env",
+      details: "CURSOR_API_KEY",
+      masked: maskCursorKey(envKey),
+    };
+  }
+  // 2. ~/.config/axme-code/cursor.yaml — read inline (no agent-options import
+  //    cycle through auth-config)
+  const cursorYaml = join(homedir(), ".config", "axme-code", "cursor.yaml");
+  if (pathExists(cursorYaml)) {
+    try {
+      const raw = readSafe(cursorYaml);
+      const parsed = yaml.load(raw) as { apiKey?: string } | null;
+      if (parsed && typeof parsed.apiKey === "string" && parsed.apiKey.trim()) {
+        return {
+          present: true,
+          source: "filesystem",
+          details: cursorYaml,
+          masked: maskCursorKey(parsed.apiKey),
+        };
+      }
+    } catch { /* fall through */ }
+  }
+  return { present: false };
 }
 
 function detectApiKey(): ApiKeyOption {
@@ -106,5 +155,6 @@ export function detectAuthOptions(): AuthOptions {
   return {
     apiKey: detectApiKey(),
     subscription: detectSubscription(),
+    cursorSdk: detectCursorSdk(),
   };
 }
