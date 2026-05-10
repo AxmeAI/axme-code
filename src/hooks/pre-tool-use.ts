@@ -205,9 +205,6 @@ function handlePreToolUse(
  * @param ide - from --ide CLI flag (defaults to "claude-code")
  */
 export async function runPreToolUseHook(workspacePath?: string, ide: IdeKind = "claude-code"): Promise<void> {
-  if (!workspacePath) workspacePath = process.cwd();
-  if (!workspacePath) return;
-
   // Subclaude audit workers run inside session-auditor with
   // AXME_SKIP_HOOKS=1 in their environment. Their tool calls trigger any
   // PreToolUse hooks that may still be registered (via .claude/settings.json
@@ -221,6 +218,23 @@ export async function runPreToolUseHook(workspacePath?: string, ide: IdeKind = "
     const chunks: Buffer[] = [];
     for await (const chunk of process.stdin) chunks.push(chunk);
     const raw = JSON.parse(Buffer.concat(chunks).toString("utf-8"));
+
+    // Resolve workspace path. Precedence: explicit --workspace flag > stdin
+    // workspace_roots[0] (Cursor common-base field, present in every event)
+    // > process.cwd() (last-resort fallback). User-level hooks installed by
+    // the VS Code extension at ~/.cursor/hooks.json cannot hard-code a
+    // workspace path because they apply machine-wide, so they omit the flag
+    // and rely on stdin instead.
+    if (!workspacePath) {
+      const roots = (raw as { workspace_roots?: unknown })?.workspace_roots;
+      if (Array.isArray(roots) && typeof roots[0] === "string") {
+        workspacePath = roots[0];
+      } else {
+        workspacePath = process.cwd();
+      }
+    }
+    if (!workspacePath) return;
+
     const adapters = adaptersFor(ide);
     const event = adapters.input.parse(raw, "preToolUse");
     const exitCode = handlePreToolUse(workspacePath, event, adapters.output);

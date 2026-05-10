@@ -72,9 +72,6 @@ function handleSessionEnd(workspacePath: string, event: NormalizedHookEvent): vo
  * @param ide - from --ide CLI flag (defaults to "claude-code")
  */
 export async function runSessionEndHook(workspacePath?: string, ide: IdeKind = "claude-code"): Promise<void> {
-  if (!workspacePath) workspacePath = process.cwd();
-  if (!workspacePath) return;
-
   // Skip entirely when running inside a subclaude audit worker (see
   // session-auditor env: { ...process.env, AXME_SKIP_HOOKS: "1" }). Without
   // this, a subclaude that exits mid-audit could trigger SessionEnd against
@@ -91,6 +88,19 @@ export async function runSessionEndHook(workspacePath?: string, ide: IdeKind = "
     } catch {
       // Empty/invalid stdin is fine — we'll proceed without transcript attachment
     }
+
+    // Resolve workspace path: explicit --workspace flag > stdin
+    // workspace_roots[0] > process.cwd(). See pre-tool-use.ts for rationale.
+    if (!workspacePath) {
+      const roots = (raw as { workspace_roots?: unknown })?.workspace_roots;
+      if (Array.isArray(roots) && typeof roots[0] === "string") {
+        workspacePath = roots[0];
+      } else {
+        workspacePath = process.cwd();
+      }
+    }
+    if (!workspacePath) return;
+
     const event = inputAdapterFor(ide).parse(raw, "sessionEnd");
     handleSessionEnd(workspacePath, event);
   } catch (err) {

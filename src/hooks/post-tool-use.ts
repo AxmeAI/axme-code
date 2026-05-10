@@ -61,9 +61,6 @@ function handlePostToolUse(workspacePath: string, event: NormalizedHookEvent): v
  * @param ide - from --ide CLI flag (defaults to "claude-code")
  */
 export async function runPostToolUseHook(workspacePath?: string, ide: IdeKind = "claude-code"): Promise<void> {
-  if (!workspacePath) workspacePath = process.cwd();
-  if (!workspacePath) return;
-
   // Skip entirely when we are running inside a subclaude audit worker
   // (see session-auditor env: { ...process.env, AXME_SKIP_HOOKS: "1" }).
   // Without this early exit, every tool call the auditor makes would spawn
@@ -74,6 +71,19 @@ export async function runPostToolUseHook(workspacePath?: string, ide: IdeKind = 
     const chunks: Buffer[] = [];
     for await (const chunk of process.stdin) chunks.push(chunk);
     const raw = JSON.parse(Buffer.concat(chunks).toString("utf-8"));
+
+    // Resolve workspace path: explicit --workspace flag > stdin
+    // workspace_roots[0] > process.cwd(). See pre-tool-use.ts for rationale.
+    if (!workspacePath) {
+      const roots = (raw as { workspace_roots?: unknown })?.workspace_roots;
+      if (Array.isArray(roots) && typeof roots[0] === "string") {
+        workspacePath = roots[0];
+      } else {
+        workspacePath = process.cwd();
+      }
+    }
+    if (!workspacePath) return;
+
     const event = inputAdapterFor(ide).parse(raw, "postToolUse");
     handlePostToolUse(workspacePath, event);
   } catch (err) {

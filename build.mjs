@@ -63,7 +63,15 @@ await build({
   target: "node20",
   format: "esm",
   packages: "bundle",
-  external: ["@anthropic-ai/claude-agent-sdk"],
+  // @cursor/sdk is an optional dep with native binaries + workspace-internal
+  // sub-package imports (@anysphere/*) that esbuild cannot resolve from the
+  // plugin bundle — keep it external alongside @anthropic-ai/claude-agent-sdk.
+  // Plugin runtime: cursor_sdk path is unsupported in plugin distribution
+  // (Claude Code marketplace users use claude_agent_sdk anyway), so leaving
+  // the import as a dynamic external is safe — the await import() throws
+  // MODULE_NOT_FOUND inside the plugin and the AgentSdk factory falls back
+  // to the Claude wrapper, exactly as on win-arm64.
+  external: ["@anthropic-ai/claude-agent-sdk", "@cursor/sdk"],
   outfile: "dist/plugin/cli.mjs",
   sourcemap: true,
   banner: { js: "" },
