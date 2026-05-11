@@ -137,9 +137,7 @@ export async function createAgentSdk(
 
   if (ide === "cursor") {
     if (process.platform === "win32" && process.arch === "arm64") {
-      process.stderr.write(
-        "AXME: @cursor/sdk has no win-arm64 native binary; falling back to Claude SDK\n",
-      );
+      logFallback("@cursor/sdk has no win-arm64 native binary");
       return await createClaudeFallback(role);
     }
     try {
@@ -147,14 +145,25 @@ export async function createAgentSdk(
       const cursor = await createCursorAgentSdk(role, opts);
       return cursor;
     } catch (err) {
-      process.stderr.write(
-        `AXME: Cursor SDK unavailable (${(err as Error).message}); falling back to Claude SDK\n`,
-      );
+      logFallback(`@cursor/sdk import failed: ${(err as Error).message}`);
       return await createClaudeFallback(role);
     }
   }
 
   return await createClaudeFallback(role);
+}
+
+/**
+ * Log a quiet, single-line message about an expected-fallback case (e.g.
+ * @cursor/sdk not bundled in the VS Code extension, so we route to the
+ * Claude SDK instead). Hidden by default — only surfaces when the
+ * AXME_VERBOSE_FALLBACK env var is set. Users almost never need to see
+ * these; they're meaningful only when debugging the factory routing.
+ */
+function logFallback(reason: string): void {
+  if (process.env.AXME_VERBOSE_FALLBACK) {
+    process.stderr.write(`AXME: routing through Claude SDK (${reason})\n`);
+  }
 }
 
 async function createClaudeFallback(role: AgentRole): Promise<AgentSdk> {
