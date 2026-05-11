@@ -65,9 +65,18 @@ jobs:
         shell: bash
         run: |
           mkdir -p extension/bin
-          # Bundle dist/cli.mjs into a single CJS file with everything
-          # inlined except @anthropic-ai/claude-agent-sdk (provided at
-          # runtime) and @cursor/sdk (loaded dynamically via optional dep).
+          # Bundle dist/cli.mjs into a single CJS file with all deps inlined
+          # EXCEPT @cursor/sdk. claude-agent-sdk is always required (used by
+          # LLM scanners during setup and by the session auditor); it must
+          # be inside the binary so Node doesn't try to resolve it from a
+          # node_modules/ dir that doesn't ship with the .vsix.
+          #
+          # @cursor/sdk stays external because (a) it carries ~15 MB of
+          # platform-specific native binaries that bloat the .vsix, and
+          # (b) the AgentSdk factory's fallback gracefully degrades to the
+          # Claude path on MODULE_NOT_FOUND. v0.0.1 users use Claude for
+          # the auditor; Cursor SDK as a first-class in-extension option
+          # is a v0.0.2 follow-up.
           #
           # WHY CJS, not ESM: the output is a shebang script with no file
           # extension (Windows uses .exe — see matrix.extension_bin).
@@ -79,7 +88,6 @@ jobs:
             --platform=node \
             --target=node20 \
             --format=cjs \
-            --external:@anthropic-ai/claude-agent-sdk \
             --external:@cursor/sdk \
             --outfile=extension/bin/axme-code.cjs
           # Wrap in a shebang shim so it's executable as a binary.
