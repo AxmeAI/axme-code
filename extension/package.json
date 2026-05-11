@@ -2,7 +2,7 @@
   "name": "axme-code",
   "displayName": "AXME Code",
   "description": "Persistent memory, decisions, and safety guardrails for Cursor, GitHub Copilot, Cline, Continue, Roo Code, Windsurf, and VS Code chat agents",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "publisher": "AxmeAI",
   "repository": {
     "type": "git",
@@ -79,6 +79,21 @@
       {
         "command": "axme.showStatus",
         "title": "AXME: Show status",
+        "category": "AXME"
+      },
+      {
+        "command": "axme.showStatusText",
+        "title": "AXME: Show status (text output)",
+        "category": "AXME"
+      },
+      {
+        "command": "axme.reauthAuditor",
+        "title": "AXME: Reauth auditor (paste new API key)",
+        "category": "AXME"
+      },
+      {
+        "command": "axme.reset",
+        "title": "AXME: Reset (clear hooks + auth on this machine)",
         "category": "AXME"
       }
     ]

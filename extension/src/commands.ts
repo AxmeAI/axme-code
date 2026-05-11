@@ -14,6 +14,8 @@ import { IdeKind } from "./ide-detect.js";
 import { runSetup } from "./setup-controller.js";
 import { ensureAuditorAuth } from "./auditor-auth.js";
 import { AxmeStatusBar } from "./status-bar.js";
+import { openStatusWebview } from "./status-webview.js";
+import { runReset } from "./reset.js";
 import { log, logError, show as showOutput } from "./log.js";
 
 function workspaceRoot(): string | undefined {
@@ -67,6 +69,14 @@ export function registerCommands(
     }),
 
     vscode.commands.registerCommand("axme.showStatus", async () => {
+      // v0.0.2: replace plain-text output dump with a full healthcheck
+      // webview (status of binary, MCP, hooks, auth, KB per workspace).
+      // The old "axme-code status" output dump is still accessible via the
+      // axme.showStatusText fallback command for power users.
+      await openStatusWebview(binary);
+    }),
+
+    vscode.commands.registerCommand("axme.showStatusText", async () => {
       const root = workspaceRoot();
       if (!root) {
         void vscode.window.showWarningMessage("AXME Code: open a folder first.");
@@ -115,6 +125,10 @@ export function registerCommands(
         const doc = await vscode.workspace.openTextDocument(picked.path);
         await vscode.window.showTextDocument(doc);
       }
+    }),
+
+    vscode.commands.registerCommand("axme.reset", async () => {
+      await runReset();
     }),
   ];
 }

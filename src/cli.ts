@@ -347,6 +347,10 @@ Usage:
                                                 for Claude Code, or .cursor/{mcp,hooks}.json + rules
                                                 /axme-code.mdc for Cursor). Defaults to claude-code.
   axme-code serve                               Start MCP server (stdio transport)
+  axme-code self-test                           Run local healthcheck (storage write,
+                                                hook parse, MCP boot). Exits 0 on
+                                                pass, 1 on any failure. Use in CI or
+                                                from terminal when debugging install.
   axme-code status [path]                       Show project status
   axme-code --version | -v                      Print the installed version
 
@@ -606,6 +610,15 @@ async function main() {
     case "serve": {
       await import("./server.js");
       break;
+    }
+
+    case "self-test": {
+      // v0.0.2: local healthcheck for storage / hook adapters / MCP boot.
+      // Used by `AXME: Show Status` webview indirectly + by power users
+      // running the binary from terminal when something looks wrong.
+      const { runSelfTest } = await import("./self-test.js");
+      const code = await runSelfTest();
+      process.exit(code);
     }
 
     case "status": {
