@@ -29,13 +29,19 @@ afterEach(() => {
 });
 
 function spawnHook(hookName: "pre-tool-use" | "post-tool-use" | "session-end", argv: string[], stdinJson: object) {
+  // On Windows npm/npx ship as .cmd shims; spawnSync won't resolve bare "npx".
+  // Use the .cmd extension on win32 and spawn through cmd.exe to avoid
+  // CVE-2024-27980 EINVAL when invoking .cmd directly with arguments.
+  const isWin = process.platform === "win32";
+  const npxBin = isWin ? "npx.cmd" : "npx";
   const args = ["tsx", "src/cli.ts", "hook", hookName, ...argv];
-  const result = spawnSync("npx", args, {
+  const result = spawnSync(npxBin, args, {
     cwd: REPO_ROOT,
     input: JSON.stringify(stdinJson),
     encoding: "utf-8",
     env: { ...process.env, AXME_TELEMETRY_DISABLED: "1" },
     timeout: 15000,
+    shell: isWin,  // .cmd on Windows requires shell mode
   });
   return result;
 }

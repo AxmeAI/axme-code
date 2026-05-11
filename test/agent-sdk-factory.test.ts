@@ -4,15 +4,18 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const SANDBOX_HOME = "/tmp/axme-agent-sdk-factory-test";
-const ORIGINAL_HOME = process.env.HOME;
-const ORIGINAL_AXME_IDE = process.env.AXME_IDE;
-const ORIGINAL_API_KEY = process.env.ANTHROPIC_API_KEY;
-const ORIGINAL_CURSOR_KEY = process.env.CURSOR_API_KEY;
+// On Windows os.homedir() reads USERPROFILE, not HOME — override both
+// for cross-platform sandboxing.
+const HOME_VARS = process.platform === "win32" ? ["USERPROFILE", "HOME"] : ["HOME"];
+const ORIGINAL: Record<string, string | undefined> = {};
+for (const v of [...HOME_VARS, "AXME_IDE", "ANTHROPIC_API_KEY", "CURSOR_API_KEY"]) {
+  ORIGINAL[v] = process.env[v];
+}
 
 beforeEach(() => {
   rmSync(SANDBOX_HOME, { recursive: true, force: true });
   mkdirSync(SANDBOX_HOME, { recursive: true });
-  process.env.HOME = SANDBOX_HOME;
+  for (const v of HOME_VARS) process.env[v] = SANDBOX_HOME;
   delete process.env.AXME_IDE;
   delete process.env.CURSOR_API_KEY;
   // Keep ANTHROPIC_API_KEY out so factory falls into the "neither" path
@@ -22,14 +25,10 @@ beforeEach(() => {
 
 afterEach(() => {
   rmSync(SANDBOX_HOME, { recursive: true, force: true });
-  if (ORIGINAL_HOME === undefined) delete process.env.HOME;
-  else process.env.HOME = ORIGINAL_HOME;
-  if (ORIGINAL_AXME_IDE === undefined) delete process.env.AXME_IDE;
-  else process.env.AXME_IDE = ORIGINAL_AXME_IDE;
-  if (ORIGINAL_API_KEY === undefined) delete process.env.ANTHROPIC_API_KEY;
-  else process.env.ANTHROPIC_API_KEY = ORIGINAL_API_KEY;
-  if (ORIGINAL_CURSOR_KEY === undefined) delete process.env.CURSOR_API_KEY;
-  else process.env.CURSOR_API_KEY = ORIGINAL_CURSOR_KEY;
+  for (const v of [...HOME_VARS, "AXME_IDE", "ANTHROPIC_API_KEY", "CURSOR_API_KEY"]) {
+    if (ORIGINAL[v] === undefined) delete process.env[v];
+    else process.env[v] = ORIGINAL[v];
+  }
 });
 
 describe("createAgentSdk — IDE selection", () => {

@@ -3,20 +3,26 @@ import assert from "node:assert/strict";
 import { mkdirSync, rmSync, writeFileSync, statSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
-// Override $HOME so the auth-config module reads from a sandboxed path.
+// Override the home-dir env var so auth-config (which calls os.homedir())
+// reads from a sandboxed path. On Windows os.homedir() reads USERPROFILE,
+// not HOME — set both for cross-platform safety.
 const SANDBOX_HOME = "/tmp/axme-cursor-auth-test-home";
-const ORIGINAL_HOME = process.env.HOME;
+const HOME_VARS = process.platform === "win32" ? ["USERPROFILE", "HOME"] : ["HOME"];
+const ORIGINAL: Record<string, string | undefined> = {};
+for (const v of HOME_VARS) ORIGINAL[v] = process.env[v];
 
 beforeEach(() => {
   rmSync(SANDBOX_HOME, { recursive: true, force: true });
   mkdirSync(SANDBOX_HOME, { recursive: true });
-  process.env.HOME = SANDBOX_HOME;
+  for (const v of HOME_VARS) process.env[v] = SANDBOX_HOME;
 });
 
 afterEach(() => {
   rmSync(SANDBOX_HOME, { recursive: true, force: true });
-  if (ORIGINAL_HOME === undefined) delete process.env.HOME;
-  else process.env.HOME = ORIGINAL_HOME;
+  for (const v of HOME_VARS) {
+    if (ORIGINAL[v] === undefined) delete process.env[v];
+    else process.env[v] = ORIGINAL[v];
+  }
 });
 
 describe("auth.yaml round-trip with cursor_sdk mode", () => {
