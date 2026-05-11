@@ -1,0 +1,100 @@
+{
+  "name": "axme-code",
+  "displayName": "AXME Code",
+  "description": "Persistent memory, decisions, and safety guardrails for Cursor, GitHub Copilot, Cline, Continue, Roo Code, Windsurf, and VS Code chat agents",
+  "version": "0.0.1",
+  "publisher": "AxmeAI",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AxmeAI/axme-code.git",
+    "directory": "extension"
+  },
+  "homepage": "https://github.com/AxmeAI/axme-code",
+  "bugs": {
+    "url": "https://github.com/AxmeAI/axme-code/issues"
+  },
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.96.0"
+  },
+  "categories": [
+    "AI",
+    "Other"
+  ],
+  "keywords": [
+    "ai",
+    "agent",
+    "cursor",
+    "copilot",
+    "cline",
+    "mcp",
+    "memory",
+    "safety"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "configuration": {
+      "title": "AXME Code",
+      "properties": {
+        "axme.binaryPath": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Absolute path to the `axme-code` binary. Leave empty to auto-detect via `$PATH`, `~/.local/bin/axme-code`, or platform standards. Override only if you have a non-standard install."
+        },
+        "axme.contextMode": {
+          "type": "string",
+          "enum": [
+            "full",
+            "search"
+          ],
+          "default": "full",
+          "markdownDescription": "Knowledge-base loading mode. `full` loads every memory + decision into agent context (default, simple). `search` loads only catalog + uses semantic search (saves tokens at scale; requires the search-mode runtime — install via `axme-code config set context.mode search`)."
+        },
+        "axme.enableHooks": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Register safety hooks (`preToolUse` / `postToolUse` / `sessionEnd`) at activation. When ON, force-pushes / dangerous bash / file-write violations are blocked across every project on this machine."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "axme.setup",
+        "title": "AXME: Set up workspace (writes .axme-code/ + hooks)",
+        "category": "AXME"
+      },
+      {
+        "command": "axme.openDashboard",
+        "title": "AXME: Open dashboard (worklog + decisions + memories)",
+        "category": "AXME"
+      },
+      {
+        "command": "axme.reindex",
+        "title": "AXME: Reindex semantic search",
+        "category": "AXME"
+      },
+      {
+        "command": "axme.showStatus",
+        "title": "AXME: Show status",
+        "category": "AXME"
+      }
+    ]
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "watch": "node build.mjs --watch",
+    "package": "vsce package --no-dependencies",
+    "publish:ovsx": "ovsx publish --pat $OVSX_TOKEN"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/vscode": "^1.96.0",
+    "@vscode/vsce": "^3.2.0",
+    "esbuild": "^0.25.0",
+    "ovsx": "^0.10.0",
+    "typescript": "^5.9.0"
+  }
+}

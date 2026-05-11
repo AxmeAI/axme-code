@@ -80,9 +80,21 @@ Decisions enforce verification requirements: agent must run tests and show proof
 
 ## Quick Start
 
-**Requires [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (CLI or VS Code extension).**
+AXME Code supports three IDE paths today, ranked by lowest install friction:
 
-### Option 1: Claude Code plugin (recommended)
+### Option 0: Cursor extension (1-click install — recommended for Cursor users)
+
+For **Cursor 0.42+** users — install the `AXME Code` extension from the Extensions panel (Open VSX). The extension bundles the binary, registers the MCP server programmatically (no manual Enable click), installs user-level safety hooks at `~/.cursor/hooks.json` (apply to every project on your machine), and offers a one-click "Run setup" notification the first time you open a project without `.axme-code/`.
+
+```
+Cursor → Extensions → search "AXME Code" → Install
+```
+
+Or sideload the .vsix attached to the [latest release](https://github.com/AxmeAI/axme-code/releases) (`Extensions → ... menu → "Install from VSIX..."`).
+
+On first activation a modal asks for an LLM credential for the session auditor: paste an Anthropic API key, a Cursor SDK key (cursor.com → Integrations), or skip the auditor. If `claude` CLI is logged in (`claude login`), the extension auto-uses your Claude subscription — no paste needed.
+
+### Option 1: Claude Code plugin (recommended for Claude Code users)
 
 In Claude Code, run:
 
