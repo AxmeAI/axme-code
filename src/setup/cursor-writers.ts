@@ -129,6 +129,13 @@ Call \`axme_context\` tool with this project's path at the start of every Cursor
 This loads: oracle, decisions, safety rules, memories, test plan, active plans.
 Do NOT skip — without context you will miss critical project rules.
 
+### NEVER run \`axme-code setup\` yourself
+Setup is the user's job. The Cursor extension offers a "Run setup?" toast on
+first activation; the user can also run \`AXME: Setup\` from the Command
+Palette. **Do not invoke \`axme-code setup\` via Bash autonomously**, even if
+\`axme_context\` returns "not initialized" — just relay the message to the
+user and wait.
+
 ### During Work
 - Error pattern or successful approach discovered → call \`axme_save_memory\` immediately.
 - Architectural decision made or discovered → call \`axme_save_decision\` immediately.

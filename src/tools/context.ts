@@ -78,7 +78,7 @@ export function getFullContextSections(projectPath: string, workspacePath?: stri
     if (pathExists(setupLock)) {
       return [parts[0] + "\n\nSetup is already running. Wait for it to finish, then call axme_context again."];
     }
-    return [parts[0] + "\n\nProject not initialized. FIRST tell the user: 'Initializing AXME Code knowledge base for this project. This takes 1-2 minutes on first run.' THEN run `axme-code setup --plugin` via Bash tool. Do NOT ask permission — just inform and run."];
+    return [parts[0] + "\n\nProject not initialized — `.axme-code/` is missing in this workspace. **Do NOT run `axme-code setup` yourself.** Initialization is the user's job (Cursor: run `AXME: Setup` from Command Palette; Claude Code: run `axme-code setup` in terminal). Tell the user this and stop; once they finish setup, call `axme_context` again and the knowledge base will load."];
   }
 
   // Safety rules (small, always inline)
@@ -138,7 +138,7 @@ export function getFullContextSections(projectPath: string, workspacePath?: stri
     const files = loadOracleFiles(projectPath);
     const oracleIsMinimal = files && files.stack.length < 200 && !files.patterns.includes("CLAUDE.md");
     if (oracleIsMinimal) {
-      parts.push("**WARNING:** This project was initialized with deterministic scan only (no LLM). Run `axme-code setup " + projectPath + "` for deep LLM scan.");
+      parts.push("**WARNING:** This project was initialized with deterministic scan only (no LLM). Tell the user to re-run `axme-code setup " + projectPath + "` for a deep LLM scan. **Do not run it yourself** — initialization is the user's job.");
     }
   }
 
