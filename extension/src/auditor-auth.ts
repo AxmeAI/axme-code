@@ -45,7 +45,11 @@ export async function ensureAuditorAuth(binary: string): Promise<AuditorAuthMode
   }
 
   const choice = await vscode.window.showInformationMessage(
-    "AXME Code needs an LLM credential to run the session auditor at the end of each chat. Pick one:",
+    "AXME Code session auditor needs an LLM credential. It runs once at the end of each chat to " +
+      "extract memories, decisions, and safety rules from your conversation. Pick a provider:\n\n" +
+      "• Anthropic API key — pay-per-token via console.anthropic.com\n" +
+      "• Cursor SDK key — uses your existing Cursor account (Pro users have included quota)\n" +
+      "• Skip — MCP tools and safety hooks still work; just no automatic memory extraction",
     { modal: true },
     "Anthropic API key",
     "Cursor SDK key",
@@ -61,7 +65,14 @@ export async function ensureAuditorAuth(binary: string): Promise<AuditorAuthMode
   }
 
   if (choice === "Anthropic API key") {
-    const key = await promptKey("Anthropic API key", "sk-ant-...");
+    const key = await collectKey({
+      label: "Anthropic API key",
+      placeholder: "sk-ant-api03-...",
+      dashboardUrl: "https://console.anthropic.com/settings/keys",
+      dashboardLabel: "Open console.anthropic.com → API Keys",
+      instruction:
+        "On console.anthropic.com → API Keys, click 'Create Key', copy the key (starts with sk-ant-), come back here and paste.",
+    });
     if (!key) return "disabled";
     const ok = await runShell(binary, ["auth", "use", "api_key"], { ANTHROPIC_API_KEY: key });
     if (ok) {
@@ -73,7 +84,14 @@ export async function ensureAuditorAuth(binary: string): Promise<AuditorAuthMode
   }
 
   if (choice === "Cursor SDK key") {
-    const key = await promptKey("Cursor SDK API key", "sk-cursor-... (from cursor.com → Integrations)");
+    const key = await collectKey({
+      label: "Cursor SDK API key",
+      placeholder: "key_...",
+      dashboardUrl: "https://cursor.com/dashboard/integrations",
+      dashboardLabel: "Open cursor.com/dashboard/integrations",
+      instruction:
+        "On the Integrations page, click 'Create new API key', copy the key (starts with key_), come back here and paste. Billing for auditor calls goes through your Cursor account (Pro users have included quota).",
+    });
     if (!key) return "disabled";
     const ok = await runShell(binary, ["auth", "use", "cursor_sdk"], { CURSOR_API_KEY: key });
     if (ok) {
@@ -87,10 +105,51 @@ export async function ensureAuditorAuth(binary: string): Promise<AuditorAuthMode
   return "disabled";
 }
 
-async function promptKey(label: string, placeholder: string): Promise<string | undefined> {
+/**
+ * Two-step credential prompt:
+ *   1. Show info message with "Open dashboard" button → opens browser.
+ *      User leaves Cursor, generates a key on the provider's site,
+ *      copies it, comes back. Cursor input box stays open
+ *      (ignoreFocusOut: true) so the paste lands when they return.
+ *   2. Show password-style input box with the generation instructions
+ *      as `prompt` text below the title.
+ *
+ * If the user picks "I already have a key", step 1 is skipped.
+ */
+async function collectKey(opts: {
+  label: string;
+  placeholder: string;
+  dashboardUrl: string;
+  dashboardLabel: string;
+  instruction: string;
+}): Promise<string | undefined> {
+  const action = await vscode.window.showInformationMessage(
+    `AXME Code needs your ${opts.label}. ${opts.instruction}`,
+    { modal: false },
+    opts.dashboardLabel,
+    "I already have a key — let me paste",
+    "Cancel",
+  );
+
+  if (action === "Cancel" || action === undefined) return undefined;
+
+  if (action === opts.dashboardLabel) {
+    try {
+      await vscode.env.openExternal(vscode.Uri.parse(opts.dashboardUrl));
+      log(`Auditor auth: opened ${opts.dashboardUrl} in browser`);
+    } catch (err) {
+      logError(`openExternal(${opts.dashboardUrl})`, err);
+    }
+    // Brief delay so the browser tab is visible before our input box steals
+    // focus back. User can still ignore and continue in the browser; we keep
+    // ignoreFocusOut: true so the input box stays alive.
+    await new Promise((r) => setTimeout(r, 800));
+  }
+
   const value = await vscode.window.showInputBox({
-    title: `AXME Code — paste ${label}`,
-    placeHolder: placeholder,
+    title: `AXME Code — paste ${opts.label}`,
+    prompt: opts.instruction,
+    placeHolder: opts.placeholder,
     password: true,
     ignoreFocusOut: true,
     validateInput: (v) => {
