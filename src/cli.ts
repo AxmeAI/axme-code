@@ -21,6 +21,16 @@ import { authConfigPath, loadAuthConfig, saveAuthConfig } from "./utils/auth-con
 import { formatDetectionBlock, hasAnyAuth, promptAuthChoice } from "./utils/auth-prompt.js";
 import type { AuthMode, WorkspaceInfo } from "./types.js";
 import { AXME_CODE_DIR, AXME_CODE_VERSION } from "./types.js";
+import { EventEmitter, setMaxListeners as setMaxEventTargetListeners } from "node:events";
+
+// Suppress Node's MaxListenersExceededWarning that occasionally fires when
+// claude-agent-sdk attaches several abort-signal listeners during long LLM
+// runs (e.g. 4 parallel scanners during setup). Default cap of 10 is too
+// low for our usage. Three knobs to cover both EventTarget and EventEmitter
+// limits across the SDK call paths:
+process.setMaxListeners(50);
+setMaxEventTargetListeners(50);              // EventTarget default for new instances
+EventEmitter.defaultMaxListeners = 50;       // legacy EventEmitter default
 
 const args = process.argv.slice(2);
 const command = args[0];

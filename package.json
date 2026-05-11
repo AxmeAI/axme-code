@@ -9,6 +9,8 @@
   },
   "scripts": {
     "build": "node build.mjs",
+    "build:extension": "cd extension && npm run build",
+    "package:extension": "cd extension && npm run package",
     "start": "node dist/server.js",
     "dev": "tsx src/cli.ts",
     "test": "node scripts/run-tests.mjs",

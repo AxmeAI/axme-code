@@ -122,7 +122,11 @@ export async function createCursorAgentSdk(
         apiKey,
         model: { id: modelId },
         local: { cwd, settingSources: [], mcpServers: [] },
-        agentId: `axme-${_role}`,
+        // Cursor SDK stores agents in a local SQLite with UNIQUE(agent_id);
+        // multiple scanner-role calls in one setup would all reuse
+        // "axme-scanner" and fail with SQLITE_CONSTRAINT. Append a per-call
+        // suffix so each agent.create gets a fresh row.
+        agentId: `axme-${_role}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       });
 
       let accumulatedText = "";

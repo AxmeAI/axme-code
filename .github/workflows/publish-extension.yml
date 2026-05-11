@@ -1,0 +1,163 @@
+name: Publish extension
+
+# Build a platform-specific .vsix on every push to the extension branch
+# (artifact-only, no publish). Publish to Open VSX only when a human pushes
+# a tag matching `extension-v*` — agents must never push tags per D-024.
+
+on:
+  push:
+    branches:
+      - feat/vscode-extension-**
+    tags:
+      - "extension-v*"
+  pull_request:
+    paths:
+      - "extension/**"
+      - ".github/workflows/publish-extension.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build .vsix (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x64
+            runner: ubuntu-latest
+            binary_name: axme-code-linux-x64
+            extension_bin: axme-code
+          - target: linux-arm64
+            runner: ubuntu-latest
+            binary_name: axme-code-linux-arm64
+            extension_bin: axme-code
+          - target: darwin-x64
+            runner: macos-13
+            binary_name: axme-code-darwin-x64
+            extension_bin: axme-code
+          - target: darwin-arm64
+            runner: macos-latest
+            binary_name: axme-code-darwin-arm64
+            extension_bin: axme-code
+          - target: win32-x64
+            runner: windows-latest
+            binary_name: axme-code-windows-x64.exe
+            extension_bin: axme-code.exe
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install core deps
+        run: npm install
+
+      - name: Build core
+        run: npm run build
+
+      - name: Bundle core CLI to a single platform-specific file
+        shell: bash
+        run: |
+          mkdir -p extension/bin
+          # Bundle dist/cli.mjs into a single CJS file with all deps inlined
+          # EXCEPT @cursor/sdk. claude-agent-sdk is always required (used by
+          # LLM scanners during setup and by the session auditor); it must
+          # be inside the binary so Node doesn't try to resolve it from a
+          # node_modules/ dir that doesn't ship with the .vsix.
+          #
+          # @cursor/sdk stays external because (a) it carries ~15 MB of
+          # platform-specific native binaries that bloat the .vsix, and
+          # (b) the AgentSdk factory's fallback gracefully degrades to the
+          # Claude path on MODULE_NOT_FOUND. v0.0.1 users use Claude for
+          # the auditor; Cursor SDK as a first-class in-extension option
+          # is a v0.0.2 follow-up.
+          #
+          # WHY CJS, not ESM: the output is a shebang script with no file
+          # extension (Windows uses .exe — see matrix.extension_bin).
+          # Without ".mjs" extension AND without a sibling package.json
+          # declaring "type":"module", Node loads the file as CJS and
+          # ESM import statements throw at runtime.
+          npx esbuild dist/cli.mjs \
+            --bundle \
+            --platform=node \
+            --target=node20 \
+            --format=cjs \
+            --external:@cursor/sdk \
+            --outfile=extension/bin/axme-code.cjs
+          # Wrap in a shebang shim so it's executable as a binary.
+          {
+            printf '#!/usr/bin/env node\n'
+            cat extension/bin/axme-code.cjs
+          } > extension/bin/${{ matrix.extension_bin }}
+          rm extension/bin/axme-code.cjs
+          chmod +x extension/bin/${{ matrix.extension_bin }} || true
+
+      - name: Install extension deps
+        working-directory: extension
+        run: npm install
+
+      - name: Build extension bundle
+        working-directory: extension
+        run: npm run build
+
+      - name: Package .vsix
+        working-directory: extension
+        run: npx vsce package --target ${{ matrix.target }} --no-dependencies -o ../axme-code-${{ matrix.target }}.vsix
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: axme-code-${{ matrix.target }}
+          path: axme-code-${{ matrix.target }}.vsix
+          retention-days: 14
+
+  publish:
+    name: Publish to Open VSX
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/extension-v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Download all .vsix artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: vsix
+          merge-multiple: true
+
+      - name: Publish per-target to Open VSX
+        env:
+          OVSX_TOKEN: ${{ secrets.OVSX_TOKEN }}
+        run: |
+          set -euo pipefail
+          for target in linux-x64 linux-arm64 darwin-x64 darwin-arm64 win32-x64; do
+            file="vsix/axme-code-${target}.vsix"
+            if [ ! -f "$file" ]; then
+              echo "Warning: $file missing; skipping $target."
+              continue
+            fi
+            echo "Publishing $file (target=$target)"
+            npx ovsx publish "$file" --target "$target" --pat "$OVSX_TOKEN"
+          done
+
+      - name: Attach .vsix files to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Create release if missing, then attach all 5 .vsix files for
+          # sideload distribution alongside Open VSX.
+          tag="${GITHUB_REF#refs/tags/}"
+          gh release view "$tag" >/dev/null 2>&1 || \
+            gh release create "$tag" --title "$tag" --notes "Extension $tag — six platform-specific .vsix files attached. See README for install instructions."
+          for f in vsix/axme-code-*.vsix; do
+            gh release upload "$tag" "$f" --clobber
+          done
