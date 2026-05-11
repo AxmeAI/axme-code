@@ -10,6 +10,7 @@
 import type { SafetyRules } from "../../types.js";
 import { extractCostFromResult, zeroCost, type CostInfo } from "../../utils/cost-extractor.js";
 import { buildAgentQueryOptions } from "../../utils/agent-options.js";
+import { createAgentSdk } from "../../utils/agent-sdk.js";
 
 export interface SafetyScanResult {
   rules: Partial<SafetyRules>;
@@ -93,7 +94,7 @@ export async function runSafetyScan(opts: {
   projectPath: string;
   model?: string;
 }): Promise<SafetyScanResult> {
-  const sdk = await import("@anthropic-ai/claude-agent-sdk");
+  const sdk = await createAgentSdk("scanner", { cwd: opts.projectPath });
   const startTime = Date.now();
   const model = opts.model ?? "claude-haiku-4-5";
 

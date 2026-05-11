@@ -13,6 +13,7 @@ import type { Memory } from "../types.js";
 import { extractCostFromResult, zeroCost, type CostInfo } from "../utils/cost-extractor.js";
 import { toMemorySlug } from "../storage/memory.js";
 import { buildAgentEnv, claudePathForSdk } from "../utils/agent-options.js";
+import { createAgentSdk } from "../utils/agent-sdk.js";
 
 export interface MemoryExtractionResult {
   memories: Memory[];
@@ -65,7 +66,7 @@ export async function runMemoryExtraction(opts: {
   projectPath: string;
   model?: string;
 }): Promise<MemoryExtractionResult> {
-  const sdk = await import("@anthropic-ai/claude-agent-sdk");
+  const sdk = await createAgentSdk("auditor", { cwd: opts.projectPath });
   const startTime = Date.now();
   const model = opts.model ?? "claude-haiku-4-5";
 

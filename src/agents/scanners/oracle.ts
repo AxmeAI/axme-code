@@ -10,6 +10,7 @@
 import type { OracleFiles } from "../../types.js";
 import { extractCostFromResult, zeroCost, type CostInfo } from "../../utils/cost-extractor.js";
 import { buildAgentQueryOptions } from "../../utils/agent-options.js";
+import { createAgentSdk } from "../../utils/agent-sdk.js";
 
 export interface OracleScanResult {
   files: OracleFiles;
@@ -120,7 +121,7 @@ export async function runOracleScan(opts: {
   workspaceMode?: boolean;
   customPaths?: string[];
 }): Promise<OracleScanResult> {
-  const sdk = await import("@anthropic-ai/claude-agent-sdk");
+  const sdk = await createAgentSdk("scanner", { cwd: opts.projectPath });
   const startTime = Date.now();
   const model = opts.model ?? "claude-sonnet-4-6";
 

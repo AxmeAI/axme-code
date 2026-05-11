@@ -30,6 +30,7 @@ import { openSync, closeSync } from "node:fs";
 import { join } from "node:path";
 import { ensureDir } from "./storage/engine.js";
 import { AXME_CODE_DIR } from "./types.js";
+import type { IdeKind } from "./types.js";
 
 const AUDIT_WORKER_LOGS_DIR = "audit-worker-logs";
 
@@ -49,7 +50,14 @@ const AUDIT_WORKER_LOGS_DIR = "audit-worker-logs";
  *     parent may be exiting imminently and holding a pipe fd open would
  *     kill the writer once the reader closes)
  */
-export function spawnDetachedAuditWorker(workspacePath: string, sessionId: string): void {
+export function spawnDetachedAuditWorker(
+  workspacePath: string,
+  sessionId: string,
+  /** Which IDE produced this session — forwarded to the worker so the
+   *  auditor can dispatch the right transcript parser. Optional for
+   *  backward compatibility; absent value means "claude-code". */
+  ide?: IdeKind,
+): void {
   const logsDir = join(workspacePath, AXME_CODE_DIR, AUDIT_WORKER_LOGS_DIR);
   ensureDir(logsDir);
   const logPath = join(logsDir, `${sessionId}.log`);
@@ -62,9 +70,11 @@ export function spawnDetachedAuditWorker(workspacePath: string, sessionId: strin
   try {
     const cliPath = process.argv[1];
     if (!cliPath) throw new Error("audit-spawner: cannot determine CLI path from process.argv[1]");
+    const argv: string[] = [cliPath, "audit-session", "--workspace", workspacePath, "--session", sessionId];
+    if (ide) argv.push("--ide", ide);
     const child = spawn(
       process.execPath,
-      [cliPath, "audit-session", "--workspace", workspacePath, "--session", sessionId],
+      argv,
       {
         detached: true,
         stdio: ["ignore", fd, fd],
@@ -73,7 +83,7 @@ export function spawnDetachedAuditWorker(workspacePath: string, sessionId: strin
     );
     child.unref();
     process.stderr.write(
-      `AXME: spawned detached audit worker pid=${child.pid} session=${sessionId} log=${logPath}\n`,
+      `AXME: spawned detached audit worker pid=${child.pid} session=${sessionId} ide=${ide ?? "claude-code"} log=${logPath}\n`,
     );
   } finally {
     // The child now holds its own dup of the fd; we can close our copy.

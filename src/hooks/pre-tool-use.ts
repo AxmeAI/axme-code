@@ -4,10 +4,10 @@
  * Intercepts tool calls BEFORE execution and blocks violations.
  * Uses the same checkBash/checkGit/checkFilePath from storage/safety.ts.
  *
- * Output format (to block):
- *   { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "..." } }
- *
- * Silent exit (no output) = allow.
+ * IDE-specific stdin/stdout shapes are handled by adapters in
+ * src/hooks/adapters/*. The safety-checking core in handlePreToolUse is
+ * IDE-agnostic — it consumes a NormalizedHookEvent and emits a deny
+ * verdict that the calling IDE adapter formats correctly.
  */
 
 import { loadMergedSafetyRules, checkBash, checkGit, checkFilePath } from "../storage/safety.js";
@@ -18,14 +18,15 @@ import { detectWorkspace } from "../utils/workspace-detector.js";
 import { dirname, join, resolve } from "node:path";
 import { existsSync } from "node:fs";
 import { AXME_CODE_DIR } from "../types.js";
-import type { SafetyRules } from "../types.js";
+import type { IdeKind, SafetyRules } from "../types.js";
 import type { SafetyVerdict } from "../storage/safety.js";
+import { claudeCodeInputAdapter, claudeCodeOutputAdapter } from "./adapters/claude-code.js";
+import { cursorInputAdapter, cursorOutputAdapter } from "./adapters/cursor.js";
+import type { HookInputAdapter, HookOutputAdapter, NormalizedHookEvent } from "./adapters/types.js";
 
-interface HookInput {
-  tool_name: string;
-  tool_input: Record<string, any>;
-  session_id?: string;
-  transcript_path?: string;
+function adaptersFor(ide: IdeKind): { input: HookInputAdapter; output: HookOutputAdapter } {
+  if (ide === "cursor") return { input: cursorInputAdapter, output: cursorOutputAdapter };
+  return { input: claudeCodeInputAdapter, output: claudeCodeOutputAdapter };
 }
 
 /**
@@ -64,15 +65,10 @@ function splitCommandSegments(command: string): string[] {
   return segments;
 }
 
-function deny(reason: string): void {
-  const output = {
-    hookSpecificOutput: {
-      hookEventName: "PreToolUse",
-      permissionDecision: "deny",
-      permissionDecisionReason: `[AXME Safety] ${reason}`,
-    },
-  };
-  process.stdout.write(JSON.stringify(output));
+function deny(reason: string, output: HookOutputAdapter): number {
+  const result = output.emitDeny(reason, "preToolUse");
+  process.stdout.write(result.stdout);
+  return result.exitCode;
 }
 
 /**
@@ -103,10 +99,15 @@ function findContainingRepo(filePath: string, workspaceRoot: string): string {
   return rootResolved;
 }
 
-function handlePreToolUse(sessionOrigin: string, event: HookInput): void {
-  const { tool_name, tool_input } = event;
+function handlePreToolUse(
+  sessionOrigin: string,
+  event: NormalizedHookEvent,
+  output: HookOutputAdapter,
+): number {
+  const tool_name = event.toolName ?? "";
+  const tool_input = (event.toolInput ?? {}) as Record<string, any>;
 
-  if (!pathExists(join(sessionOrigin, AXME_CODE_DIR))) return;
+  if (!pathExists(join(sessionOrigin, AXME_CODE_DIR))) return 0;
 
   // Ensure an AXME session exists for this Claude session (lazy creation).
   // The first hook call with a given Claude session_id creates the AXME
@@ -118,8 +119,8 @@ function handlePreToolUse(sessionOrigin: string, event: HookInput): void {
   // We do this in PreToolUse (not only PostToolUse) so the AXME session
   // exists before any safety denial — we want the audit trail even for
   // blocked tool calls.
-  if (event.session_id && event.transcript_path) {
-    ensureAxmeSessionForClaude(sessionOrigin, event.session_id, event.transcript_path, tool_name);
+  if (event.sessionId && event.transcriptPath) {
+    ensureAxmeSessionForClaude(sessionOrigin, event.sessionId, event.transcriptPath, tool_name, event.ide);
   }
 
   // Determine if the session origin is a workspace (multi-repo) or a single repo.
@@ -186,25 +187,24 @@ function handlePreToolUse(sessionOrigin: string, event: HookInput): void {
   if (!verdict.allowed) {
     // Log safety block to worklog for audit trail
     try {
-      const mapping = event.session_id ? readClaudeSessionMapping(sessionOrigin, event.session_id) : null;
+      const mapping = event.sessionId ? readClaudeSessionMapping(sessionOrigin, event.sessionId) : null;
       const axmeSessionId = mapping ?? "unknown";
       const target = tool_name === "Bash"
         ? (tool_input.command as string ?? "").slice(0, 120)
         : (tool_input.file_path || tool_input.path || "") as string;
       logSafetyBlock(sessionOrigin, axmeSessionId, tool_name, target, "safety_rule", verdict.reason);
     } catch {}
-    deny(verdict.reason);
+    return deny(verdict.reason, output);
   }
+  return 0;
 }
 
 /**
  * CLI entry point - reads JSON from stdin.
  * @param workspacePath - from --workspace CLI flag
+ * @param ide - from --ide CLI flag (defaults to "claude-code")
  */
-export async function runPreToolUseHook(workspacePath?: string): Promise<void> {
-  if (!workspacePath) workspacePath = process.cwd();
-  if (!workspacePath) return;
-
+export async function runPreToolUseHook(workspacePath?: string, ide: IdeKind = "claude-code"): Promise<void> {
   // Subclaude audit workers run inside session-auditor with
   // AXME_SKIP_HOOKS=1 in their environment. Their tool calls trigger any
   // PreToolUse hooks that may still be registered (via .claude/settings.json
@@ -217,8 +217,28 @@ export async function runPreToolUseHook(workspacePath?: string): Promise<void> {
   try {
     const chunks: Buffer[] = [];
     for await (const chunk of process.stdin) chunks.push(chunk);
-    const input = JSON.parse(Buffer.concat(chunks).toString("utf-8")) as HookInput;
-    handlePreToolUse(workspacePath, input);
+    const raw = JSON.parse(Buffer.concat(chunks).toString("utf-8"));
+
+    // Resolve workspace path. Precedence: explicit --workspace flag > stdin
+    // workspace_roots[0] (Cursor common-base field, present in every event)
+    // > process.cwd() (last-resort fallback). User-level hooks installed by
+    // the VS Code extension at ~/.cursor/hooks.json cannot hard-code a
+    // workspace path because they apply machine-wide, so they omit the flag
+    // and rely on stdin instead.
+    if (!workspacePath) {
+      const roots = (raw as { workspace_roots?: unknown })?.workspace_roots;
+      if (Array.isArray(roots) && typeof roots[0] === "string") {
+        workspacePath = roots[0];
+      } else {
+        workspacePath = process.cwd();
+      }
+    }
+    if (!workspacePath) return;
+
+    const adapters = adaptersFor(ide);
+    const event = adapters.input.parse(raw, "preToolUse");
+    const exitCode = handlePreToolUse(workspacePath, event, adapters.output);
+    if (exitCode !== 0) process.exit(exitCode);
   } catch (err) {
     // Hook failures must be silent - fail open for safety.
     // Reported to telemetry via blocking send so the network call lands

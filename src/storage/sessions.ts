@@ -21,7 +21,7 @@ import { readdirSync, readFileSync, rmSync, openSync, closeSync, unlinkSync, sta
 import { randomUUID } from "node:crypto";
 import { ensureDir, writeJson, readJson, pathExists, atomicWrite, removeFile, readSafe } from "./engine.js";
 import { logSessionStart } from "./worklog.js";
-import type { SessionMeta, ClaudeSessionRef } from "../types.js";
+import type { SessionMeta, ClaudeSessionRef, IdeKind } from "../types.js";
 import { AXME_CODE_DIR } from "../types.js";
 
 const SESSIONS_DIR = "sessions";
@@ -560,6 +560,10 @@ export function ensureAxmeSessionForClaude(
   /** If set, stale mappings from read-only tools (Read/Glob/Grep) reuse
    *  the existing session id instead of creating a fresh empty-tail session. */
   toolName?: string,
+  /** Which IDE produced this attached session (claude-code | cursor).
+   *  Recorded on the ClaudeSessionRef so the auditor can dispatch the
+   *  right transcript parser. */
+  ide?: IdeKind,
 ): string {
   // Fast path: live mapping exists, just reuse it (no lock needed).
   const existing = readClaudeSessionMapping(projectPath, claudeSessionId);
@@ -574,6 +578,7 @@ export function ensureAxmeSessionForClaude(
         id: claudeSessionId,
         transcriptPath,
         role: "main",
+        ide,
       });
       writeClaudeSessionMapping(projectPath, claudeSessionId, existing);
       return existing;
@@ -596,7 +601,7 @@ export function ensureAxmeSessionForClaude(
     // exited (test workers, short-lived hooks), making the pid look dead.
     const recheck = readClaudeSessionMapping(projectPath, claudeSessionId);
     if (recheck && recheck !== existing) {
-      attachClaudeSession(projectPath, recheck, { id: claudeSessionId, transcriptPath, role: "main" });
+      attachClaudeSession(projectPath, recheck, { id: claudeSessionId, transcriptPath, role: "main", ide });
       return recheck;
     }
     // We won the race (or lock timed out) — create fresh session.
@@ -615,6 +620,7 @@ export function ensureAxmeSessionForClaude(
       id: claudeSessionId,
       transcriptPath,
       role: "main",
+      ide,
     });
     return axmeSession.id;
   } finally {
@@ -851,7 +857,7 @@ export function trackFileChanged(projectPath: string, sessionId: string, filePat
 export function attachClaudeSession(
   projectPath: string,
   axmeSessionId: string,
-  ref: { id: string; transcriptPath: string; role?: string },
+  ref: { id: string; transcriptPath: string; role?: string; ide?: IdeKind },
 ): void {
   if (!ref.id || !ref.transcriptPath) return;
   // Retry up to 3 times with 50ms delay — covers race on shutdown where
@@ -876,6 +882,7 @@ export function attachClaudeSession(
     transcriptPath: ref.transcriptPath,
     firstSeen: new Date().toISOString(),
     ...(ref.role ? { role: ref.role } : {}),
+    ...(ref.ide ? { ide: ref.ide } : {}),
   };
   session.claudeSessions.push(entry);
   writeSession(projectPath, session);

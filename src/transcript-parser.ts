@@ -1,25 +1,38 @@
 /**
- * Claude Code transcript parser and filter for the session auditor.
+ * IDE-agnostic transcript parser and filter for the session auditor.
  *
- * Claude Code stores every session as a jsonl file at
- *   ~/.claude/projects/<encoded-path>/<session-id>.jsonl
+ * Two transcript shapes are supported, picked at parse time via the
+ * optional `ide` parameter:
  *
- * The raw file is large (often 1-2 MB) and ~90% of it is tool_result blocks:
- * bash outputs, file reads, grep matches, etc. The session auditor does not
- * need those — they describe WHAT the code did, which the auditor can see
- * from the code itself and from the diff. What the auditor needs is the
- * CONVERSATION: user corrections, assistant reasoning, assistant findings.
+ * - **Claude Code** (`~/.claude/projects/<encoded-path>/<session-id>.jsonl`):
+ *   each line is `{ message: { role, content: [...] } }`. Role is nested
+ *   inside the `message` envelope. Content blocks include `text`,
+ *   `thinking`, `tool_use`, `tool_result`, `image`.
  *
- * This parser drops everything except:
+ * - **Cursor** (`~/.cursor/projects/<slug>/agent-transcripts/<uuid>/<uuid>.jsonl`):
+ *   each line is `{ role, message: { content: [...] } }`. Role is at the
+ *   TOP level. Content blocks observed in the wild are text-only — Cursor's
+ *   stored transcript does not include tool_use / thinking / tool_result.
+ *   The parser still tolerates them defensively in case future Cursor
+ *   versions add richer events.
+ *
+ * The raw Claude file is large (often 1-2 MB) and ~90% of it is tool_result
+ * blocks: bash outputs, file reads, grep matches, etc. The session auditor
+ * does not need those — they describe WHAT the code did, which the auditor
+ * can see from the code itself and from the diff. What the auditor needs is
+ * the CONVERSATION: user corrections, assistant reasoning, assistant
+ * findings. This parser drops everything except:
  *   - user text messages (real ones, not IDE notifications)
  *   - assistant text messages >= 80 chars (drops pure transitions)
  *   - assistant thinking blocks
  *   - assistant tool_use blocks (compact form: [ToolName: short params])
  *
- * Typical reduction: 1.4 MB raw → 65 KB filtered (~4%).
+ * Typical reduction (Claude): 1.4 MB raw → 65 KB filtered (~4%). Cursor
+ * transcripts are usually smaller because they have no tool_result.
  */
 
 import { readFileSync, existsSync } from "node:fs";
+import type { IdeKind } from "./types.js";
 
 export interface ConversationTurn {
   role: "user" | "assistant";
@@ -114,7 +127,11 @@ export interface ParsedTranscriptSlice {
  * cannot be read, or the offset is beyond file size (treated as "file was
  * rotated / shortened", safe no-op).
  */
-export function parseTranscriptFromOffset(path: string, startOffset: number = 0): ParsedTranscriptSlice {
+export function parseTranscriptFromOffset(
+  path: string,
+  startOffset: number = 0,
+  ide: IdeKind = "claude-code",
+): ParsedTranscriptSlice {
   if (!existsSync(path)) {
     return { turns: [], endOffset: startOffset, bytesRead: 0, fileSize: 0, bashCommands: [] };
   }
@@ -153,7 +170,12 @@ export function parseTranscriptFromOffset(path: string, startOffset: number = 0)
 
     const msg = event.message;
     if (!msg || !Array.isArray(msg.content)) continue;
-    const role = msg.role;
+    // Cursor's JSONL puts `role` at the top level; Claude Code nests it
+    // inside `message`. Detect by ide param (callers always know which IDE
+    // produced the file) and pick the right extraction path. We accept
+    // EITHER shape regardless of `ide` as a defensive fallback — older
+    // sessions may not have the `ide` field on ClaudeSessionRef.
+    const role = (ide === "cursor" ? event.role : msg.role) ?? msg.role ?? event.role;
     if (role !== "user" && role !== "assistant") continue;
 
     for (const block of msg.content) {
@@ -224,8 +246,8 @@ export function parseTranscriptFromOffset(path: string, startOffset: number = 0)
  * and return only the turns. Used by legacy callers that do not care about
  * resume-audit offsets (e.g. scope-dryrun, single-transcript audit stats).
  */
-export function parseTranscript(path: string): ConversationTurn[] {
-  return parseTranscriptFromOffset(path, 0).turns;
+export function parseTranscript(path: string, ide: IdeKind = "claude-code"): ConversationTurn[] {
+  return parseTranscriptFromOffset(path, 0, ide).turns;
 }
 
 /**
@@ -383,8 +405,8 @@ export function splitTurnsIntoChunks(
  * Convenience wrapper used by the session auditor. Parses from offset 0
  * (whole file) — used by dry-run and single-audit fallback paths.
  */
-export function parseAndRenderTranscript(path: string): ParsedTranscript {
-  const slice = parseTranscriptFromOffset(path, 0);
+export function parseAndRenderTranscript(path: string, ide: IdeKind = "claude-code"): ParsedTranscript {
+  const slice = parseTranscriptFromOffset(path, 0, ide);
   const rendered = renderConversation(slice.turns);
 
   return {
@@ -411,7 +433,7 @@ export function parseAndRenderTranscript(path: string): ParsedTranscript {
  * in startOffsets are parsed from offset 0.
  */
 export function parseAndRenderTranscripts(
-  refs: Array<{ id: string; transcriptPath: string; role?: string }>,
+  refs: Array<{ id: string; transcriptPath: string; role?: string; ide?: IdeKind }>,
   startOffsets?: Record<string, number>,
 ): {
   rendered: string;
@@ -435,7 +457,7 @@ export function parseAndRenderTranscripts(
   if (refs.length === 1) {
     const ref = refs[0];
     const start = startOffsets?.[ref.id] ?? 0;
-    const slice = parseTranscriptFromOffset(ref.transcriptPath, start);
+    const slice = parseTranscriptFromOffset(ref.transcriptPath, start, ref.ide ?? "claude-code");
     const rendered = renderConversation(slice.turns);
     endOffsets[ref.id] = slice.endOffset;
     bytesRead[ref.id] = slice.bytesRead;
@@ -457,7 +479,7 @@ export function parseAndRenderTranscripts(
   const allBashCommands: string[] = [];
   for (const ref of refs) {
     const start = startOffsets?.[ref.id] ?? 0;
-    const slice = parseTranscriptFromOffset(ref.transcriptPath, start);
+    const slice = parseTranscriptFromOffset(ref.transcriptPath, start, ref.ide ?? "claude-code");
     endOffsets[ref.id] = slice.endOffset;
     bytesRead[ref.id] = slice.bytesRead;
     if (slice.turns.length === 0) {
