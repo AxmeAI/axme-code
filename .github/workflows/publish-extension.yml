@@ -65,23 +65,29 @@ jobs:
         shell: bash
         run: |
           mkdir -p extension/bin
-          # Bundle dist/cli.mjs into a single ESM file with everything inlined
-          # except @anthropic-ai/claude-agent-sdk (provided at runtime) and
-          # @cursor/sdk (loaded dynamically at runtime via optional dep).
+          # Bundle dist/cli.mjs into a single CJS file with everything
+          # inlined except @anthropic-ai/claude-agent-sdk (provided at
+          # runtime) and @cursor/sdk (loaded dynamically via optional dep).
+          #
+          # WHY CJS, not ESM: the output is a shebang script with no file
+          # extension (Windows uses .exe — see matrix.extension_bin).
+          # Without ".mjs" extension AND without a sibling package.json
+          # declaring "type":"module", Node loads the file as CJS and
+          # ESM import statements throw at runtime.
           npx esbuild dist/cli.mjs \
             --bundle \
             --platform=node \
             --target=node20 \
-            --format=esm \
+            --format=cjs \
             --external:@anthropic-ai/claude-agent-sdk \
             --external:@cursor/sdk \
-            --outfile=extension/bin/axme-code.mjs
+            --outfile=extension/bin/axme-code.cjs
           # Wrap in a shebang shim so it's executable as a binary.
           {
             printf '#!/usr/bin/env node\n'
-            cat extension/bin/axme-code.mjs
+            cat extension/bin/axme-code.cjs
           } > extension/bin/${{ matrix.extension_bin }}
-          rm extension/bin/axme-code.mjs
+          rm extension/bin/axme-code.cjs
           chmod +x extension/bin/${{ matrix.extension_bin }} || true
 
       - name: Install extension deps
