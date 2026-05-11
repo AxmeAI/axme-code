@@ -28,10 +28,25 @@ function asObject(v: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
+/**
+ * Normalize Cursor's tool names to Claude Code's vocabulary so the
+ * IDE-agnostic safety/file-tracking core (which switches on `Bash`,
+ * `Edit`, `Read`, etc.) treats them uniformly. Cursor renames Bash →
+ * Shell; the rest of the taxonomy overlaps. Surfaced empirically:
+ * `tool_name: "Shell"` payload from Cursor preToolUse fell through
+ * pre-tool-use.ts's switch, allowing `git push --force` past the deny
+ * rule (2026-05-11 E2E test, check 6).
+ */
+function normalizeCursorToolName(name: string | undefined): string | undefined {
+  if (!name) return name;
+  if (name === "Shell") return "Bash";
+  return name;
+}
+
 export const cursorInputAdapter: HookInputAdapter = {
   parse(raw, kind): NormalizedHookEvent {
     const obj = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
-    const toolName = asString(obj.tool_name);
+    const toolName = normalizeCursorToolName(asString(obj.tool_name));
     const toolInput = asObject(obj.tool_input);
 
     // Use conversation_id as the stable AXME session key across ALL three
