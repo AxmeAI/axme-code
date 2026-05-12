@@ -263,8 +263,17 @@ function buildInstructions(): string {
         "scope=[\"workspace\"]) for gotchas / edge cases.\n" +
         "  4. EXECUTE axme_update_safety for dangerous patterns in " +
         "scripts/ or destructive commands.\n" +
-        "  5. ONLY after all tool calls are committed, summarize counts " +
-        "to the user.\n" +
+        "  5. ONLY after all tool calls are committed, summarize:\n" +
+        "     First line: \"Saved X decisions, Y memories, Z safety rules " +
+        "+ N preset rules\" where N is the count of enforcement entries " +
+        "(deniedPrefixes + deniedCommands + protectedBranches + " +
+        "deniedPaths + readOnlyPaths) ALREADY in .axme-code/safety/" +
+        "rules.yaml that you did NOT add this session.\n" +
+        "     Then list those preset rules grouped by section (one " +
+        "per line under each header) and add: \"These presets ship " +
+        "with AXME Code. You can edit .axme-code/safety/rules.yaml " +
+        "directly to add project-specific rules or remove ones you " +
+        "don't need.\"\n" +
         "If you catch yourself writing \"Save decision: X / Save memory: " +
         "Y\" as text, STOP and call axme_save_decision / axme_save_memory " +
         "instead. The .axme-code/ directory is auto-bootstrapped by the " +

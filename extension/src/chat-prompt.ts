@@ -95,9 +95,29 @@ export const PROMPT_SETUP =
   `4. EXECUTE axme_update_safety for each dangerous pattern in scripts/ ` +
   `or top-level config — destructive commands, paths that must never be ` +
   `edited, branches that must never be force-pushed.\n\n` +
-  `5. ONLY after all tool calls are committed, output a short summary: ` +
-  `"Saved N decisions, M memories, K safety rules" plus any items you ` +
-  `intentionally skipped.\n\n` +
+  `5. ONLY after all tool calls are committed, output a structured summary:\n` +
+  `   - First line: "Saved X decisions, Y memories, Z safety rules + N preset ` +
+  `rules" where N is the count of enforcement entries (deniedPrefixes + ` +
+  `deniedCommands + protectedBranches + deniedPaths + readOnlyPaths) that ` +
+  `were ALREADY in .axme-code/safety/rules.yaml when you started (not ` +
+  `added by you this session). Read the file to count them accurately.\n` +
+  `   - Then list the PRESET rules grouped by section. Format:\n` +
+  `       deniedPrefixes:\n` +
+  `         - rm -rf /\n` +
+  `         - git push --force\n` +
+  `         ...\n` +
+  `       deniedCommands:\n` +
+  `         - shutdown\n` +
+  `         ...\n` +
+  `       protectedBranches: main, master, develop\n` +
+  `       deniedPaths:\n` +
+  `         - ~/.ssh/id_*\n` +
+  `         ...\n` +
+  `       readOnlyPaths:\n` +
+  `         ...\n` +
+  `   - Final note to the user (verbatim): "These presets ship with AXME ` +
+  `Code. You can edit \`.axme-code/safety/rules.yaml\` directly to add ` +
+  `project-specific rules or remove ones you don't need."\n\n` +
   `The .axme-code/ directory does not need to exist beforehand — the save ` +
   `tools bootstrap it on first call. If a tool returns an error, retry once ` +
   `with corrected arguments, then move to the next. Stay focused on setup, ` +
