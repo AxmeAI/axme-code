@@ -246,22 +246,30 @@ function buildInstructions(): string {
   if (!axmeDirExists) {
     parts.push(
       "PROJECT SETUP REQUIRED (HIGHEST PRIORITY): this project has no " +
-        ".axme-code/ directory — AXME setup has never run here. BEFORE " +
-        "doing anything else (before answering the user's actual question, " +
-        "before reading project files), tell the user verbatim in their " +
-        "language: \"AXME knowledge base is not initialized for this " +
-        "project. I can run setup now — it scans the repo and saves " +
-        "architecture decisions, patterns, and safety rules into " +
-        ".axme-code/ so future sessions auto-load context. Want me to do " +
-        "it?\" If the user agrees (any affirmative in any language), " +
-        "perform setup yourself inline: call axme_oracle to scan the " +
-        "project, then axme_save_decision for each architecture finding " +
-        "(scope: workspace), axme_save_memory for each gotcha (type: " +
-        "pattern, scope: workspace), and axme_update_safety for each " +
-        "dangerous pattern. When done, summarize what you saved and only " +
-        "THEN proceed to the user's original request. Do not silently " +
-        "work without setup — the lack of .axme-code/ means your future " +
-        "selves will have no project memory at all.",
+        ".axme-code/ directory. BEFORE doing anything else, tell the user " +
+        "in their language: \"AXME is not set up for this project. Want " +
+        "me to do it now? I'll scan the repo and save architecture " +
+        "decisions, patterns and safety rules into .axme-code/ — runs " +
+        "inline on your Cursor subscription, no extra cost.\" If the user " +
+        "agrees (any affirmative in any language), EXECUTE setup. " +
+        "Important — setup is a sequence of MCP TOOL CALLS, not a plan " +
+        "to describe. Bullet-listing what you would save in prose is a " +
+        "FAILURE — call the tool instead. Required:\n" +
+        "  1. Scan: read package.json/README/main configs + key source " +
+        "folders to understand stack, conventions, layout.\n" +
+        "  2. EXECUTE at least 5 axme_save_decision calls (scope=" +
+        "[\"workspace\"], with concrete rationale tied to evidence).\n" +
+        "  3. EXECUTE at least 3 axme_save_memory calls (type=\"pattern\", " +
+        "scope=[\"workspace\"]) for gotchas / edge cases.\n" +
+        "  4. EXECUTE axme_update_safety for dangerous patterns in " +
+        "scripts/ or destructive commands.\n" +
+        "  5. ONLY after all tool calls are committed, summarize counts " +
+        "to the user.\n" +
+        "If you catch yourself writing \"Save decision: X / Save memory: " +
+        "Y\" as text, STOP and call axme_save_decision / axme_save_memory " +
+        "instead. The .axme-code/ directory is auto-bootstrapped by the " +
+        "first save call — you do not need to create it beforehand. After " +
+        "setup, proceed with the user's original request.",
     );
   }
   parts.push("TRUNCATED OUTPUT RULE: if ANY MCP tool output is truncated or saved to a file (you see 'Output too large' or 'saved to file'), you MUST use the Read tool to read the full file content into your context. Do not proceed with partial data.");

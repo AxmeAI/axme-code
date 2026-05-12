@@ -62,24 +62,46 @@ export async function deliverChatPrompt(opts: ChatPromptOptions): Promise<void> 
  * Prompt that asks the agent to perform the workspace setup. Used by the
  * sidebar's [Ask agent to setup] button — replaces the API-key modal for
  * users on cooperative auditor mode (the new default).
+ *
+ * IMPORTANT — this prompt is intentionally imperative. Earlier drafts said
+ * "Call axme_save_decision for each finding" and Cursor models would
+ * narrate "Save decision: X / Save decision: Y" as text without actually
+ * invoking the tool — classic plan-instead-of-act failure. The fix is to
+ * (a) put EXECUTE in caps, (b) explicitly name the failure mode and tell
+ * the agent it has failed if it does that, and (c) demand minimum tool-
+ * call counts so the agent can't say "I did one and that's enough".
  */
 export const PROMPT_SETUP =
-  `Please run AXME workspace setup for the current project. Do NOT shell out to ` +
-  `\`axme-code setup\` — that runs background LLM calls billed separately. Instead, ` +
-  `perform the setup cooperatively inside this chat using my Cursor subscription:\n\n` +
-  `  1. Call axme_oracle with project_path=<workspace root> to scan top-level files ` +
-  `and infer architecture facts. Repeat for each major subdirectory if the project ` +
-  `is multi-package.\n` +
-  `  2. For each architecture finding, call axme_save_decision (scope=workspace) with ` +
-  `a clear rationale tied to evidence in the code.\n` +
-  `  3. For each edge-case / gotcha you spot in the codebase, call axme_save_memory ` +
-  `(type=pattern, scope=workspace) so future sessions don't repeat the surprise.\n` +
-  `  4. For each dangerous command pattern or destructive operation present in the ` +
-  `repo's scripts/, call axme_update_safety so the hooks block it.\n` +
-  `  5. When done, give me a short summary: how many decisions/memories/safety rules ` +
-  `you saved and what you skipped.\n\n` +
-  `Stay focused on the SETUP. Don't open files unrelated to this scan. If you need ` +
-  `permission to read large files, ask before doing it.`;
+  `Run AXME workspace setup for the CURRENT project. This is a sequence ` +
+  `of MCP TOOL CALLS, NOT a plan to describe in prose.\n\n` +
+  `Forbidden: do NOT shell out to \`axme-code setup\` (it bills separately).\n` +
+  `Forbidden: do NOT list "Save decision: X / Save memory: Y" as text — ` +
+  `those words are TOOL CALLS, perform them via the MCP tool, do not narrate ` +
+  `them. If you catch yourself enumerating saves in prose, STOP and call the ` +
+  `tool instead. Bullet-listing is a FAILURE of this task.\n\n` +
+  `Steps:\n\n` +
+  `1. Scan the repo: read top-level files (package.json, README, configs) and ` +
+  `the main source folders to understand stack, conventions, file layout. ` +
+  `You may use axme_oracle, Read, Glob, or Grep — whichever is fastest.\n\n` +
+  `2. EXECUTE at least 5 axme_save_decision calls — one per architecture ` +
+  `fact (framework, build system, routing convention, important file ` +
+  `layout choice, deployment target, etc). Use scope=["workspace"]. Each ` +
+  `decision needs a concrete title and a rationale tied to evidence you ` +
+  `read in the repo.\n\n` +
+  `3. EXECUTE at least 3 axme_save_memory calls — one per gotcha / edge ` +
+  `case / non-obvious thing future sessions should remember (e.g. "Tailwind ` +
+  `v4 has no tailwind.config.js", "site URL hardcoded in two places"). ` +
+  `Use type="pattern", scope=["workspace"].\n\n` +
+  `4. EXECUTE axme_update_safety for each dangerous pattern in scripts/ ` +
+  `or top-level config — destructive commands, paths that must never be ` +
+  `edited, branches that must never be force-pushed.\n\n` +
+  `5. ONLY after all tool calls are committed, output a short summary: ` +
+  `"Saved N decisions, M memories, K safety rules" plus any items you ` +
+  `intentionally skipped.\n\n` +
+  `The .axme-code/ directory does not need to exist beforehand — the save ` +
+  `tools bootstrap it on first call. If a tool returns an error, retry once ` +
+  `with corrected arguments, then move to the next. Stay focused on setup, ` +
+  `do not open files unrelated to this scan.`;
 
 /**
  * Prompt that asks the agent to cleanly close the current session. NOT
