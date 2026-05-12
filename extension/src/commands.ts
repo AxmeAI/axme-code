@@ -16,7 +16,7 @@ import { ensureAuditorAuth } from "./auditor-auth.js";
 import { AxmeStatusBar } from "./status-bar.js";
 import { openStatusWebview } from "./status-webview.js";
 import { runReset } from "./reset.js";
-import { deliverChatPrompt, PROMPT_SETUP, PROMPT_CLOSE_SESSION } from "./chat-prompt.js";
+import { deliverChatPrompt, PROMPT_SETUP } from "./chat-prompt.js";
 import { installUserHooks } from "./hooks-install.js";
 import { log, logError, show as showOutput } from "./log.js";
 
@@ -50,24 +50,41 @@ export function registerCommands(
         void vscode.window.showWarningMessage("AXME Code: open a folder first.");
         return;
       }
-      await vscode.window.withProgress(
+      let lastLine = "";
+      const exitCode: number = await vscode.window.withProgress(
         {
           location: vscode.ProgressLocation.Notification,
           title: "AXME Code: reindexing semantic search",
           cancellable: false,
         },
         () =>
-          new Promise<void>((resolve) => {
+          new Promise<number>((resolve) => {
             const child = spawn(binary, ["reindex", root], { cwd: root });
-            child.stdout.on("data", (c) => log(`reindex: ${String(c).trimEnd()}`));
-            child.stderr.on("data", (c) => log(`reindex stderr: ${String(c).trimEnd()}`));
-            child.on("error", (err) => { logError("reindex", err); resolve(); });
-            child.on("exit", (code) => {
-              if (code !== 0) showOutput();
-              resolve();
+            child.stdout.on("data", (c) => {
+              const s = String(c).trimEnd();
+              if (s) lastLine = s;
+              log(`reindex: ${s}`);
             });
+            child.stderr.on("data", (c) => log(`reindex stderr: ${String(c).trimEnd()}`));
+            child.on("error", (err) => { logError("reindex", err); resolve(1); });
+            child.on("exit", (code) => resolve(code ?? 1));
           }),
       );
+      // The previous version was effectively silent on success — progress
+      // toast vanished, no terminal feedback. Now we surface the last stdout
+      // line ("Reindexed N entries." or similar) as a confirmation toast so
+      // the user knows the click actually did something. Failures still
+      // open the output channel.
+      if (exitCode === 0) {
+        void vscode.window.showInformationMessage(
+          `AXME Code: ${lastLine || "reindex complete"}`,
+        );
+      } else {
+        void vscode.window.showErrorMessage(
+          `AXME Code: reindex failed (exit ${exitCode}). See output channel.`,
+        );
+        showOutput();
+      }
     }),
 
     vscode.commands.registerCommand("axme.showStatus", async () => {
@@ -133,16 +150,12 @@ export function registerCommands(
       await runReset();
     }),
 
-    // ----- v0.0.3 sidebar entry points (wired up in follow-up commits) -----
-    // These commands exist so the sidebar can route clicks to them without
-    // races on activation order. The bodies that drop cooperative prompts
-    // into the chat (askAgentSetup, closeSession, addBacklogItem) and the
-    // backlog/hooks helpers land in subsequent commits of the same PR.
+    // ----- v0.0.3 sidebar entry points -----
+    // Commands surfaced by the sidebar webview. Cooperative prompts copy
+    // structured agent instructions to the clipboard; users paste them
+    // into the active chat (no fresh-tab spawn — that was bad UX).
     vscode.commands.registerCommand("axme.askAgentSetup", async () => {
       await deliverChatPrompt({ label: "setup prompt", body: PROMPT_SETUP });
-    }),
-    vscode.commands.registerCommand("axme.closeSession", async () => {
-      await deliverChatPrompt({ label: "close-session prompt", body: PROMPT_CLOSE_SESSION });
     }),
     vscode.commands.registerCommand("axme.openBacklog", async () => {
       const root = workspaceRoot();

@@ -79,12 +79,11 @@
         "axme.auditorMode": {
           "type": "string",
           "enum": [
-            "off",
             "cooperative",
             "background"
           ],
           "default": "cooperative",
-          "markdownDescription": "How the session auditor extracts memories/decisions from chat transcripts. `off` disables extraction. `cooperative` (default for Cursor) instructs the agent to save inline during the chat using your Cursor subscription — no extra cost. `background` runs a detached LLM after every chat using your own API key — more thorough, but billed separately."
+          "markdownDescription": "How the session auditor extracts memories/decisions from chat transcripts. `cooperative` (default) instructs the agent to save inline during the chat — use it with `axme_begin_close`/`axme_finalize_close` when you wrap up. `background` runs a detached LLM after every chat using your own API key — more thorough, but billed separately."
         }
       }
     },
@@ -127,7 +126,7 @@
             "description": "Open a fresh chat tab. The agent will see your AXME tools in its toolbox and call axme_context automatically at startup. Try asking it to make any change — safety hooks will block dangerous commands, and the sidebar will start showing live token / memory counts.",
             "media": { "markdown": "walkthroughs/firstChat.md" },
             "completionEvents": [
-              "onCommand:axme.closeSession"
+              "onView:axme.monitor"
             ]
           }
         ]

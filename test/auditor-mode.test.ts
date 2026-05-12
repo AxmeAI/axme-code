@@ -44,7 +44,7 @@ describe("auditor-mode", () => {
   it("round-trips each valid mode", () => {
     process.env.HOME = tmpHome;
     process.env.USERPROFILE = tmpHome;
-    for (const mode of ["off", "cooperative", "background"] as const) {
+    for (const mode of ["cooperative", "background"] as const) {
       saveAuditorMode(mode);
       assert.equal(loadAuditorMode(), mode);
     }
@@ -66,7 +66,7 @@ describe("auditor-mode", () => {
     process.env.USERPROFILE = tmpHome;
     const p = auditorModePath();
     mkdirSync(dirname(p), { recursive: true });
-    writeFileSync(p, "  off  \n", "utf-8");
-    assert.equal(loadAuditorMode(), "off");
+    writeFileSync(p, "  cooperative  \n", "utf-8");
+    assert.equal(loadAuditorMode(), "cooperative");
   });
 });

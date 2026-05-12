@@ -21,7 +21,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { log, logError } from "./log.js";
 
-export type AuditorMode = "off" | "cooperative" | "background";
+export type AuditorMode = "cooperative" | "background";
 
 function auditorModePath(): string {
   return join(homedir(), ".config", "axme-code", "auditor-mode");

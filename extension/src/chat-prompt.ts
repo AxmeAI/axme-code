@@ -38,23 +38,14 @@ export interface ChatPromptOptions {
 export async function deliverChatPrompt(opts: ChatPromptOptions): Promise<void> {
   await vscode.env.clipboard.writeText(opts.body);
 
-  // Try Cursor's open-chat hook then VS Code's; both are best-effort.
-  // tryCmd swallows "command not found" so missing IDs don't surface
-  // an error toast on Cursor builds we haven't validated against.
-  await tryCmd("cursor.chat.newChat");
-  await tryCmd("workbench.action.chat.open");
-
+  // Earlier drafts also fired cursor.chat.newChat to spawn a fresh chat
+  // tab. Removed after user feedback: the user is almost always already
+  // in a chat when they click [Ask agent to setup] — opening a new tab
+  // moves them off their current context and feels broken. The clipboard
+  // path + an explicit paste keystroke is enough UX.
   void vscode.window.showInformationMessage(
-    `AXME: ${opts.label} copied to clipboard. Switch to the chat (Cmd/Ctrl+L) and paste.`,
+    `AXME: ${opts.label} copied to clipboard. Paste into the chat (Cmd/Ctrl+V).`,
   );
-}
-
-async function tryCmd(id: string): Promise<void> {
-  try {
-    await vscode.commands.executeCommand(id);
-  } catch {
-    /* command not registered in this host — fall through silently */
-  }
 }
 
 /**
@@ -81,10 +72,12 @@ export const PROMPT_SETUP =
   `permission to read large files, ask before doing it.`;
 
 /**
- * Prompt that asks the agent to cleanly close the current session. Used by
- * the sidebar's [Close session] button. The actual extraction is driven by
- * the axme_begin_close / axme_finalize_close MCP tools, which the agent
- * already knows how to use — we just kick off the flow.
+ * Prompt that asks the agent to cleanly close the current session. NOT
+ * surfaced by a sidebar button anymore (removed after user feedback that
+ * the new-chat-spawn behaviour felt broken). Kept exported so a future
+ * keybinding / palette command can drop this prompt with no extra work
+ * — the agent already knows how to perform the flow via the MCP tools
+ * axme_begin_close / axme_finalize_close.
  */
 export const PROMPT_CLOSE_SESSION =
   `Please close this AXME session cleanly:\n\n` +

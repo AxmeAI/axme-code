@@ -28,8 +28,8 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from "n
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
-export type AuditorMode = "off" | "cooperative" | "background";
-const VALID: ReadonlyArray<AuditorMode> = ["off", "cooperative", "background"];
+export type AuditorMode = "cooperative" | "background";
+const VALID: ReadonlyArray<AuditorMode> = ["cooperative", "background"];
 
 export function auditorModePath(): string {
   return join(homedir(), ".config", "axme-code", "auditor-mode");

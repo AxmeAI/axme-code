@@ -51,11 +51,13 @@ function countSafetyRules(rulesPath: string): number {
   if (!existsSync(rulesPath)) return 0;
   try {
     const txt = readFileSync(rulesPath, "utf-8");
-    // Match top-level YAML list entries `- id:` — robust to optional
-    // surrounding whitespace and avoids counting nested keys. The safety
-    // schema is a flat list, so this is sufficient without pulling a YAML
-    // parser into the extension bundle.
-    const matches = txt.match(/^\s*-\s+id\s*:/gm);
+    // safety/rules.yaml is a nested-object schema (git.*, bash.*, filesystem.*)
+    // with arrays under each. Every `^  - X` line (any indent depth + dash +
+    // value) is one rule entry: a protected branch, a denied bash prefix, a
+    // denied command, a denied filesystem path, an allowed bash prefix, etc.
+    // Counting them all is a reasonable proxy for "how guarded is this
+    // workspace" — matches what users intuit when they read "Safety rules: N".
+    const matches = txt.match(/^\s+-\s+\S/gm);
     return matches ? matches.length : 0;
   } catch {
     return 0;

@@ -47,7 +47,7 @@ export interface SidebarState {
   /** Top backlog items for the inline list (~5 shown). */
   backlog: BacklogItemLite[];
   /** Auditor mode from settings. */
-  auditorMode: "off" | "cooperative" | "background";
+  auditorMode: "cooperative" | "background";
   /** True when background mode is selected AND a credential is saved. */
   auditorKeyConfigured: boolean;
   /** Did hooks install successfully at activation? */
@@ -426,7 +426,7 @@ function render() {
   hooks.innerHTML = \`
     <h3>Safety hooks</h3>
     <div class="row"><span class="k">~/.cursor/hooks.json</span><span class="v">\${S.hooksOk ? "active" : "missing"}</span></div>
-    \${S.hooksOk ? "" : '<button class="secondary" data-cmd="axme.reinstallHooks">Reinstall hooks</button>'}
+    \${S.hooksOk ? "" : '<p class="muted">Hooks failed at activation. Use AXME: Reset to clear state and reinstall the extension.</p>'}
   \`;
 
   // Auditor section
@@ -436,11 +436,10 @@ function render() {
     <h3>Session auditor</h3>
     <div class="row"><span class="k">Mode</span></div>
     <select id="auditor-mode">
-      <option value="off"\${S.auditorMode==="off"?" selected":""}>Off — no extraction</option>
       <option value="cooperative"\${S.auditorMode==="cooperative"?" selected":""}>Cooperative — agent saves inline (no extra cost)</option>
-      <option value="background"\${S.auditorMode==="background"?" selected":""}>Background — separate LLM after each chat</option>
+      <option value="background"\${S.auditorMode==="background"?" selected":""}>Background — separate LLM, extra cost (uses your API key)</option>
     </select>
-    <p class="muted">Cooperative uses your Cursor subscription. Background runs a separate LLM after every chat using your own API key (billed separately).</p>
+    <p class="muted">Cooperative: when you wrap up, ask the agent to close the session — it will extract memories / decisions / safety inline before you start a fresh chat. Background: a detached LLM runs after every chat-end (your API key, billed separately).</p>
     \${needsKey ? '<div class="warning-banner">Background mode is selected but no credential is configured. The session-end auditor will not run.</div>' : ""}
     \${S.auditorMode==="background" ? \`<button class="secondary" data-cmd="axme.reauthAuditor">\${S.auditorKeyConfigured ? "Change credential…" : "Configure credential…"}</button>\` : ""}
   \`;
@@ -493,7 +492,9 @@ function render() {
         <div class="warning-banner">
           Approaching Cursor's auto-summarize threshold. Cursor will compress
           your conversation around here and quality often degrades after that.
-          Close cleanly via handoff to preserve all decisions and memories.
+          Ask the agent in the chat to <b>close the session</b> — it will
+          extract memories / decisions / safety inline and give you a
+          startup prompt for a fresh chat with zero context loss.
         </div>\` : ""}
     \`;
   } else if (sess) {
@@ -504,16 +505,22 @@ function render() {
   document.getElementById("session-section").innerHTML = \`
     <h3>Current session</h3>
     \${sessionHtml}
-    <button data-cmd="axme.closeSession">Close session (handoff)</button>
   \`;
 
-  // Wire dynamic handlers (re-bound on every render — small DOM, cheap).
-  document.querySelectorAll("[data-cmd]").forEach((btn) => {
-    btn.addEventListener("click", () => cmd(btn.getAttribute("data-cmd")));
-  });
+  // Auditor dropdown is recreated on every render (lives in dynamic section),
+  // so attach its change handler each time. No accumulation risk.
   const sel = document.getElementById("auditor-mode");
   if (sel) sel.addEventListener("change", (e) => send({ type: "setAuditorMode", mode: e.target.value }));
 }
+
+// Event delegation for [data-cmd] buttons — single listener on document
+// catches clicks on both static footer buttons and dynamic section buttons.
+// Earlier draft re-attached a handler per element on every render, causing
+// "click once, command fires N times" after N renders.
+document.addEventListener("click", (e) => {
+  const target = e.target.closest("[data-cmd]");
+  if (target) cmd(target.getAttribute("data-cmd"));
+});
 
 window.addEventListener("message", (e) => {
   if (e.data && e.data.type === "state") {

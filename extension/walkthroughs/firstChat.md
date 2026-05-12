@@ -22,7 +22,9 @@ While the chat runs, the AXME sidebar shows live activity:
 
 ## Closing cleanly
 
-When you're done (or when the token bar gets uncomfortable), click
-**Close session (handoff)** in the sidebar. The agent reviews the chat, saves
-everything important to `.axme-code/`, and gives you a one-line summary plus
-a startup prompt for the next chat. This step completes when you trigger that.
+When you're done (or when the session-block warning fires near 200k tokens),
+just ask the agent in the chat: **"close the session"** (any language). The
+agent calls `axme_begin_close`, walks the checklist, then `axme_finalize_close`
+— and gives you a one-line summary plus a startup prompt for the next chat.
+Memories and decisions are saved to `.axme-code/`, so the new chat picks them
+up via `axme_context` automatically. Zero context lost.

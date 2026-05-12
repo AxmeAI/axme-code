@@ -185,7 +185,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // registerCommands so any command can postMessage to it directly. The
   // initial state captures activation flags so the user sees them on
   // first reveal even if KbWatcher hasn't fired yet.
-  const auditorMode = currentAuditorMode();
+  const auditorMode: "cooperative" | "background" = currentAuditorMode();
   const sidebar = new AxmeSidebarProvider(context, {
     setupDone: workspaceFolder ? isAxmeInitialized() : false,
     auditorMode,
@@ -212,6 +212,24 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     statusBar.setError(`${labels} failed`);
   } else if (workspaceFolder && !isAxmeInitialized()) {
     statusBar.setAttention("Setup required");
+  }
+
+  // ---- Step 7c: first-run discoverability --------------------------------
+  // The AXME icon in the Activity Bar is easy to miss in a column with 6+
+  // other extension icons. On the user's very first activation (no prior
+  // globalState marker), focus the AXME view automatically so the sidebar
+  // is open with all the setup buttons visible from the start. Subsequent
+  // activations skip this — we don't want to hijack the user's view every
+  // time they reopen Cursor.
+  const FIRST_RUN_KEY = "axme.firstRunComplete";
+  if (!context.globalState.get<boolean>(FIRST_RUN_KEY)) {
+    try {
+      await vscode.commands.executeCommand("workbench.view.extension.axme");
+      log("First-run: focused AXME sidebar view.");
+    } catch (err) {
+      logError("first-run focus", err);
+    }
+    await context.globalState.update(FIRST_RUN_KEY, true);
   }
 
   log(`Activation complete. ${context.subscriptions.length} disposables registered.`);
