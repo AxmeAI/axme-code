@@ -19,8 +19,25 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { KbWatcher, KbCounts, readCounts } from "./kb-watcher.js";
 import { readBacklog, BacklogItemLite } from "./backlog-reader.js";
+import { readActiveSession, ActiveSession } from "./session-tracker.js";
 import { detectCurrentMode } from "./auditor-auth.js";
 import { log } from "./log.js";
+
+/**
+ * Sidebar polling interval for the session block. Three seconds is the
+ * sweet spot between "follows chat-tab switches within a few seconds" and
+ * "doesn't peg a Node thread reading transcript files for a webview the
+ * user isn't currently looking at". Polling is paused entirely when the
+ * webview view is hidden — see onDidChangeVisibility wiring below.
+ */
+const SESSION_POLL_MS = 3_000;
+
+/** Threshold above which we warn the user to close the session. Chosen
+ * to match the upper end of Cursor's reported auto-summarize trigger
+ * (~50–60% of context window for 200k models) so the user has a chance
+ * to close cleanly via our handoff flow BEFORE Cursor's lossy condense
+ * fires. */
+const SESSION_WARN_TOKENS = 200_000;
 
 export interface SidebarState {
   /** Is the workspace initialised (`.axme-code/` exists)? */
@@ -37,6 +54,10 @@ export interface SidebarState {
   hooksOk: boolean;
   /** Are we running in Cursor (vs other host)? */
   isCursor: boolean;
+  /** Live snapshot of the active chat session — tokens, messages, age. */
+  session: ActiveSession | null;
+  /** Warn threshold (passed to webview so it can hide its own UI). */
+  warnTokens: number;
 }
 
 export type SidebarMessage =
@@ -59,9 +80,11 @@ export class AxmeSidebarProvider implements vscode.WebviewViewProvider {
   private pendingState: Partial<SidebarState> = {};
   private binary: string | undefined;
 
+  private sessionPoll: NodeJS.Timeout | undefined;
+
   constructor(
     private readonly context: vscode.ExtensionContext,
-    private readonly initialState: Omit<SidebarState, "counts" | "backlog" | "auditorKeyConfigured">,
+    private readonly initialState: Omit<SidebarState, "counts" | "backlog" | "auditorKeyConfigured" | "session" | "warnTokens">,
   ) {}
 
   attach(workspaceRoot: string | undefined, binary: string): void {
@@ -98,8 +121,35 @@ export class AxmeSidebarProvider implements vscode.WebviewViewProvider {
     // Push the initial snapshot once webview is alive.
     const counts = this.workspaceRoot ? readCounts(this.workspaceRoot) : emptyCounts();
     const backlog = this.workspaceRoot ? readBacklog(this.workspaceRoot).slice(0, 5) : [];
-    this.push({ ...this.initialState, counts, backlog, ...this.pendingState });
+    this.push({ ...this.initialState, counts, backlog, warnTokens: SESSION_WARN_TOKENS, ...this.pendingState });
     this.pendingState = {};
+
+    // Session polling — only runs while the view is visible. VS Code fires
+    // onDidChangeVisibility when the user collapses the sidebar / switches
+    // to another Activity Bar view; we stop the timer to avoid wasted reads
+    // and restart on next reveal.
+    const ensurePolling = () => {
+      if (webviewView.visible && !this.sessionPoll) {
+        this.refreshSession();
+        this.sessionPoll = setInterval(() => this.refreshSession(), SESSION_POLL_MS);
+      } else if (!webviewView.visible && this.sessionPoll) {
+        clearInterval(this.sessionPoll);
+        this.sessionPoll = undefined;
+      }
+    };
+    ensurePolling();
+    webviewView.onDidChangeVisibility(ensurePolling);
+    webviewView.onDidDispose(() => {
+      if (this.sessionPoll) { clearInterval(this.sessionPoll); this.sessionPoll = undefined; }
+    });
+  }
+
+  private refreshSession(): void {
+    if (!this.workspaceRoot) return;
+    try {
+      const s = readActiveSession(this.workspaceRoot);
+      this.push({ session: s });
+    } catch { /* swallow — non-fatal */ }
   }
 
   /**
@@ -116,6 +166,7 @@ export class AxmeSidebarProvider implements vscode.WebviewViewProvider {
 
   dispose(): void {
     this.kbWatcher?.dispose();
+    if (this.sessionPoll) { clearInterval(this.sessionPoll); this.sessionPoll = undefined; }
   }
 
   private onMessage(m: SidebarMessage): void {
@@ -324,7 +375,23 @@ select, input[type=text], input[type=password] {
 
 const SIDEBAR_JS = `
 const vscode = acquireVsCodeApi();
-let S = { setupDone: false, counts: { memories:0, decisions:0, safety:0, backlog:0, questions:0 }, backlog: [], auditorMode: "cooperative", auditorKeyConfigured: false, hooksOk: false, isCursor: true };
+let S = { setupDone: false, counts: { memories:0, decisions:0, safety:0, backlog:0, questions:0 }, backlog: [], auditorMode: "cooperative", auditorKeyConfigured: false, hooksOk: false, isCursor: true, session: null, warnTokens: 200000 };
+
+function formatDuration(ms) {
+  if (ms <= 0) return "just now";
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return s + "s";
+  const m = Math.floor(s / 60);
+  if (m < 60) return m + "m";
+  const h = Math.floor(m / 60);
+  const rm = m % 60;
+  return h + "h " + (rm ? rm + "m" : "");
+}
+function formatTokens(n) {
+  if (n < 1000) return n + "";
+  if (n < 100000) return (n / 1000).toFixed(1).replace(/\\.0$/, "") + "k";
+  return Math.round(n / 1000) + "k";
+}
 
 function send(msg) { vscode.postMessage(msg); }
 function cmd(id)  { send({ type: "command", commandId: id }); }
@@ -411,10 +478,32 @@ function render() {
     el.addEventListener("click", () => send({ type: "openFile", path: el.getAttribute("data-path") }));
   });
 
-  // Session placeholder — wired up with token counter.
+  // Live session block — driven by readActiveSession on the host side.
+  const sess = S.session;
+  let sessionHtml = '<p class="muted">No active chat detected. Tools will record activity when an MCP call lands.</p>';
+  if (sess && sess.hasData) {
+    const startedMs = Date.parse(sess.startedAt);
+    const ageMs = Number.isFinite(startedMs) ? Date.now() - startedMs : 0;
+    const overWarn = sess.tokens >= S.warnTokens;
+    sessionHtml = \`
+      <div class="row"><span class="k">Started</span><span class="v">\${formatDuration(ageMs)} ago</span></div>
+      <div class="row"><span class="k">Tokens</span><span class="v">\${formatTokens(sess.tokens)}</span></div>
+      <div class="row"><span class="k">Messages</span><span class="v">\${sess.messages}</span></div>
+      \${overWarn ? \`
+        <div class="warning-banner">
+          Approaching Cursor's auto-summarize threshold. Cursor will compress
+          your conversation around here and quality often degrades after that.
+          Close cleanly via handoff to preserve all decisions and memories.
+        </div>\` : ""}
+    \`;
+  } else if (sess) {
+    sessionHtml = \`
+      <p class="muted">Session \${escapeHtml(sess.axmeSessionId.slice(0, 8))} just started — transcript empty.</p>
+    \`;
+  }
   document.getElementById("session-section").innerHTML = \`
     <h3>Current session</h3>
-    <p class="muted">Live token counter arrives in a follow-up commit.</p>
+    \${sessionHtml}
     <button data-cmd="axme.closeSession">Close session (handoff)</button>
   \`;
 
