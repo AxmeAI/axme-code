@@ -203,7 +203,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   });
   sidebar.attach(workspaceFolder?.uri.fsPath, binary);
   context.subscriptions.push(
-    vscode.window.registerWebviewViewProvider(AxmeSidebarProvider.viewType, sidebar),
+    // retainContextWhenHidden keeps the webview's DOM + JS state alive
+    // when the user switches to a different Activity Bar view (Files,
+    // Search, etc.) and back. Without it, Cursor disposes the webview
+    // on hide and we re-create from scratch on next reveal — losing
+    // every live counter, the session block, the auditor dropdown
+    // selection. Memory cost is ~1–2 MB per webview, trivial vs the
+    // UX win of "everything stays where I left it".
+    vscode.window.registerWebviewViewProvider(AxmeSidebarProvider.viewType, sidebar, {
+      webviewOptions: { retainContextWhenHidden: true },
+    }),
     { dispose: () => sidebar.dispose() },
   );
 
@@ -224,23 +233,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   }
 
   // ---- Step 7c: discoverability -----------------------------------------
-  // Two separate triggers — earlier we conflated them under a single
-  // globalState gate and reinstall-after-uninstall users got nothing
-  // (their globalState flag survived the uninstall on some Cursor builds).
+  // Both surfaces — sidebar focus + Welcome walkthrough — fire whenever
+  // the current workspace is uninitialised. AXME is per-project, so a
+  // fresh repo ALWAYS warrants the dashboard + the onboarding. We
+  // previously gated walkthrough behind a per-machine globalState flag
+  // that survived uninstall+reinstall on some Cursor builds — meaning
+  // reinstall users got only the sidebar and never saw the walkthrough
+  // again. Tying both triggers to "workspace not initialised" matches
+  // when the help is actually useful and stops being shown the moment
+  // the user (or the agent via cooperative setup) creates .axme-code/.
   //
-  //   1. Sidebar focus — fire whenever the current workspace is NOT
-  //      initialised yet. AXME being per-project means a fresh repo
-  //      ALWAYS needs to discover the sidebar; doing this every time the
-  //      user opens a new uninitialised workspace is correct behaviour,
-  //      not noise. (Initialised workspaces don't re-focus on every
-  //      activation — that would hijack the active view.)
-  //   2. Welcome walkthrough — fire once per user (globalState) on the
-  //      very first activation. We do NOT want the walkthrough popping up
-  //      every time the user installs the .vsix in a new repo.
-  //
-  // The setTimeout lets the view container finish registering before we
-  // ask Cursor to focus it — without the delay the command sometimes
-  // no-ops because the contribution graph isn't ready yet.
+  // The 400 ms setTimeout lets the viewsContainer and walkthrough
+  // contributions finish registering with the workbench. Calling
+  // workbench.view.extension.axme synchronously inside activate() can
+  // silently no-op because Cursor wires the contribution graph out of
+  // band from extension activation — the delay is invisible to the user
+  // and consistently past the registration race.
   setTimeout(() => {
     const workspaceNeedsAxme = !!workspaceFolder && !isAxmeInitialized();
     if (workspaceNeedsAxme) {
@@ -248,19 +256,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         .then(undefined, (err) => logError("focus sidebar", err));
       void vscode.commands.executeCommand("axme.monitor.focus")
         .then(undefined, () => { /* container-level focus is enough */ });
-    }
-
-    const FIRST_RUN_KEY = "axme.firstRunComplete";
-    if (!context.globalState.get<boolean>(FIRST_RUN_KEY)) {
       void vscode.commands.executeCommand(
         "workbench.action.openWalkthrough",
         { category: "AxmeAI.axme-code#axme.gettingStarted" },
         false,
       ).then(
-        () => log("First-run: opened Getting Started walkthrough."),
+        () => log("Discoverability: opened sidebar + walkthrough."),
         (err) => logError("open walkthrough", err),
       );
-      void context.globalState.update(FIRST_RUN_KEY, true);
     }
   }, 400);
 

@@ -424,6 +424,12 @@ select, input[type=text], input[type=password] {
   font-size: 12px;
 }
 .bl-row:hover { background: var(--vscode-list-hoverBackground); }
+.kb-row {
+  cursor: pointer;
+  padding: 3px 4px;
+  border-radius: var(--radius);
+}
+.kb-row:hover { background: var(--vscode-list-hoverBackground); }
 .bl-dot { flex: 0 0 auto; }
 .bl-title {
   flex: 1 1 auto;
@@ -504,15 +510,25 @@ function render() {
     \${S.auditorMode==="background" ? \`<button class="secondary" data-cmd="axme.reauthAuditor">\${S.auditorKeyConfigured ? "Change credential…" : "Configure credential…"}</button>\` : ""}
   \`;
 
-  // Counters
+  // Counters — clickable. Each row routes to a command that reveals the
+  // corresponding folder (memories/decisions) or opens the single file
+  // (safety rules YAML / open-questions markdown) in the editor.
   const c = S.counts;
   const counters = document.getElementById("counters-section");
   counters.innerHTML = \`
     <h3>Knowledge base</h3>
-    <div class="row"><span class="k">Memories</span><span class="v">\${c.memories}</span></div>
-    <div class="row"><span class="k">Decisions</span><span class="v">\${c.decisions}</span></div>
-    <div class="row"><span class="k">Safety rules</span><span class="v">\${c.safety}</span></div>
-    <div class="row"><span class="k">Open questions</span><span class="v">\${c.questions}</span></div>
+    <div class="row kb-row" data-cmd="axme.openMemoryFolder">
+      <span class="k">Memories</span><span class="v">\${c.memories}</span>
+    </div>
+    <div class="row kb-row" data-cmd="axme.openDecisionsFolder">
+      <span class="k">Decisions</span><span class="v">\${c.decisions}</span>
+    </div>
+    <div class="row kb-row" data-cmd="axme.openSafetyRules">
+      <span class="k">Safety rules</span><span class="v">\${c.safety}</span>
+    </div>
+    <div class="row kb-row" data-cmd="axme.openQuestions">
+      <span class="k">Open questions</span><span class="v">\${c.questions}</span>
+    </div>
   \`;
 
   // Backlog list — top 5 by status/priority/recency, see backlog-reader.ts.

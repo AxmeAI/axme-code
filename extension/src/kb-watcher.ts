@@ -51,14 +51,54 @@ function countSafetyRules(rulesPath: string): number {
   if (!existsSync(rulesPath)) return 0;
   try {
     const txt = readFileSync(rulesPath, "utf-8");
-    // safety/rules.yaml is a nested-object schema (git.*, bash.*, filesystem.*)
-    // with arrays under each. Every `^  - X` line (any indent depth + dash +
-    // value) is one rule entry: a protected branch, a denied bash prefix, a
-    // denied command, a denied filesystem path, an allowed bash prefix, etc.
-    // Counting them all is a reasonable proxy for "how guarded is this
-    // workspace" — matches what users intuit when they read "Safety rules: N".
-    const matches = txt.match(/^\s+-\s+\S/gm);
-    return matches ? matches.length : 0;
+    // Count only ENFORCEMENT entries — the things that actually block
+    // something. The allow-list (bash.allowedPrefixes) is the bulk of
+    // rules.yaml (~50 items shipped in the preset) but those are
+    // fast-path whitelisting, not "rules". Counting them made the
+    // displayed number meaningless: a fresh setup shows 70+ "rules"
+    // when the agent only just added 3, which is what the user sees as
+    // a bug.
+    //
+    // Sections we count (each list item underneath = one rule):
+    //   git.protectedBranches
+    //   bash.deniedPrefixes
+    //   bash.deniedCommands
+    //   filesystem.deniedPaths
+    //   filesystem.readOnlyPaths
+    //
+    // Sections we ignore:
+    //   bash.allowedPrefixes (allow-list, not enforcement)
+    //   any future allow-list keys
+    //
+    // We don't pull a YAML parser — the schema is stable and a simple
+    // line-by-line walker keyed off the section header is enough.
+    const lines = txt.split("\n");
+    const ENFORCED = new Set([
+      "protectedbranches",
+      "deniedprefixes",
+      "deniedcommands",
+      "deniedpaths",
+      "readonlypaths",
+    ]);
+    let current: string | null = null;
+    let count = 0;
+    for (const line of lines) {
+      const sectionMatch = /^(\s*)([A-Za-z]+)\s*:\s*$/.exec(line);
+      if (sectionMatch) {
+        const key = sectionMatch[2].toLowerCase();
+        current = ENFORCED.has(key) ? key : null;
+        continue;
+      }
+      // Reset when we leave the section's indentation level back to a
+      // higher-level scalar.
+      if (current && /^\S/.test(line)) {
+        current = null;
+      }
+      if (current && /^\s+-\s+\S/.test(line)) {
+        count++;
+      }
+    }
+    return count;
   } catch {
     return 0;
   }

@@ -25,6 +25,50 @@ function workspaceRoot(): string | undefined {
   return folders && folders.length > 0 ? folders[0].uri.fsPath : undefined;
 }
 
+/** Reveal a folder in the Explorer panel. If the folder doesn't exist
+ *  yet (pre-setup), surface a hint instead of an error so the user
+ *  understands the state rather than seeing a raw "not found". */
+async function revealOrHint(
+  root: string | undefined,
+  relPath: string,
+  label: string,
+): Promise<void> {
+  if (!root) {
+    void vscode.window.showWarningMessage("AXME Code: open a folder first.");
+    return;
+  }
+  const abs = join(root, relPath);
+  if (!existsSync(abs)) {
+    void vscode.window.showInformationMessage(
+      `AXME Code: no ${label} yet — run setup or ask the agent to save some first.`,
+    );
+    return;
+  }
+  await vscode.commands.executeCommand("revealInExplorer", vscode.Uri.file(abs));
+}
+
+/** Same idea but for a single file — opens it in the editor instead of
+ *  revealing a folder. */
+async function openOrHint(
+  root: string | undefined,
+  relPath: string,
+  label: string,
+): Promise<void> {
+  if (!root) {
+    void vscode.window.showWarningMessage("AXME Code: open a folder first.");
+    return;
+  }
+  const abs = join(root, relPath);
+  if (!existsSync(abs)) {
+    void vscode.window.showInformationMessage(
+      `AXME Code: no ${label} yet — run setup or ask the agent to save some first.`,
+    );
+    return;
+  }
+  const doc = await vscode.workspace.openTextDocument(abs);
+  await vscode.window.showTextDocument(doc);
+}
+
 export function registerCommands(
   context: vscode.ExtensionContext,
   binary: string,
@@ -219,6 +263,25 @@ export function registerCommands(
         );
         showOutput();
       }
+    }),
+
+    // ----- v0.0.3 sidebar KB-counter click targets -------------------------
+    // Each counter in the Knowledge base section routes to one of these.
+    // Folders open in the Explorer panel; single files open in the editor.
+    // If the target doesn't exist yet (workspace pre-setup), we surface a
+    // gentle hint instead of an error — the agent might be just about to
+    // create it via the cooperative setup flow.
+    vscode.commands.registerCommand("axme.openMemoryFolder", async () => {
+      await revealOrHint(workspaceRoot(), join(".axme-code", "memory"), "memories");
+    }),
+    vscode.commands.registerCommand("axme.openDecisionsFolder", async () => {
+      await revealOrHint(workspaceRoot(), join(".axme-code", "decisions"), "decisions");
+    }),
+    vscode.commands.registerCommand("axme.openSafetyRules", async () => {
+      await openOrHint(workspaceRoot(), join(".axme-code", "safety", "rules.yaml"), "safety rules");
+    }),
+    vscode.commands.registerCommand("axme.openQuestions", async () => {
+      await openOrHint(workspaceRoot(), join(".axme-code", "open-questions.md"), "open questions");
     }),
   ];
 }
