@@ -29,6 +29,13 @@ function emptyCounts(): KbCounts {
   return { memories: 0, decisions: 0, safety: 0, backlog: 0, questions: 0 };
 }
 
+/** Compact signature for change detection. Only fires the listener
+ *  callback when at least one count actually moved — keeps the sidebar
+ *  from re-rendering on every 5-second poll tick when nothing changed. */
+function signatureOf(c: KbCounts): string {
+  return `${c.memories}|${c.decisions}|${c.safety}|${c.backlog}|${c.questions}`;
+}
+
 function countFilesIn(dir: string, suffix = ".md"): number {
   if (!existsSync(dir)) return 0;
   try {
@@ -127,12 +134,31 @@ export function readCounts(workspaceRoot: string): KbCounts {
   };
 }
 
+/**
+ * KbWatcher polling fallback interval. VS Code's FileSystemWatcher uses
+ * inotify (Linux) / FSEvents (Mac) which only fire on directories that
+ * exist at watch-creation time. When `.axme-code/memory/patterns/` is
+ * created mid-session (first save by the agent), the watcher silently
+ * misses early events and the counts only refresh after VS Code's
+ * polling fallback kicks in (30–60 s later). The 5-second poll catches
+ * this case without relying on the event stream — counts visibly update
+ * within at-most 5 seconds of any change, even on the very first save.
+ *
+ * Why 5 s and not faster: reading 5 directories' mtime is microseconds,
+ * but running it 10× per second is overkill for "did something change".
+ * 5 s is faster than any human notices "did my save register" and slow
+ * enough to be invisible CPU-wise.
+ */
+const KB_POLL_MS = 5_000;
+
 export class KbWatcher implements vscode.Disposable {
   private contentWatcher: vscode.FileSystemWatcher | undefined;
   private rootWatcher: vscode.FileSystemWatcher | undefined;
   private listener: ((counts: KbCounts) => void) | undefined;
   private creationListener: (() => void) | undefined;
   private workspaceRoot: string | undefined;
+  private pollTimer: NodeJS.Timeout | undefined;
+  private lastSig: string | undefined;
 
   /**
    * Attach to a workspace. The watcher handles both states:
@@ -165,28 +191,80 @@ export class KbWatcher implements vscode.Disposable {
 
     if (existsSync(join(workspaceRoot, ".axme-code"))) {
       this.startContentWatcher(workspaceRoot);
-      onChange(readCounts(workspaceRoot));
+      const c = readCounts(workspaceRoot);
+      this.lastSig = signatureOf(c);
+      onChange(c);
     } else {
       onChange(emptyCounts());
+      this.lastSig = signatureOf(emptyCounts());
       this.startRootWatcher(workspaceRoot);
     }
+    this.startPolling();
   }
 
   /**
-   * Watch `<workspaceRoot>/.axme-code/` for content-file events. This is
-   * the steady-state mode once setup has run.
+   * Polling fallback. Runs forever (cleared on detach/dispose) at
+   * KB_POLL_MS. Re-reads counts; if the signature changed, pushes the
+   * new value. If `.axme-code/` only just appeared mid-poll, also
+   * upgrades the rootWatcher to a contentWatcher and fires onCreated.
+   *
+   * The signature compare keeps the callback quiet when nothing
+   * actually changed — KbWatcher subscribers (sidebar, status bar) can
+   * trust that they only get called on real diffs.
+   */
+  private startPolling(): void {
+    this.pollTimer = setInterval(() => {
+      if (!this.workspaceRoot || !this.listener) return;
+      try {
+        const axmeExists = existsSync(join(this.workspaceRoot, ".axme-code"));
+        // Late-creation: rootWatcher should have caught it, but in case
+        // VS Code's pattern-based dir watcher missed the event we
+        // re-attach the content watcher here too.
+        if (axmeExists && !this.contentWatcher) {
+          this.rootWatcher?.dispose();
+          this.rootWatcher = undefined;
+          this.startContentWatcher(this.workspaceRoot);
+          try { this.creationListener?.(); } catch { /* swallow */ }
+        }
+        const counts = readCounts(this.workspaceRoot);
+        const sig = signatureOf(counts);
+        if (sig !== this.lastSig) {
+          this.lastSig = sig;
+          this.listener(counts);
+        }
+      } catch { /* swallow */ }
+    }, KB_POLL_MS);
+  }
+
+  /**
+   * Watch `<workspaceRoot>/.axme-code/` for content-file events. Pattern
+   * is intentionally broad: ".axme-code/**". An earlier draft used a
+   * brace expansion enumerating the 5 KB sources individually
+   * (memory/**, decisions/*.md, etc.), which forced VS Code to set up
+   * an inotify watch on each subdir at watcher-creation time. If those
+   * subdirs didn't exist yet (fresh workspace where the agent is about
+   * to create them via cooperative setup), inotify couldn't subscribe
+   * and VS Code fell back to its 30–60-second polling loop — counters
+   * looked frozen for a full minute after the first save. The broad
+   * pattern + dot-prefix early creation means VS Code wraps the watch
+   * around the .axme-code/ dir itself, recursively catches nested
+   * creations, and fires events within ~100 ms. The 5-second poll in
+   * startPolling() is a belt-and-braces fallback for the case where
+   * even the broad watcher misses something.
    */
   private startContentWatcher(workspaceRoot: string): void {
-    const pattern = new vscode.RelativePattern(
-      workspaceRoot,
-      ".axme-code/{memory/**/*.md,decisions/*.md,backlog/*.md,safety/rules.yaml,open-questions.md}",
-    );
+    const pattern = new vscode.RelativePattern(workspaceRoot, ".axme-code/**");
     this.contentWatcher = vscode.workspace.createFileSystemWatcher(pattern);
     const refresh = () => {
       try {
         if (!this.workspaceRoot || !this.listener) return;
         try { statSync(join(this.workspaceRoot, ".axme-code")); } catch { return; }
-        this.listener(readCounts(this.workspaceRoot));
+        const counts = readCounts(this.workspaceRoot);
+        const sig = signatureOf(counts);
+        if (sig !== this.lastSig) {
+          this.lastSig = sig;
+          this.listener(counts);
+        }
       } catch { /* swallow */ }
     };
     this.contentWatcher.onDidCreate(refresh);
@@ -222,6 +300,8 @@ export class KbWatcher implements vscode.Disposable {
     this.contentWatcher = undefined;
     this.rootWatcher?.dispose();
     this.rootWatcher = undefined;
+    if (this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = undefined; }
+    this.lastSig = undefined;
     this.listener = undefined;
     this.creationListener = undefined;
     this.workspaceRoot = undefined;
