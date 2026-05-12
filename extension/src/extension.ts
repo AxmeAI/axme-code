@@ -166,6 +166,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     ...registerCommands(context, binary, "cursor", statusBar),
   );
 
+  // ---- Step 7b: reflect report state in status bar -----------------------
+  // The corner notification toast from report.present() auto-dismisses
+  // after 5s and is easy to miss. The status bar is always visible —
+  // setting it to "Setup required" (yellow) or "Activation failed" (red)
+  // when something needs attention is the user's continuous reminder.
+  if (report.hasFailure()) {
+    const labels = report.failedSteps().map((s) => s.kind).join(", ");
+    statusBar.setError(`${labels} failed`);
+  } else if (workspaceFolder && !isAxmeInitialized()) {
+    statusBar.setAttention("Setup required");
+  }
+
   log(`Activation complete. ${context.subscriptions.length} disposables registered.`);
 
   // ---- Step 8: present summary -------------------------------------------

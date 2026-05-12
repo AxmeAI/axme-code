@@ -603,7 +603,15 @@ async function main() {
       setupOutcome = setupMethod === "llm" ? "success" : "fallback";
       await sendSetupTelemetry();
 
-      console.log("\nDone! Run 'claude' to start using AXME tools.");
+      // IDE-aware final message. The CLI is invoked both standalone
+      // (Claude Code users — `axme-code setup` from terminal) and via
+      // the Cursor extension's setup-controller (`--ide=cursor`).
+      // Tell each user what their next step actually is.
+      if (ide === "cursor") {
+        console.log("\nDone! Open a new chat in Cursor — AXME tools are now available.");
+      } else {
+        console.log("\nDone! Run 'claude' to start using AXME tools.");
+      }
       break;
     }
 
