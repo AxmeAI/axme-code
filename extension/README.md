@@ -6,7 +6,9 @@ Persistent memory, decisions, and safety guardrails for AI coding agents — Cur
 
 - Registers `axme-code` as an MCP server so the agent has access to the project knowledge base — `axme_context`, `axme_save_memory`, `axme_save_decision`, `axme_safety`, and ~15 more tools.
 - Installs safety hooks at the user level (`~/.cursor/hooks.json`) so dangerous operations (force-push to main, `rm -rf` on protected paths, secret-file edits) are blocked **before** the agent runs them.
-- Auto-spawns the session auditor at chat end — extracts non-obvious patterns / decisions / safety rules from your conversation and saves them to `.axme-code/` for the next session to load.
+- **AXME sidebar (Activity Bar)** — always-visible monitor with live counters for memories / decisions / safety / backlog, an audit-mode toggle, a backlog list, and a current-session block (tokens / age / messages). Click the AXME icon in the Activity Bar.
+- **Auditor with three modes** — `cooperative` (default for Cursor: agent saves inline via MCP tools, no extra cost), `background` (detached LLM after each chat, requires its own API key), or `off`. Switch any time from the sidebar dropdown.
+- **Cooperative close** — one-click "Close session (handoff)" prompt that walks the agent through `axme_begin_close` → checklist → `axme_finalize_close`, preserving everything important from the chat in `.axme-code/` for the next session.
 
 ## Requirements
 
@@ -20,13 +22,18 @@ Persistent memory, decisions, and safety guardrails for AI coding agents — Cur
 | `axme.binaryPath` | `""` | Absolute path to the `axme-code` binary. Leave empty for auto-detect. |
 | `axme.contextMode` | `"full"` | `full` loads every memory into agent context. `search` uses semantic search at scale. |
 | `axme.enableHooks` | `true` | Register safety hooks. Turn off if you don't want machine-wide guardrails. |
+| `axme.auditorMode` | `"cooperative"` | Auditor extraction mode. `cooperative` (no extra cost, agent saves inline), `background` (detached LLM after each chat, uses its own API key), or `off`. |
 
 ## Commands
 
-- **AXME: Set up workspace** — runs `axme-code setup` against the current workspace folder.
+- **AXME: Set up workspace** — runs `axme-code setup` against the current workspace folder (background mode; uses your API key).
 - **AXME: Open dashboard** — opens the worklog / decisions / memories view.
 - **AXME: Reindex semantic search** — rebuilds the embeddings index.
-- **AXME: Show status** — shows session count, audit health, recent worklog entries.
+- **AXME: Show status** — webview healthcheck (binary / MCP / hooks / auth / KB per workspace).
+- **AXME: Reauth auditor** — paste / change the credential used by background-mode auditor.
+- **AXME: Reset** — clear AXME entries from `~/.cursor/hooks.json` and reset auth state on this machine (workspaces untouched).
+
+The sidebar exposes additional one-click flows: **Ask agent to setup** (cooperative setup prompt), **Close session (handoff)**, **+ Add backlog item**, **Reinstall hooks**.
 
 ## How this differs from the CLI install
 
