@@ -16,6 +16,8 @@ import { ensureAuditorAuth } from "./auditor-auth.js";
 import { AxmeStatusBar } from "./status-bar.js";
 import { openStatusWebview } from "./status-webview.js";
 import { runReset } from "./reset.js";
+import { deliverChatPrompt, PROMPT_SETUP, PROMPT_CLOSE_SESSION } from "./chat-prompt.js";
+import { installUserHooks } from "./hooks-install.js";
 import { log, logError, show as showOutput } from "./log.js";
 
 function workspaceRoot(): string | undefined {
@@ -137,14 +139,10 @@ export function registerCommands(
     // into the chat (askAgentSetup, closeSession, addBacklogItem) and the
     // backlog/hooks helpers land in subsequent commits of the same PR.
     vscode.commands.registerCommand("axme.askAgentSetup", async () => {
-      void vscode.window.showInformationMessage(
-        "AXME: cooperative setup prompt — wired up in upcoming v0.0.3 commit.",
-      );
+      await deliverChatPrompt({ label: "setup prompt", body: PROMPT_SETUP });
     }),
     vscode.commands.registerCommand("axme.closeSession", async () => {
-      void vscode.window.showInformationMessage(
-        "AXME: close-session prompt — wired up in upcoming v0.0.3 commit.",
-      );
+      await deliverChatPrompt({ label: "close-session prompt", body: PROMPT_CLOSE_SESSION });
     }),
     vscode.commands.registerCommand("axme.openBacklog", async () => {
       const root = workspaceRoot();
@@ -197,9 +195,17 @@ export function registerCommands(
       }
     }),
     vscode.commands.registerCommand("axme.reinstallHooks", async () => {
-      void vscode.window.showInformationMessage(
-        "AXME: hooks reinstall — wired up in upcoming v0.0.3 commit.",
-      );
+      const ok = installUserHooks("cursor", binary);
+      if (ok) {
+        void vscode.window.showInformationMessage(
+          "AXME: hooks reinstalled in ~/.cursor/hooks.json. Restart Cursor to take effect.",
+        );
+      } else {
+        void vscode.window.showErrorMessage(
+          "AXME: failed to reinstall hooks — see AXME Code output channel.",
+        );
+        showOutput();
+      }
     }),
   ];
 }
