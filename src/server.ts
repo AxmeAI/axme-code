@@ -41,9 +41,31 @@ import {
 import { logEvent } from "./storage/worklog.js";
 import { spawnDetachedAuditWorker } from "./audit-spawner.js";
 
-// --- Server state (detected at startup from cwd) ---
+// --- Server state (detected at startup from --workspace flag or cwd) ---
+//
+// When the Cursor extension registers the MCP server it cannot control the
+// cwd Cursor uses to spawn us — empirically Cursor spawns from the user's
+// home directory regardless of which workspace is open. Falling back to
+// cwd makes the server report a wrong `defaultProjectPath` and tools like
+// axme_context (called without explicit project_path) look up
+// `.axme-code/` in the wrong place. The fix is the extension passing
+// `--workspace <abs>` at registration time so the server has the right
+// root from the first tool call.
+//
+// Resolution order:
+//   1. --workspace <path> CLI flag (passed by the Cursor extension)
+//   2. AXME_WORKSPACE env var (escape hatch for hand-spawned servers)
+//   3. process.cwd() (legacy Claude Code CLI behaviour — server spawns
+//      from the project root so cwd already points at the right place)
+function resolveServerRoot(): string {
+  const argv = process.argv;
+  const flagIdx = argv.indexOf("--workspace");
+  if (flagIdx > -1 && argv[flagIdx + 1]) return argv[flagIdx + 1];
+  if (process.env.AXME_WORKSPACE) return process.env.AXME_WORKSPACE;
+  return process.cwd();
+}
 
-const serverCwd = process.cwd();
+const serverCwd = resolveServerRoot();
 const serverHasGit = existsSync(join(serverCwd, ".git"));
 const serverWorkspace = detectWorkspace(serverCwd);
 const isWorkspace = serverHasGit ? false : serverWorkspace.type !== "single";

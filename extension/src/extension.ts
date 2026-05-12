@@ -117,8 +117,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   }
 
   // ---- Step 3: MCP registration ------------------------------------------
+  // We need the workspace folder BEFORE Step 6 — pass it to mcp-register so
+  // the server's --workspace flag points at the real project, not Cursor's
+  // home-dir cwd. Without this, axme_context called with no project_path
+  // defaults to /home/$USER and misses the workspace's .axme-code/ entirely.
+  const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+  const workspaceRoot = workspaceFolder?.uri.fsPath;
   await runStep(report, "mcp", () => "registered", async () => {
-    const disposable = await registerMcpServer(binary);
+    const disposable = await registerMcpServer(binary, workspaceRoot);
     context.subscriptions.push(disposable);
   });
 
@@ -157,8 +163,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // ---- Step 6: setup offer (non-blocking, fire-and-forget) ---------------
   // Setup is the user's job, not part of activation. We only record whether
   // the workspace is already initialised; the offer toast fires async and
-  // the user can decline.
-  const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+  // the user can decline. workspaceFolder was resolved earlier in Step 3.
   if (workspaceFolder) {
     const initialized = isAxmeInitialized();
     if (initialized) {

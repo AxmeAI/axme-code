@@ -31,7 +31,10 @@ function getCursorMcpApi(): CursorMcpApi | undefined {
   return v.cursor?.mcp;
 }
 
-export async function registerMcpServer(binary: string): Promise<vscode.Disposable> {
+export async function registerMcpServer(
+  binary: string,
+  workspaceRoot: string | undefined,
+): Promise<vscode.Disposable> {
   const cursor = getCursorMcpApi();
   if (!cursor?.registerServer) {
     throw new Error(
@@ -40,11 +43,18 @@ export async function registerMcpServer(binary: string): Promise<vscode.Disposab
         "that lacks vscode.cursor.mcp.",
     );
   }
+  // Pass --workspace explicitly. Cursor spawns the MCP server from the
+  // user's home dir regardless of which workspace is open, so the server's
+  // process.cwd() is useless for resolving `.axme-code/`. Without this
+  // flag, axme_context defaults project_path to /home/$USER and reports
+  // "project not initialised" even after a successful setup in the real
+  // workspace. The server's resolveServerRoot() reads this flag.
+  const args = workspaceRoot ? ["serve", "--workspace", workspaceRoot] : ["serve"];
   cursor.registerServer({
     name: "axme",
-    server: { command: binary, args: ["serve"], env: {} },
+    server: { command: binary, args, env: {} },
   });
-  log(`MCP: registered 'axme' (binary=${binary})`);
+  log(`MCP: registered 'axme' (binary=${binary}, workspace=${workspaceRoot ?? "(none)"})`);
   // Cursor needs ~3s to process the registration before tools become
   // available to the chat agent. Verified empirically against the
   // browser-devtools-mcp reference implementation.

@@ -21,6 +21,7 @@ import { KbWatcher, KbCounts, readCounts } from "./kb-watcher.js";
 import { readBacklog, BacklogItemLite } from "./backlog-reader.js";
 import { readActiveSession, ActiveSession } from "./session-tracker.js";
 import { detectCurrentMode } from "./auditor-auth.js";
+import { hooksAreInstalled } from "./hooks-state.js";
 import { log } from "./log.js";
 
 /**
@@ -98,6 +99,10 @@ export class AxmeSidebarProvider implements vscode.WebviewViewProvider {
         this.push({ counts, backlog: readBacklog(workspaceRoot).slice(0, 5) });
       });
     }
+    // Push the live disk state for hooks. This overrides the activation
+    // report's snapshot (which can be stale after a reinstall or after
+    // installUserHooks's first-run race).
+    this.push({ hooksOk: hooksAreInstalled() });
     // Fire-and-forget auditor credential probe so the sidebar can render
     // the "Configure credential…" banner accurately on first open.
     void this.refreshAuthState();
@@ -118,10 +123,20 @@ export class AxmeSidebarProvider implements vscode.WebviewViewProvider {
     webviewView.webview.html = this.renderHtml(webviewView.webview);
     webviewView.webview.onDidReceiveMessage((m: SidebarMessage) => this.onMessage(m));
 
-    // Push the initial snapshot once webview is alive.
+    // Push the initial snapshot once webview is alive. Hooks state is
+    // read from disk on every reveal so reinstalls / external edits to
+    // ~/.cursor/hooks.json show up the next time the sidebar comes into
+    // view, not just at activation time.
     const counts = this.workspaceRoot ? readCounts(this.workspaceRoot) : emptyCounts();
     const backlog = this.workspaceRoot ? readBacklog(this.workspaceRoot).slice(0, 5) : [];
-    this.push({ ...this.initialState, counts, backlog, warnTokens: SESSION_WARN_TOKENS, ...this.pendingState });
+    this.push({
+      ...this.initialState,
+      counts,
+      backlog,
+      hooksOk: hooksAreInstalled(),
+      warnTokens: SESSION_WARN_TOKENS,
+      ...this.pendingState,
+    });
     this.pendingState = {};
 
     // Session polling — only runs while the view is visible. VS Code fires
@@ -234,9 +249,14 @@ export class AxmeSidebarProvider implements vscode.WebviewViewProvider {
 
   <footer>
     <button class="link" data-cmd="axme.showStatus">Healthcheck…</button>
-    <button class="link" data-cmd="axme.reindex">Reindex</button>
-    <button class="link" data-cmd="axme.reset">Reset</button>
   </footer>
+  <!--
+    Reindex / Reset removed from the sidebar footer per user feedback —
+    they ran a destructive or hard-to-undo flow without enough visible
+    feedback inline. The commands stay registered and accessible via
+    the Command Palette (AXME: Reindex semantic search / AXME: Reset),
+    where the modal-driven flow is more obviously a deliberate action.
+  -->
 
   <script nonce="${nonce}">${SIDEBAR_JS}</script>
 </body>
