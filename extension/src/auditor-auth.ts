@@ -188,7 +188,7 @@ async function runShell(
   });
 }
 
-async function detectCurrentMode(binary: string): Promise<AuditorAuthMode | undefined> {
+export async function detectCurrentMode(binary: string): Promise<AuditorAuthMode | undefined> {
   return new Promise((resolve) => {
     const child = spawn(binary, ["auth", "status"], { stdio: ["ignore", "pipe", "ignore"] });
     let stdout = "";

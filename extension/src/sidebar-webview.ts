@@ -19,6 +19,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { KbWatcher, KbCounts, readCounts } from "./kb-watcher.js";
 import { readBacklog, BacklogItemLite } from "./backlog-reader.js";
+import { detectCurrentMode } from "./auditor-auth.js";
 import { log } from "./log.js";
 
 export interface SidebarState {
@@ -30,6 +31,8 @@ export interface SidebarState {
   backlog: BacklogItemLite[];
   /** Auditor mode from settings. */
   auditorMode: "off" | "cooperative" | "background";
+  /** True when background mode is selected AND a credential is saved. */
+  auditorKeyConfigured: boolean;
   /** Did hooks install successfully at activation? */
   hooksOk: boolean;
   /** Are we running in Cursor (vs other host)? */
@@ -54,14 +57,16 @@ export class AxmeSidebarProvider implements vscode.WebviewViewProvider {
   private kbWatcher: KbWatcher | undefined;
   private workspaceRoot: string | undefined;
   private pendingState: Partial<SidebarState> = {};
+  private binary: string | undefined;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
-    private readonly initialState: Omit<SidebarState, "counts" | "backlog">,
+    private readonly initialState: Omit<SidebarState, "counts" | "backlog" | "auditorKeyConfigured">,
   ) {}
 
-  attach(workspaceRoot: string | undefined): void {
+  attach(workspaceRoot: string | undefined, binary: string): void {
     this.workspaceRoot = workspaceRoot;
+    this.binary = binary;
     if (workspaceRoot) {
       this.kbWatcher = new KbWatcher();
       // Counters + backlog list refresh together — both react to file
@@ -70,6 +75,15 @@ export class AxmeSidebarProvider implements vscode.WebviewViewProvider {
         this.push({ counts, backlog: readBacklog(workspaceRoot).slice(0, 5) });
       });
     }
+    // Fire-and-forget auditor credential probe so the sidebar can render
+    // the "Configure credential…" banner accurately on first open.
+    void this.refreshAuthState();
+  }
+
+  async refreshAuthState(): Promise<void> {
+    if (!this.binary) return;
+    const mode = await detectCurrentMode(this.binary).catch(() => undefined);
+    this.push({ auditorKeyConfigured: !!mode });
   }
 
   resolveWebviewView(webviewView: vscode.WebviewView): void {
@@ -115,6 +129,21 @@ export class AxmeSidebarProvider implements vscode.WebviewViewProvider {
           .getConfiguration("axme")
           .update("auditorMode", m.mode, vscode.ConfigurationTarget.Global);
         this.push({ auditorMode: m.mode });
+        // Switching INTO background mode without a saved credential is the
+        // moment the user actually wants to paste a key — trigger the auth
+        // command so the input flow happens right then instead of forcing
+        // them to find the Configure button.
+        if (m.mode === "background") {
+          void (async () => {
+            const probe = this.binary
+              ? await detectCurrentMode(this.binary).catch(() => undefined)
+              : undefined;
+            if (!probe) {
+              await vscode.commands.executeCommand("axme.reauthAuditor");
+              await this.refreshAuthState();
+            }
+          })();
+        }
         break;
       case "openFile":
         void vscode.workspace.openTextDocument(m.path).then((d) => vscode.window.showTextDocument(d));
@@ -295,7 +324,7 @@ select, input[type=text], input[type=password] {
 
 const SIDEBAR_JS = `
 const vscode = acquireVsCodeApi();
-let S = { setupDone: false, counts: { memories:0, decisions:0, safety:0, backlog:0, questions:0 }, backlog: [], auditorMode: "off", hooksOk: false, isCursor: true };
+let S = { setupDone: false, counts: { memories:0, decisions:0, safety:0, backlog:0, questions:0 }, backlog: [], auditorMode: "cooperative", auditorKeyConfigured: false, hooksOk: false, isCursor: true };
 
 function send(msg) { vscode.postMessage(msg); }
 function cmd(id)  { send({ type: "command", commandId: id }); }
@@ -335,6 +364,7 @@ function render() {
 
   // Auditor section
   const audit = document.getElementById("auditor-section");
+  const needsKey = S.auditorMode === "background" && !S.auditorKeyConfigured;
   audit.innerHTML = \`
     <h3>Session auditor</h3>
     <div class="row"><span class="k">Mode</span></div>
@@ -343,8 +373,9 @@ function render() {
       <option value="cooperative"\${S.auditorMode==="cooperative"?" selected":""}>Cooperative — agent saves inline (no extra cost)</option>
       <option value="background"\${S.auditorMode==="background"?" selected":""}>Background — separate LLM after each chat</option>
     </select>
-    <p class="muted">Cooperative uses your Cursor subscription. Background requires its own API key.</p>
-    \${S.auditorMode==="background" ? '<button class="secondary" data-cmd="axme.reauthAuditor">Configure API key…</button>' : ""}
+    <p class="muted">Cooperative uses your Cursor subscription. Background runs a separate LLM after every chat using your own API key (billed separately).</p>
+    \${needsKey ? '<div class="warning-banner">Background mode is selected but no credential is configured. The session-end auditor will not run.</div>' : ""}
+    \${S.auditorMode==="background" ? \`<button class="secondary" data-cmd="axme.reauthAuditor">\${S.auditorKeyConfigured ? "Change credential…" : "Configure credential…"}</button>\` : ""}
   \`;
 
   // Counters

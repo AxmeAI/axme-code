@@ -21,6 +21,7 @@ import {
   clearClaudeSessionMapping,
 } from "../storage/sessions.js";
 import { spawnDetachedAuditWorker } from "../audit-spawner.js";
+import { loadAuditorMode } from "../utils/auditor-mode.js";
 import { pathExists } from "../storage/engine.js";
 import { AXME_CODE_DIR } from "../types.js";
 import type { IdeKind } from "../types.js";
@@ -34,6 +35,14 @@ function inputAdapterFor(ide: IdeKind): HookInputAdapter {
 
 function handleSessionEnd(workspacePath: string, event: NormalizedHookEvent): void {
   if (!pathExists(join(workspacePath, AXME_CODE_DIR))) return;
+
+  // Auditor-mode gate (v0.0.3+). When the user has opted into cooperative
+  // mode in the Cursor extension sidebar, memories/decisions are saved
+  // inline by the agent during chat — no detached background LLM should
+  // fire and burn separately-billed tokens. "off" disables extraction
+  // entirely. "background" preserves the historical (CLI-default) flow.
+  const auditorMode = loadAuditorMode();
+  if (auditorMode !== "background") return;
 
   // SessionEnd must know which IDE session is ending. If it does not,
   // there is nothing we can safely do — we cannot guess which of possibly

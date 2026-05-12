@@ -36,6 +36,7 @@ import { registerCommands } from "./commands.js";
 import { readCounts } from "./kb-watcher.js";
 import { ActivationReport, StepKind } from "./activation-report.js";
 import { AxmeSidebarProvider } from "./sidebar-webview.js";
+import { installAuditorModeMirror, currentAuditorMode } from "./auditor-mode-mirror.js";
 import { log, logError, show as showOutput, dispose as disposeLog } from "./log.js";
 
 declare const __EXTENSION_VERSION__: string;
@@ -135,11 +136,23 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     report.record("hooks", true, "disabled by setting");
   }
 
+  // ---- Step 4b: mirror auditor mode to disk for CORE hooks ---------------
+  context.subscriptions.push(installAuditorModeMirror());
+
   // ---- Step 5: auditor auth ----------------------------------------------
-  await runStep(report, "auth", (mode) => mode ?? "?", async () => {
-    const mode = await ensureAuditorAuth(binary);
-    return mode;
-  });
+  // Only run the credential modal when the user has opted INTO background
+  // mode. In cooperative / off, the auditor never spawns a separate LLM
+  // process and therefore needs no credential — this is the v0.0.3 default
+  // for fresh Cursor installs, eliminating the most-complained-about
+  // modal in the activation flow.
+  if (currentAuditorMode() === "background") {
+    await runStep(report, "auth", (mode) => mode ?? "?", async () => {
+      const mode = await ensureAuditorAuth(binary);
+      return mode;
+    });
+  } else {
+    report.record("auth", true, `skipped (auditor mode: ${currentAuditorMode()})`);
+  }
 
   // ---- Step 6: setup offer (non-blocking, fire-and-forget) ---------------
   // Setup is the user's job, not part of activation. We only record whether
@@ -168,16 +181,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // registerCommands so any command can postMessage to it directly. The
   // initial state captures activation flags so the user sees them on
   // first reveal even if KbWatcher hasn't fired yet.
-  const auditorMode = vscode.workspace
-    .getConfiguration("axme")
-    .get<"off" | "cooperative" | "background">("auditorMode", "cooperative");
+  const auditorMode = currentAuditorMode();
   const sidebar = new AxmeSidebarProvider(context, {
     setupDone: workspaceFolder ? isAxmeInitialized() : false,
     auditorMode,
     hooksOk: !report.failedSteps().some((s) => s.kind === "hooks"),
     isCursor: true,
   });
-  sidebar.attach(workspaceFolder?.uri.fsPath);
+  sidebar.attach(workspaceFolder?.uri.fsPath, binary);
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(AxmeSidebarProvider.viewType, sidebar),
     { dispose: () => sidebar.dispose() },
