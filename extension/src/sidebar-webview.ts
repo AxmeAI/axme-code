@@ -33,12 +33,10 @@ import { log } from "./log.js";
  */
 const SESSION_POLL_MS = 3_000;
 
-/** Threshold above which we warn the user to close the session. Chosen
- * to match the upper end of Cursor's reported auto-summarize trigger
- * (~50–60% of context window for 200k models) so the user has a chance
- * to close cleanly via our handoff flow BEFORE Cursor's lossy condense
- * fires. */
-const SESSION_WARN_TOKENS = 200_000;
+// (Old SESSION_WARN_TOKENS dropped — we no longer display a token number
+//  in the session block. See "Live session block" comment in the render
+//  code for the rationale. Threshold is now message-count + duration in
+//  the render code itself: >50 messages OR >2h triggers the warning.)
 
 export interface SidebarState {
   /** Is the workspace initialised (`.axme-code/` exists)? */
@@ -55,10 +53,10 @@ export interface SidebarState {
   hooksOk: boolean;
   /** Are we running in Cursor (vs other host)? */
   isCursor: boolean;
-  /** Live snapshot of the active chat session — tokens, messages, age. */
+  /** Live snapshot of the active chat session — messages, age (tokens are
+   *  collected but no longer displayed; see "Live session block" comment
+   *  in the render code for the rationale). */
   session: ActiveSession | null;
-  /** Warn threshold (passed to webview so it can hide its own UI). */
-  warnTokens: number;
 }
 
 export type SidebarMessage =
@@ -85,7 +83,7 @@ export class AxmeSidebarProvider implements vscode.WebviewViewProvider {
 
   constructor(
     private readonly context: vscode.ExtensionContext,
-    private readonly initialState: Omit<SidebarState, "counts" | "backlog" | "auditorKeyConfigured" | "session" | "warnTokens">,
+    private readonly initialState: Omit<SidebarState, "counts" | "backlog" | "auditorKeyConfigured" | "session">,
   ) {}
 
   attach(workspaceRoot: string | undefined, binary: string): void {
@@ -152,7 +150,6 @@ export class AxmeSidebarProvider implements vscode.WebviewViewProvider {
       counts,
       backlog,
       hooksOk: hooksAreInstalled(),
-      warnTokens: SESSION_WARN_TOKENS,
       ...this.pendingState,
     });
     this.pendingState = {};
@@ -441,7 +438,7 @@ select, input[type=text], input[type=password] {
 
 const SIDEBAR_JS = `
 const vscode = acquireVsCodeApi();
-let S = { setupDone: false, counts: { memories:0, decisions:0, safety:0, backlog:0, questions:0 }, backlog: [], auditorMode: "cooperative", auditorKeyConfigured: false, hooksOk: false, isCursor: true, session: null, warnTokens: 200000 };
+let S = { setupDone: false, counts: { memories:0, decisions:0, safety:0, backlog:0, questions:0 }, backlog: [], auditorMode: "cooperative", auditorKeyConfigured: false, hooksOk: false, isCursor: true, session: null };
 
 function formatDuration(ms) {
   if (ms <= 0) return "just now";
@@ -453,11 +450,8 @@ function formatDuration(ms) {
   const rm = m % 60;
   return h + "h " + (rm ? rm + "m" : "");
 }
-function formatTokens(n) {
-  if (n < 1000) return n + "";
-  if (n < 100000) return (n / 1000).toFixed(1).replace(/\\.0$/, "") + "k";
-  return Math.round(n / 1000) + "k";
-}
+// formatTokens was used by the old Tokens row in the session block.
+// Variant B dropped that row — function removed to keep dead code out.
 
 function send(msg) { vscode.postMessage(msg); }
 function cmd(id)  { send({ type: "command", commandId: id }); }
@@ -554,22 +548,32 @@ function render() {
   });
 
   // Live session block — driven by readActiveSession on the host side.
+  // We deliberately do NOT show a token count: our only data source is the
+  // local Cursor JSONL transcript which contains compact message envelopes,
+  // not the expanded tool results that dominate Cursor's actual context
+  // budget. Showing "3.8k" while Cursor's own Context panel shows 43.5k
+  // confused users more than it helped. Instead we show two signals we CAN
+  // measure honestly: messages (count) and duration (age).
+  //
+  // Warning threshold uses both. >50 messages OR >2h is a reasonable
+  // proxy for "you're heading toward Cursor's ~50–60% auto-summarize
+  // trigger" without lying about a token number we can't see.
   const sess = S.session;
   let sessionHtml = '<p class="muted">No active chat detected. Tools will record activity when an MCP call lands.</p>';
   if (sess && sess.hasData) {
     const startedMs = Date.parse(sess.startedAt);
     const ageMs = Number.isFinite(startedMs) ? Date.now() - startedMs : 0;
-    const overWarn = sess.tokens >= S.warnTokens;
+    const ageHours = ageMs / 3_600_000;
+    const overWarn = sess.messages >= 50 || ageHours >= 2;
     sessionHtml = \`
       <div class="row"><span class="k">Started</span><span class="v">\${formatDuration(ageMs)} ago</span></div>
-      <div class="row"><span class="k">Tokens</span><span class="v">\${formatTokens(sess.tokens)}</span></div>
       <div class="row"><span class="k">Messages</span><span class="v">\${sess.messages}</span></div>
       \${overWarn ? \`
         <div class="warning-banner">
-          Approaching Cursor's auto-summarize threshold. Cursor will compress
-          your conversation around here and quality often degrades after that.
-          Ask the agent in the chat to <b>close the session</b> — it will
-          extract memories / decisions / safety inline and give you a
+          Session is getting long (\${sess.messages} messages, \${formatDuration(ageMs)}).
+          Cursor auto-summarizes around the ~50% context mark and quality often
+          regresses after that. Ask the agent to <b>close the session</b> —
+          it will extract memories / decisions / safety inline and give you a
           startup prompt for a fresh chat with zero context loss.
         </div>\` : ""}
     \`;
