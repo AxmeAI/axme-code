@@ -168,8 +168,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       report.record("setup", true, "pending user action");
       void offerSetupIfMissing(binary, "cursor");
     }
+    // Drive the "Set up the workspace" walkthrough step's completion event.
+    // VS Code listens for onContext: matches the moment this key flips true.
+    void vscode.commands.executeCommand("setContext", "axme.workspaceInitialized", initialized);
   } else {
     report.record("setup", true, "no workspace open");
+    void vscode.commands.executeCommand("setContext", "axme.workspaceInitialized", false);
   }
 
   // ---- Step 7: status bar + sidebar + commands ---------------------------

@@ -77,6 +77,10 @@ export async function runSetup(binary: string, ide: IdeKind): Promise<void> {
 
       if (exitCode === 0) {
         progress.report({ message: "done" });
+        // Flip the walkthrough completion key — onContext listeners in the
+        // Welcome page check off the "Set up the workspace" step the moment
+        // this fires.
+        void vscode.commands.executeCommand("setContext", "axme.workspaceInitialized", true);
         const open = await vscode.window.showInformationMessage(
           "AXME Code setup complete. Open a new chat to start using axme tools.",
           "Show output",
