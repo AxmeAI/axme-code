@@ -114,7 +114,7 @@
           {
             "id": "axme.step.auditor",
             "title": "Pick your auditor mode",
-            "description": "Cooperative (default): zero extra cost — the agent saves inline during the chat.\nBackground: uses its own API key, runs after every chat for thorough extraction.\nOff: no extraction at all.\n[Open AXME settings](command:workbench.action.openSettings?%5B%22axme.auditorMode%22%5D)",
+            "description": "Cooperative (default): zero extra cost — the agent saves inline during the chat, then you ask it to close the session at the end.\nBackground: uses its own API key, runs after every chat for thorough extraction (billed separately).\n[Open AXME settings](command:workbench.action.openSettings?%5B%22axme.auditorMode%22%5D)",
             "media": { "markdown": "walkthroughs/auditor.md" },
             "completionEvents": [
               "onSettingChanged:axme.auditorMode"

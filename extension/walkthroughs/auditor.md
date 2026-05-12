@@ -24,11 +24,6 @@ inline. Requires its own credential:
 
 Cost: **a few cents per chat depending on transcript length.**
 
-## Off
-
-No extraction at all. MCP tools and safety hooks still work — you just have to ask
-the agent to save things explicitly, or save them yourself via the sidebar.
-
 ## Where to change
 
 Either the sidebar dropdown in the **AXME** Activity Bar view, or VS Code

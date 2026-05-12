@@ -141,10 +141,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   // ---- Step 5: auditor auth ----------------------------------------------
   // Only run the credential modal when the user has opted INTO background
-  // mode. In cooperative / off, the auditor never spawns a separate LLM
-  // process and therefore needs no credential — this is the v0.0.3 default
-  // for fresh Cursor installs, eliminating the most-complained-about
-  // modal in the activation flow.
+  // mode. Cooperative mode never spawns a separate LLM process and
+  // therefore needs no credential — this is the v0.0.3 default for fresh
+  // Cursor installs, eliminating the most-complained-about modal in the
+  // activation flow.
   if (currentAuditorMode() === "background") {
     await runStep(report, "auth", (mode) => mode ?? "?", async () => {
       const mode = await ensureAuditorAuth(binary);
@@ -217,15 +217,21 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // ---- Step 7c: first-run discoverability --------------------------------
   // The AXME icon in the Activity Bar is easy to miss in a column with 6+
   // other extension icons. On the user's very first activation (no prior
-  // globalState marker), focus the AXME view automatically so the sidebar
-  // is open with all the setup buttons visible from the start. Subsequent
-  // activations skip this — we don't want to hijack the user's view every
-  // time they reopen Cursor.
+  // globalState marker), focus the AXME view automatically AND open the
+  // Getting Started walkthrough — the user lands with the sidebar revealed
+  // and instructions side-by-side, instead of having to discover the icon
+  // themselves. Subsequent activations skip this so reopening Cursor
+  // doesn't hijack the active view.
   const FIRST_RUN_KEY = "axme.firstRunComplete";
   if (!context.globalState.get<boolean>(FIRST_RUN_KEY)) {
     try {
       await vscode.commands.executeCommand("workbench.view.extension.axme");
-      log("First-run: focused AXME sidebar view.");
+      void vscode.commands.executeCommand(
+        "workbench.action.openWalkthrough",
+        { category: "AxmeAI.axme-code#axme.gettingStarted" },
+        false,
+      );
+      log("First-run: focused AXME sidebar + opened walkthrough.");
     } catch (err) {
       logError("first-run focus", err);
     }

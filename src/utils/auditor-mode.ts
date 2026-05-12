@@ -3,8 +3,7 @@
  * `~/.config/axme-code/auditor-mode`.
  *
  * The mode is set by the Cursor extension's sidebar dropdown (v0.0.3+).
- * Three values, all of which are valid:
- *   - "off"          → no extraction at all; session-end hook is a no-op.
+ * Two values, both valid:
  *   - "cooperative"  → no background LLM. Memories/decisions/safety are
  *                      saved inline by the agent in the chat using the
  *                      user's Cursor subscription. Default for Cursor
