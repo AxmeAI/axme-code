@@ -96,7 +96,7 @@
           {
             "id": "axme.step.installed",
             "title": "Extension installed",
-            "description": "The AXME Code extension is active. The Activity Bar now has an AXME icon — that's your monitor for memories, decisions, backlog, and the current chat session.\n[Open AXME sidebar](command:workbench.view.extension.axme)",
+            "description": "The AXME Code extension is active. The Activity Bar now has an AXME icon — that's your monitor for memories, decisions, backlog, and the current chat session.\n\n**AXME is configured per-project**: each repo you open needs a one-time setup (step 2 below). When you update AXME in the future, reload Cursor with `Ctrl+R` / `Cmd+R` to apply.\n[Open AXME sidebar](command:workbench.view.extension.axme)",
             "media": { "image": "media/axme.svg", "altText": "AXME Code icon" },
             "completionEvents": [
               "extensionInstalled:AxmeAI.axme-code"

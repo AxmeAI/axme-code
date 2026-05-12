@@ -240,6 +240,16 @@ export class AxmeSidebarProvider implements vscode.WebviewViewProvider {
     // extension bundle stays single-file. CSS uses VS Code's theme tokens
     // (var(--vscode-*)) so dark/light/high-contrast all just work.
     const nonce = makeNonce();
+    // Per-project header: AXME is per-repo, and the sidebar should make
+    // it obvious WHICH repo the current numbers / setup state belong to.
+    // VS Code reloads the window on folder switch, so this static bake
+    // is safe — the webview's lifetime equals one workspace's lifetime.
+    const projectName = this.workspaceRoot
+      ? this.workspaceRoot.split("/").filter(Boolean).pop() ?? ""
+      : "";
+    const titleHtml = projectName
+      ? `AXME · ${escapeHtmlServer(projectName)}`
+      : `AXME Code`;
     const csp =
       `default-src 'none'; ` +
       `style-src ${webview.cspSource} 'unsafe-inline'; ` +
@@ -254,7 +264,7 @@ export class AxmeSidebarProvider implements vscode.WebviewViewProvider {
 </head>
 <body>
   <section id="header">
-    <div class="title">AXME Code</div>
+    <div class="title">${titleHtml}</div>
     <div id="setup-pill" class="pill"></div>
   </section>
 
@@ -284,6 +294,18 @@ export class AxmeSidebarProvider implements vscode.WebviewViewProvider {
 
 function makeNonce(): string {
   return Array.from({ length: 16 }, () => Math.random().toString(36).slice(2, 4)).join("");
+}
+
+/**
+ * Tiny HTML-escape for values we bake into the static template (project
+ * name in the header). Webview JS uses its own escapeHtml — we duplicate
+ * here because the JS one lives inside a template literal as plain
+ * source, not a callable from the host.
+ */
+function escapeHtmlServer(s: string): string {
+  return s.replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c] as string,
+  );
 }
 
 function emptyCounts(): KbCounts {
@@ -452,10 +474,10 @@ function render() {
     setup.innerHTML = \`
       <h3>Setup</h3>
       <div class="warning-banner">
-        Workspace not initialised. AXME tools won't load context without a knowledge base.
+        AXME is per-project. This repo needs setup:
       </div>
-      <button data-cmd="axme.setup">Run setup (with API key)</button>
-      <button class="secondary" data-cmd="axme.askAgentSetup">Ask agent to setup</button>
+      <button data-cmd="axme.askAgentSetup">Ask agent to setup</button>
+      <button class="secondary" data-cmd="axme.setup">Run setup (with API key)</button>
     \`;
   }
 
