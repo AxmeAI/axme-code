@@ -35,6 +35,7 @@ import { AxmeStatusBar } from "./status-bar.js";
 import { registerCommands } from "./commands.js";
 import { readCounts } from "./kb-watcher.js";
 import { ActivationReport, StepKind } from "./activation-report.js";
+import { AxmeSidebarProvider } from "./sidebar-webview.js";
 import { log, logError, show as showOutput, dispose as disposeLog } from "./log.js";
 
 declare const __EXTENSION_VERSION__: string;
@@ -158,10 +159,30 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     report.record("setup", true, "no workspace open");
   }
 
-  // ---- Step 7: status bar + commands -------------------------------------
+  // ---- Step 7: status bar + sidebar + commands ---------------------------
   statusBar = new AxmeStatusBar();
   if (workspaceFolder) statusBar.attach(workspaceFolder.uri.fsPath);
   context.subscriptions.push(statusBar);
+
+  // Sidebar provider — primary always-visible surface. Built before
+  // registerCommands so any command can postMessage to it directly. The
+  // initial state captures activation flags so the user sees them on
+  // first reveal even if KbWatcher hasn't fired yet.
+  const auditorMode = vscode.workspace
+    .getConfiguration("axme")
+    .get<"off" | "cooperative" | "background">("auditorMode", "cooperative");
+  const sidebar = new AxmeSidebarProvider(context, {
+    setupDone: workspaceFolder ? isAxmeInitialized() : false,
+    auditorMode,
+    hooksOk: !report.failedSteps().some((s) => s.kind === "hooks"),
+    isCursor: true,
+  });
+  sidebar.attach(workspaceFolder?.uri.fsPath);
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider(AxmeSidebarProvider.viewType, sidebar),
+    { dispose: () => sidebar.dispose() },
+  );
+
   context.subscriptions.push(
     ...registerCommands(context, binary, "cursor", statusBar),
   );
