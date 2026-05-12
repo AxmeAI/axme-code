@@ -105,7 +105,7 @@
           {
             "id": "axme.step.setup",
             "title": "Set up the workspace",
-            "description": "Run setup once per project. The recommended path is cooperative — the agent reads your repo and saves architecture decisions / patterns / safety rules through MCP tools, on your Cursor subscription, no separate billing.\n[Ask agent to set up (cooperative)](command:axme.askAgentSetup)\n[Set up with API key (background)](command:axme.setup)",
+            "description": "Run setup once per project. Recommended: ask the agent in chat — no extra API key needed, everything runs on your Cursor subscription.\n\n**How**: click the button below, the prompt copies to your clipboard. Then open or focus a Cursor chat (Cmd/Ctrl+L), paste (Cmd/Ctrl+V), hit Enter. The agent scans the repo and saves architecture decisions / patterns / safety rules through MCP tools.\n\n[Copy setup prompt → paste in chat](command:axme.askAgentSetup)\n\nAlternative (uses your own API key, billed separately):\n[Run setup with API key](command:axme.setup)",
             "media": { "markdown": "walkthroughs/setup.md" },
             "completionEvents": [
               "onContext:axme.workspaceInitialized"

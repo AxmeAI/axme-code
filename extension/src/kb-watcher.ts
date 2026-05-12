@@ -88,25 +88,60 @@ export function readCounts(workspaceRoot: string): KbCounts {
 }
 
 export class KbWatcher implements vscode.Disposable {
-  private watcher: vscode.FileSystemWatcher | undefined;
+  private contentWatcher: vscode.FileSystemWatcher | undefined;
+  private rootWatcher: vscode.FileSystemWatcher | undefined;
   private listener: ((counts: KbCounts) => void) | undefined;
+  private creationListener: (() => void) | undefined;
   private workspaceRoot: string | undefined;
 
-  attach(workspaceRoot: string, onChange: (counts: KbCounts) => void): void {
+  /**
+   * Attach to a workspace. The watcher handles both states:
+   *
+   *   1. `.axme-code/` already exists → watch its content files for
+   *      add/change/delete (memories, decisions, backlog, safety, open-
+   *      questions) and refresh counts on every event.
+   *   2. `.axme-code/` does NOT exist yet (fresh repo, pre-setup) → watch
+   *      the workspace root for the directory's creation. The moment it
+   *      appears (cooperative setup just ran inside the chat) we switch
+   *      to the content watcher and trigger the optional onCreated
+   *      callback so callers (walkthrough context flag, sidebar
+   *      "Initialised" pill) can react.
+   *
+   * The two states are not mutually exclusive over the lifetime of the
+   * watcher — a workspace that starts uninitialised will transition to
+   * initialised the moment the agent (or the CLI) writes the directory,
+   * and the watcher must pick that up without requiring a re-attach
+   * from the caller.
+   */
+  attach(
+    workspaceRoot: string,
+    onChange: (counts: KbCounts) => void,
+    onCreated?: () => void,
+  ): void {
     this.detach();
     this.workspaceRoot = workspaceRoot;
     this.listener = onChange;
-    if (!existsSync(join(workspaceRoot, ".axme-code"))) {
+    this.creationListener = onCreated;
+
+    if (existsSync(join(workspaceRoot, ".axme-code"))) {
+      this.startContentWatcher(workspaceRoot);
+      onChange(readCounts(workspaceRoot));
+    } else {
       onChange(emptyCounts());
-      return;
+      this.startRootWatcher(workspaceRoot);
     }
-    // Single pattern covering all 5 sources. We use {a,b,c} brace
-    // expansion since createFileSystemWatcher accepts globstar.
+  }
+
+  /**
+   * Watch `<workspaceRoot>/.axme-code/` for content-file events. This is
+   * the steady-state mode once setup has run.
+   */
+  private startContentWatcher(workspaceRoot: string): void {
     const pattern = new vscode.RelativePattern(
       workspaceRoot,
       ".axme-code/{memory/**/*.md,decisions/*.md,backlog/*.md,safety/rules.yaml,open-questions.md}",
     );
-    this.watcher = vscode.workspace.createFileSystemWatcher(pattern);
+    this.contentWatcher = vscode.workspace.createFileSystemWatcher(pattern);
     const refresh = () => {
       try {
         if (!this.workspaceRoot || !this.listener) return;
@@ -114,16 +149,41 @@ export class KbWatcher implements vscode.Disposable {
         this.listener(readCounts(this.workspaceRoot));
       } catch { /* swallow */ }
     };
-    this.watcher.onDidCreate(refresh);
-    this.watcher.onDidDelete(refresh);
-    this.watcher.onDidChange(refresh);
-    onChange(readCounts(workspaceRoot));
+    this.contentWatcher.onDidCreate(refresh);
+    this.contentWatcher.onDidDelete(refresh);
+    this.contentWatcher.onDidChange(refresh);
+  }
+
+  /**
+   * Watch the workspace root for `.axme-code` creation. The FS watcher API
+   * matches by glob pattern, so we ask for `.axme-code` literally — when
+   * Code or the agent creates the directory the onDidCreate event fires
+   * once. We then tear down the root watcher, install the content
+   * watcher, push a fresh count, and call the optional onCreated callback
+   * so higher-level surfaces (walkthrough completion, sidebar pill) can
+   * flip from "setup required" to "ready".
+   */
+  private startRootWatcher(workspaceRoot: string): void {
+    const pattern = new vscode.RelativePattern(workspaceRoot, ".axme-code");
+    this.rootWatcher = vscode.workspace.createFileSystemWatcher(pattern, false, true, true);
+    this.rootWatcher.onDidCreate(() => {
+      if (!this.workspaceRoot || !this.listener) return;
+      // Switch into content-watcher mode and emit a fresh count.
+      this.rootWatcher?.dispose();
+      this.rootWatcher = undefined;
+      this.startContentWatcher(this.workspaceRoot);
+      try { this.listener(readCounts(this.workspaceRoot)); } catch { /* swallow */ }
+      try { this.creationListener?.(); } catch { /* swallow */ }
+    });
   }
 
   detach(): void {
-    this.watcher?.dispose();
-    this.watcher = undefined;
+    this.contentWatcher?.dispose();
+    this.contentWatcher = undefined;
+    this.rootWatcher?.dispose();
+    this.rootWatcher = undefined;
     this.listener = undefined;
+    this.creationListener = undefined;
     this.workspaceRoot = undefined;
   }
 

@@ -41,10 +41,20 @@ export async function deliverChatPrompt(opts: ChatPromptOptions): Promise<void> 
   // Earlier drafts also fired cursor.chat.newChat to spawn a fresh chat
   // tab. Removed after user feedback: the user is almost always already
   // in a chat when they click [Ask agent to setup] — opening a new tab
-  // moves them off their current context and feels broken. The clipboard
-  // path + an explicit paste keystroke is enough UX.
+  // moves them off their current context and feels broken.
+  //
+  // The clipboard-only path used to surface its result with a corner
+  // toast, which users reported was "microscopic" and easy to miss.
+  // Use a modal dialog instead: it forces a deliberate "OK" click before
+  // execution continues, so there is no scenario where the user clicks
+  // the sidebar button and then wonders if anything happened.
   void vscode.window.showInformationMessage(
-    `AXME: ${opts.label} copied to clipboard. Paste into the chat (Cmd/Ctrl+V).`,
+    `Prompt copied to clipboard.\n\n` +
+      `Next: open or focus a Cursor chat (Cmd/Ctrl+L), paste with Cmd/Ctrl+V, ` +
+      `and hit Enter. The agent will perform the ${opts.label.replace(/ prompt$/, "")} flow ` +
+      `inline using your Cursor subscription — no extra API key needed.`,
+    { modal: true },
+    "Got it",
   );
 }
 

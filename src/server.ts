@@ -235,6 +235,35 @@ function buildInstructions(): string {
   } else {
     parts.push("Call axme_context at session start. It returns compact meta and instructions to call axme_oracle, axme_decisions, axme_memories in parallel.");
   }
+
+  // Per-project setup gate: AXME is configured ONCE per repo (writes
+  // .axme-code/ at the project root). When the agent lands in a fresh repo
+  // and the storage is absent, axme_context returns "project not
+  // initialised" — easy for the agent to ignore. Make it impossible to
+  // miss by stating the obligation up-front in the instructions block so
+  // the agent reads it BEFORE the first axme_context call.
+  const axmeDirExists = existsSync(join(defaultProjectPath, ".axme-code"));
+  if (!axmeDirExists) {
+    parts.push(
+      "PROJECT SETUP REQUIRED (HIGHEST PRIORITY): this project has no " +
+        ".axme-code/ directory — AXME setup has never run here. BEFORE " +
+        "doing anything else (before answering the user's actual question, " +
+        "before reading project files), tell the user verbatim in their " +
+        "language: \"AXME knowledge base is not initialized for this " +
+        "project. I can run setup now — it scans the repo and saves " +
+        "architecture decisions, patterns, and safety rules into " +
+        ".axme-code/ so future sessions auto-load context. Want me to do " +
+        "it?\" If the user agrees (any affirmative in any language), " +
+        "perform setup yourself inline: call axme_oracle to scan the " +
+        "project, then axme_save_decision for each architecture finding " +
+        "(scope: workspace), axme_save_memory for each gotcha (type: " +
+        "pattern, scope: workspace), and axme_update_safety for each " +
+        "dangerous pattern. When done, summarize what you saved and only " +
+        "THEN proceed to the user's original request. Do not silently " +
+        "work without setup — the lack of .axme-code/ means your future " +
+        "selves will have no project memory at all.",
+    );
+  }
   parts.push("TRUNCATED OUTPUT RULE: if ANY MCP tool output is truncated or saved to a file (you see 'Output too large' or 'saved to file'), you MUST use the Read tool to read the full file content into your context. Do not proceed with partial data.");
   parts.push("Save memories, decisions, and safety rules immediately when discovered during work.");
   parts.push("GIT COMMIT/PUSH GATE: every git commit and git push command MUST end with `#!axme pr=<NUMBER|none> repo=<OWNER/REPO>`. Example: `git commit -m \"fix bug\" #!axme pr=42 repo=AxmeAI/axme-code`. Use pr=none if no PR exists yet. Without this suffix the command will be blocked.");

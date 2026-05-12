@@ -95,9 +95,27 @@ export class AxmeSidebarProvider implements vscode.WebviewViewProvider {
       this.kbWatcher = new KbWatcher();
       // Counters + backlog list refresh together — both react to file
       // changes under .axme-code/, and the watcher already debounces.
-      this.kbWatcher.attach(workspaceRoot, (counts) => {
-        this.push({ counts, backlog: readBacklog(workspaceRoot).slice(0, 5) });
-      });
+      // onCreated fires when .axme-code/ appears mid-session (e.g. the
+      // agent just performed cooperative setup); we use it to flip the
+      // sidebar pill to "ready" AND drive the walkthrough step-2
+      // completion key. Without this, neither the sidebar nor the
+      // Getting Started walkthrough would notice that setup completed
+      // until the next window reload.
+      this.kbWatcher.attach(
+        workspaceRoot,
+        (counts) => {
+          this.push({ counts, backlog: readBacklog(workspaceRoot).slice(0, 5) });
+        },
+        () => {
+          this.push({ setupDone: true });
+          void vscode.commands.executeCommand(
+            "setContext",
+            "axme.workspaceInitialized",
+            true,
+          );
+          log("KbWatcher: .axme-code/ created — sidebar + walkthrough updated.");
+        },
+      );
     }
     // Push the live disk state for hooks. This overrides the activation
     // report's snapshot (which can be stale after a reinstall or after

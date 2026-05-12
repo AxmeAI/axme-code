@@ -15,6 +15,7 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { IdeKind } from "./ide-detect.js";
+import { detectCurrentMode, ensureAuditorAuth } from "./auditor-auth.js";
 import { log, logError, show as showOutput } from "./log.js";
 
 function workspaceRoot(): string | undefined {
@@ -50,6 +51,26 @@ export async function runSetup(binary: string, ide: IdeKind): Promise<void> {
     return;
   }
 
+  // Setup spawns LLM scanners (oracle / decision / safety / deploy) which
+  // each call the agent SDK and need a credential. The CLI's
+  // ensureAuthConfiguredForSetup() interactively prompts when TTY is
+  // present, but we spawn it from VS Code with no TTY — so it silently
+  // skips the prompt and the first scanner fails with an opaque exit code.
+  // Run our extension-side modal first instead: it has paste-key UX,
+  // dashboard links, and matches the same auth flow the auditor uses.
+  // Skip if a credential is already saved (which is why your re-install
+  // appeared to "find" a key — auth.yaml persists across uninstalls).
+  const existingMode = await detectCurrentMode(binary).catch(() => undefined);
+  if (!existingMode) {
+    const picked = await ensureAuditorAuth(binary);
+    if (!picked || picked === "disabled") {
+      void vscode.window.showWarningMessage(
+        "AXME Code: setup cancelled — needs an LLM credential to scan the project. " +
+          "Either paste a key when prompted, or use the cooperative \"Ask agent to setup\" path instead.",
+      );
+      return;
+    }
+  }
   await vscode.window.withProgress(
     {
       location: vscode.ProgressLocation.Notification,
