@@ -1003,6 +1003,47 @@ Do NOT skip — without context you will miss critical project rules.
       break;
     }
 
+    case "backlog": {
+      // Lightweight CLI for the v0.0.3 extension sidebar's [+ Add] button.
+      // The MCP `axme_backlog_add` tool already handles agent-driven
+      // writes; this subcommand is the user-driven equivalent so the
+      // sidebar doesn't need to duplicate the ID-generation + atomic-
+      // write logic, and isn't dependent on an agent being in the loop.
+      const sub = args[1];
+      const projectPath = resolve(process.cwd());
+      const { addBacklogItem, listBacklogItems } = await import("./storage/backlog.js");
+      if (sub === "list") {
+        // --json prints machine-readable for the extension; default is
+        // human-readable so power users can `axme-code backlog list` in
+        // a terminal too.
+        const items = listBacklogItems(projectPath);
+        if (args.includes("--json")) {
+          console.log(JSON.stringify(items));
+        } else if (items.length === 0) {
+          console.log("No backlog items.");
+        } else {
+          for (const i of items) console.log(`${i.id} [${i.status}/${i.priority}] ${i.title}`);
+        }
+        break;
+      }
+      if (sub === "add") {
+        const flag = (name: string): string | undefined => {
+          const idx = args.indexOf(`--${name}`);
+          return idx >= 0 && args[idx + 1] ? args[idx + 1] : undefined;
+        };
+        const title = flag("title");
+        if (!title) { console.error("backlog add: --title is required"); process.exit(1); }
+        const priority = (flag("priority") || "medium") as "high" | "medium" | "low";
+        const description = flag("description") || "";
+        const item = addBacklogItem(projectPath, { title, description, priority });
+        console.log(item.id);
+        break;
+      }
+      console.error("Usage: axme-code backlog <list|add> [--title ... --priority ... --description ...]");
+      process.exit(1);
+      break;
+    }
+
     case "help":
     case "--help":
     case "-h":

@@ -18,6 +18,7 @@ import * as vscode from "vscode";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { KbWatcher, KbCounts, readCounts } from "./kb-watcher.js";
+import { readBacklog, BacklogItemLite } from "./backlog-reader.js";
 import { log } from "./log.js";
 
 export interface SidebarState {
@@ -25,6 +26,8 @@ export interface SidebarState {
   setupDone: boolean;
   /** Live KB counts (memories / decisions / safety / backlog / questions). */
   counts: KbCounts;
+  /** Top backlog items for the inline list (~5 shown). */
+  backlog: BacklogItemLite[];
   /** Auditor mode from settings. */
   auditorMode: "off" | "cooperative" | "background";
   /** Did hooks install successfully at activation? */
@@ -36,7 +39,6 @@ export interface SidebarState {
 export type SidebarMessage =
   | { type: "command"; commandId: string }
   | { type: "setAuditorMode"; mode: SidebarState["auditorMode"] }
-  | { type: "addBacklogItem"; title: string; priority: "low" | "medium" | "high" }
   | { type: "openFile"; path: string };
 
 /**
@@ -55,14 +57,18 @@ export class AxmeSidebarProvider implements vscode.WebviewViewProvider {
 
   constructor(
     private readonly context: vscode.ExtensionContext,
-    private readonly initialState: Omit<SidebarState, "counts">,
+    private readonly initialState: Omit<SidebarState, "counts" | "backlog">,
   ) {}
 
   attach(workspaceRoot: string | undefined): void {
     this.workspaceRoot = workspaceRoot;
     if (workspaceRoot) {
       this.kbWatcher = new KbWatcher();
-      this.kbWatcher.attach(workspaceRoot, (counts) => this.push({ counts }));
+      // Counters + backlog list refresh together — both react to file
+      // changes under .axme-code/, and the watcher already debounces.
+      this.kbWatcher.attach(workspaceRoot, (counts) => {
+        this.push({ counts, backlog: readBacklog(workspaceRoot).slice(0, 5) });
+      });
     }
   }
 
@@ -77,7 +83,8 @@ export class AxmeSidebarProvider implements vscode.WebviewViewProvider {
 
     // Push the initial snapshot once webview is alive.
     const counts = this.workspaceRoot ? readCounts(this.workspaceRoot) : emptyCounts();
-    this.push({ ...this.initialState, counts, ...this.pendingState });
+    const backlog = this.workspaceRoot ? readBacklog(this.workspaceRoot).slice(0, 5) : [];
+    this.push({ ...this.initialState, counts, backlog, ...this.pendingState });
     this.pendingState = {};
   }
 
@@ -108,11 +115,6 @@ export class AxmeSidebarProvider implements vscode.WebviewViewProvider {
           .getConfiguration("axme")
           .update("auditorMode", m.mode, vscode.ConfigurationTarget.Global);
         this.push({ auditorMode: m.mode });
-        break;
-      case "addBacklogItem":
-        // Wired up in the backlog section commit. For now: route to a
-        // command so the existing `axme.addBacklogItem` handler decides.
-        void vscode.commands.executeCommand("axme.addBacklogItem", m.title, m.priority);
         break;
       case "openFile":
         void vscode.workspace.openTextDocument(m.path).then((d) => vscode.window.showTextDocument(d));
@@ -272,14 +274,35 @@ select, input[type=text], input[type=password] {
   box-sizing: border-box;
 }
 .muted { opacity: 0.6; font-size: 11px; }
+.bl-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 4px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-size: 12px;
+}
+.bl-row:hover { background: var(--vscode-list-hoverBackground); }
+.bl-dot { flex: 0 0 auto; }
+.bl-title {
+  flex: 1 1 auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 `;
 
 const SIDEBAR_JS = `
 const vscode = acquireVsCodeApi();
-let S = { setupDone: false, counts: { memories:0, decisions:0, safety:0, backlog:0, questions:0 }, auditorMode: "off", hooksOk: false, isCursor: true };
+let S = { setupDone: false, counts: { memories:0, decisions:0, safety:0, backlog:0, questions:0 }, backlog: [], auditorMode: "off", hooksOk: false, isCursor: true };
 
 function send(msg) { vscode.postMessage(msg); }
 function cmd(id)  { send({ type: "command", commandId: id }); }
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+}
 
 function render() {
   // Setup pill
@@ -335,12 +358,27 @@ function render() {
     <div class="row"><span class="k">Open questions</span><span class="v">\${c.questions}</span></div>
   \`;
 
-  // Backlog placeholder — wired up in the next commit.
+  // Backlog list — top 5 by status/priority/recency, see backlog-reader.ts.
+  const bl = S.backlog || [];
+  const dot = (pri) => pri === "high" ? "🔴" : pri === "medium" ? "🟡" : "🟢";
+  const lbl = (st) => st === "in-progress" ? "[wip] " : st === "blocked" ? "[blk] " : "";
+  const rows = bl.length === 0
+    ? '<p class="muted">No items yet. Use [+ Add] or ask the agent to triage.</p>'
+    : bl.map((b) => \`
+        <div class="bl-row" data-path="\${b.path}">
+          <span class="bl-dot">\${dot(b.priority)}</span>
+          <span class="bl-title">\${lbl(b.status)}\${escapeHtml(b.id + ": " + b.title)}</span>
+        </div>
+      \`).join("");
   document.getElementById("backlog-section").innerHTML = \`
-    <h3>Backlog</h3>
-    <div class="row"><span class="k">Items</span><span class="v">\${c.backlog}</span></div>
-    <button class="secondary" data-cmd="axme.openBacklog">Open list</button>
+    <h3>Backlog (\${c.backlog} total)</h3>
+    \${rows}
+    <button class="secondary" data-cmd="axme.addBacklogItem">+ Add item</button>
+    <button class="link" data-cmd="axme.openBacklog">Open folder</button>
   \`;
+  document.querySelectorAll(".bl-row").forEach((el) => {
+    el.addEventListener("click", () => send({ type: "openFile", path: el.getAttribute("data-path") }));
+  });
 
   // Session placeholder — wired up with token counter.
   document.getElementById("session-section").innerHTML = \`

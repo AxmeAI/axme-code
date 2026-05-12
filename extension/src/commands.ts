@@ -156,9 +156,45 @@ export function registerCommands(
       await vscode.commands.executeCommand("revealInExplorer", uri);
     }),
     vscode.commands.registerCommand("axme.addBacklogItem", async () => {
-      void vscode.window.showInformationMessage(
-        "AXME: add-backlog dialog — wired up in upcoming v0.0.3 commit.",
+      const root = workspaceRoot();
+      if (!root) {
+        void vscode.window.showWarningMessage("AXME Code: open a folder first.");
+        return;
+      }
+      const title = await vscode.window.showInputBox({
+        prompt: "Backlog item title",
+        placeHolder: "e.g. Add semantic search reranker",
+        validateInput: (v) => (v && v.trim().length >= 3 ? null : "Title must be at least 3 chars"),
+      });
+      if (!title) return;
+      const priority = await vscode.window.showQuickPick(
+        [
+          { label: "high",   description: "Block other work" },
+          { label: "medium", description: "Standard (default)" },
+          { label: "low",    description: "Nice-to-have" },
+        ],
+        { placeHolder: "Priority" },
       );
+      if (!priority) return;
+      const child = spawn(
+        binary,
+        ["backlog", "add", "--title", title, "--priority", priority.label],
+        { cwd: root, stdio: ["ignore", "pipe", "pipe"] },
+      );
+      let out = "", err = "";
+      child.stdout.on("data", (c) => (out += c.toString()));
+      child.stderr.on("data", (c) => (err += c.toString()));
+      const code: number = await new Promise((res) => {
+        child.on("exit", (c) => res(c ?? 1));
+        child.on("error", () => res(1));
+      });
+      if (code === 0) {
+        const id = out.trim().split("\n").pop() ?? "(unknown)";
+        void vscode.window.showInformationMessage(`AXME: added ${id} — ${title}`);
+      } else {
+        logError("backlog add", new Error(err || `exit ${code}`));
+        void vscode.window.showErrorMessage(`AXME: failed to add backlog item — ${err.trim() || `exit ${code}`}`);
+      }
     }),
     vscode.commands.registerCommand("axme.reinstallHooks", async () => {
       void vscode.window.showInformationMessage(
