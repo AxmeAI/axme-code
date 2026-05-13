@@ -128,6 +128,15 @@
             "completionEvents": [
               "onView:axme.monitor"
             ]
+          },
+          {
+            "id": "axme.step.semanticSearch",
+            "title": "Semantic search — opt-in for large knowledge bases",
+            "description": "AXME runs in **full mode** by default — every memory + decision body is loaded into the agent at session start. Zero setup, simple.\n\nFor larger KBs (>50 entries, or decisions with long rationale): **semantic search mode** loads only the catalog at startup, agent fetches bodies on demand via smart similarity search. Saves significant tokens.\n\nThe trade-off: a one-time ~770 MB download (`@huggingface/transformers` runtime). It's reversible any time.\n\n[Enable semantic search now](command:axme.enableSemanticSearch)\n\nLeave it for later? Just skip this step — full mode keeps working. You can enable from the sidebar (Knowledge base → Search mode) or `AXME: Enable semantic search` whenever.",
+            "media": { "markdown": "walkthroughs/semanticSearch.md" },
+            "completionEvents": [
+              "onCommand:axme.enableSemanticSearch"
+            ]
           }
         ]
       }
