@@ -20,6 +20,7 @@ import { join } from "node:path";
 import { KbWatcher, KbCounts, readCounts } from "./kb-watcher.js";
 import { readBacklog, BacklogItemLite } from "./backlog-reader.js";
 import { readActiveSession, ActiveSession } from "./session-tracker.js";
+import { readHealth, HealthSnapshot } from "./health-reader.js";
 import { detectCurrentMode } from "./auditor-auth.js";
 import { hooksAreInstalled } from "./hooks-state.js";
 import { log } from "./log.js";
@@ -57,12 +58,15 @@ export interface SidebarState {
    *  collected but no longer displayed; see "Live session block" comment
    *  in the render code for the rationale). */
   session: ActiveSession | null;
+  /** KB health signals — pending audits, last error, last handoff. */
+  health: HealthSnapshot;
 }
 
 export type SidebarMessage =
   | { type: "command"; commandId: string }
   | { type: "setAuditorMode"; mode: SidebarState["auditorMode"] }
-  | { type: "openFile"; path: string };
+  | { type: "openFile"; path: string }
+  | { type: "backlogStatus"; id: string };
 
 /**
  * The provider is a singleton owned by activate(). It is constructed before
@@ -83,7 +87,7 @@ export class AxmeSidebarProvider implements vscode.WebviewViewProvider {
 
   constructor(
     private readonly context: vscode.ExtensionContext,
-    private readonly initialState: Omit<SidebarState, "counts" | "backlog" | "auditorKeyConfigured" | "session">,
+    private readonly initialState: Omit<SidebarState, "counts" | "backlog" | "auditorKeyConfigured" | "session" | "health">,
   ) {}
 
   attach(workspaceRoot: string | undefined, binary: string): void {
@@ -102,10 +106,18 @@ export class AxmeSidebarProvider implements vscode.WebviewViewProvider {
       this.kbWatcher.attach(
         workspaceRoot,
         (counts) => {
-          this.push({ counts, backlog: readBacklog(workspaceRoot).slice(0, 5) });
+          // KB-content changes typically coincide with health changes
+          // (a saved memory means a session is in-flight, etc.), so we
+          // refresh both together on the watcher tick — saves wiring a
+          // second polling timer.
+          this.push({
+            counts,
+            backlog: readBacklog(workspaceRoot).slice(0, 5),
+            health: readHealth(workspaceRoot),
+          });
         },
         () => {
-          this.push({ setupDone: true });
+          this.push({ setupDone: true, health: readHealth(workspaceRoot) });
           void vscode.commands.executeCommand(
             "setContext",
             "axme.workspaceInitialized",
@@ -145,10 +157,12 @@ export class AxmeSidebarProvider implements vscode.WebviewViewProvider {
     // view, not just at activation time.
     const counts = this.workspaceRoot ? readCounts(this.workspaceRoot) : emptyCounts();
     const backlog = this.workspaceRoot ? readBacklog(this.workspaceRoot).slice(0, 5) : [];
+    const health = this.workspaceRoot ? readHealth(this.workspaceRoot) : { pendingAudits: 0 };
     this.push({
       ...this.initialState,
       counts,
       backlog,
+      health,
       hooksOk: hooksAreInstalled(),
       ...this.pendingState,
     });
@@ -229,6 +243,9 @@ export class AxmeSidebarProvider implements vscode.WebviewViewProvider {
       case "openFile":
         void vscode.workspace.openTextDocument(m.path).then((d) => vscode.window.showTextDocument(d));
         break;
+      case "backlogStatus":
+        void vscode.commands.executeCommand("axme.changeBacklogStatus", m.id);
+        break;
     }
   }
 
@@ -266,6 +283,7 @@ export class AxmeSidebarProvider implements vscode.WebviewViewProvider {
   </section>
 
   <section id="setup-section" class="section"></section>
+  <section id="health-section" class="section"></section>
   <section id="hooks-section" class="section"></section>
   <section id="auditor-section" class="section"></section>
   <section id="counters-section" class="section"></section>
@@ -427,6 +445,15 @@ select, input[type=text], input[type=password] {
   border-radius: var(--radius);
 }
 .kb-row:hover { background: var(--vscode-list-hoverBackground); }
+.bl-menu {
+  opacity: 0.5;
+  padding: 0 6px;
+  cursor: pointer;
+  font-size: 14px;
+  letter-spacing: 1px;
+  user-select: none;
+}
+.bl-menu:hover { opacity: 1; background: var(--vscode-list-hoverBackground); border-radius: var(--radius); }
 .bl-dot { flex: 0 0 auto; }
 .bl-title {
   flex: 1 1 auto;
@@ -438,7 +465,7 @@ select, input[type=text], input[type=password] {
 
 const SIDEBAR_JS = `
 const vscode = acquireVsCodeApi();
-let S = { setupDone: false, counts: { memories:0, decisions:0, safety:0, backlog:0, questions:0 }, backlog: [], auditorMode: "cooperative", auditorKeyConfigured: false, hooksOk: false, isCursor: true, session: null };
+let S = { setupDone: false, counts: { memories:0, decisions:0, safety:0, backlog:0, questions:0 }, backlog: [], auditorMode: "cooperative", auditorKeyConfigured: false, hooksOk: false, isCursor: true, session: null, health: { pendingAudits: 0 } };
 
 function formatDuration(ms) {
   if (ms <= 0) return "just now";
@@ -479,6 +506,45 @@ function render() {
       <button data-cmd="axme.askAgentSetup">Ask agent to setup</button>
       <button class="secondary" data-cmd="axme.setup">Run setup (with API key)</button>
     \`;
+  }
+
+  // Health section — pending audits, last audit error, last handoff.
+  // Only renders when there's something to say (don't add visual noise
+  // for a healthy KB).
+  const h = S.health || { pendingAudits: 0 };
+  const healthBits = [];
+  if (h.pendingAudits > 0) {
+    healthBits.push(\`
+      <div class="warning-banner">
+        \${h.pendingAudits} background audit\${h.pendingAudits > 1 ? "s" : ""} still running —
+        the knowledge base may be missing the latest extractions until they finish.
+      </div>
+    \`);
+  }
+  if (h.lastAuditError) {
+    healthBits.push(\`
+      <div class="error-banner">
+        Last audit failed: \${escapeHtml(h.lastAuditError.message)}
+        <button class="link" data-cmd="axme.showAuditLog">Show audit log</button>
+      </div>
+    \`);
+  }
+  if (h.lastHandoffPath) {
+    const ageMin = h.lastHandoffAgeMs ? Math.floor(h.lastHandoffAgeMs / 60000) : 0;
+    const ageText = ageMin < 60 ? \`\${ageMin}m\` : ageMin < 1440 ? \`\${Math.floor(ageMin/60)}h\` : \`\${Math.floor(ageMin/1440)}d\`;
+    healthBits.push(\`
+      <div class="row kb-row" data-cmd="axme.showLastHandoff">
+        <span class="k">Last handoff</span><span class="v">\${ageText} ago →</span>
+      </div>
+    \`);
+  }
+  const healthEl = document.getElementById("health-section");
+  if (healthBits.length === 0) {
+    healthEl.innerHTML = "";
+    healthEl.style.display = "none";
+  } else {
+    healthEl.style.display = "";
+    healthEl.innerHTML = \`<h3>Status</h3>\${healthBits.join("")}\`;
   }
 
   // Hooks section
@@ -526,15 +592,19 @@ function render() {
   \`;
 
   // Backlog list — top 5 by status/priority/recency, see backlog-reader.ts.
+  // Each row: priority dot + title + a tiny "•••" mini-button that opens
+  // a QuickPick (on the host side) to change status. Row body click
+  // still opens the .md in the editor.
   const bl = S.backlog || [];
   const dot = (pri) => pri === "high" ? "🔴" : pri === "medium" ? "🟡" : "🟢";
   const lbl = (st) => st === "in-progress" ? "[wip] " : st === "blocked" ? "[blk] " : "";
   const rows = bl.length === 0
     ? '<p class="muted">No items yet. Use [+ Add] or ask the agent to triage.</p>'
     : bl.map((b) => \`
-        <div class="bl-row" data-path="\${b.path}">
+        <div class="bl-row" data-path="\${b.path}" data-id="\${b.id}">
           <span class="bl-dot">\${dot(b.priority)}</span>
           <span class="bl-title">\${lbl(b.status)}\${escapeHtml(b.id + ": " + b.title)}</span>
+          <span class="bl-menu" data-bl-menu="\${b.id}" title="Change status">⋯</span>
         </div>
       \`).join("");
   document.getElementById("backlog-section").innerHTML = \`
@@ -544,7 +614,19 @@ function render() {
     <button class="link" data-cmd="axme.openBacklog">Open folder</button>
   \`;
   document.querySelectorAll(".bl-row").forEach((el) => {
-    el.addEventListener("click", () => send({ type: "openFile", path: el.getAttribute("data-path") }));
+    el.addEventListener("click", (e) => {
+      // Click on the menu glyph fires a different message — don't also
+      // open the file.
+      const target = e.target;
+      if (target && target.matches && target.matches("[data-bl-menu]")) return;
+      send({ type: "openFile", path: el.getAttribute("data-path") });
+    });
+  });
+  document.querySelectorAll("[data-bl-menu]").forEach((el) => {
+    el.addEventListener("click", (e) => {
+      e.stopPropagation();
+      send({ type: "backlogStatus", id: el.getAttribute("data-bl-menu") });
+    });
   });
 
   // Live session block — driven by readActiveSession on the host side.

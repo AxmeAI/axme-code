@@ -105,9 +105,13 @@ describe("oracleContext", () => {
 
 describe("showOracle + getOracleSections", () => {
   it("returns init message when not initialized", () => {
+    // Old version produced "Oracle not initialized. Run axme_init first."
+    // — but axme_init was removed and the message is now a longer
+    // explainer with both paths (cooperative + API-key). Assert on the
+    // signal phrase "Oracle is empty" instead.
     const sections = getOracleSections(PROJECT);
     assert.equal(sections.length, 1);
-    assert.ok(sections[0].includes("not initialized"));
+    assert.ok(sections[0].includes("Oracle is empty"));
   });
 
   it("returns sections array for pagination", () => {

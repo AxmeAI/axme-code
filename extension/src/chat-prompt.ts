@@ -95,6 +95,19 @@ export const PROMPT_SETUP =
   `4. EXECUTE axme_update_safety for each dangerous pattern in scripts/ ` +
   `or top-level config — destructive commands, paths that must never be ` +
   `edited, branches that must never be force-pushed.\n\n` +
+  `4b. EXECUTE 4 axme_save_oracle calls — one per section:\n` +
+  `   - section="stack": markdown listing languages, frameworks, build tools, ` +
+  `package manager, runtime versions (read package.json / pyproject.toml / ` +
+  `go.mod / Cargo.toml — whichever apply).\n` +
+  `   - section="structure": markdown listing top-level dirs with one-line ` +
+  `purpose for each, plus entry points.\n` +
+  `   - section="patterns": markdown describing observed coding patterns / ` +
+  `conventions (ESM vs CJS, file-based vs convention routing, where tests ` +
+  `live, etc).\n` +
+  `   - section="glossary": markdown defining 3–5 project-specific terms ` +
+  `you spotted in code or README (e.g. "Oracle = ...", "Handoff = ...").\n` +
+  `Each section gets one call with mode="replace" (default). Oracle is the ` +
+  `high-level project overview future sessions read at startup.\n\n` +
   `5. ONLY after all tool calls are committed, output a structured summary:\n` +
   `   - First line: "Saved X decisions, Y memories, Z safety rules + N preset ` +
   `rules" where N is the count of enforcement entries (deniedPrefixes + ` +

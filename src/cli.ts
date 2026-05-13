@@ -1039,7 +1039,23 @@ Do NOT skip — without context you will miss critical project rules.
         console.log(item.id);
         break;
       }
-      console.error("Usage: axme-code backlog <list|add> [--title ... --priority ... --description ...]");
+      if (sub === "update") {
+        const flag = (name: string): string | undefined => {
+          const idx = args.indexOf(`--${name}`);
+          return idx >= 0 && args[idx + 1] ? args[idx + 1] : undefined;
+        };
+        const id = flag("id");
+        if (!id) { console.error("backlog update: --id is required"); process.exit(1); }
+        const status = flag("status") as "open" | "in-progress" | "done" | "blocked" | undefined;
+        const priority = flag("priority") as "high" | "medium" | "low" | undefined;
+        const notes = flag("notes");
+        const { updateBacklogItem } = await import("./storage/backlog.js");
+        const updated = updateBacklogItem(projectPath, id, { status, priority, notes });
+        if (!updated) { console.error(`backlog update: ${id} not found`); process.exit(1); }
+        console.log(`${updated.id} → status=${updated.status}, priority=${updated.priority}`);
+        break;
+      }
+      console.error("Usage: axme-code backlog <list|add|update> [--title ... --priority ... --description ... --id ... --status ...]");
       process.exit(1);
       break;
     }

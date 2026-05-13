@@ -167,6 +167,61 @@
         "command": "axme.reset",
         "title": "AXME: Reset (clear hooks + auth on this machine)",
         "category": "AXME"
+      },
+      {
+        "command": "axme.selfTest",
+        "title": "AXME: Self-test (verify binary + hooks + MCP boot)",
+        "category": "AXME"
+      },
+      {
+        "command": "axme.auditKb",
+        "title": "AXME: Audit knowledge base (review memories + decisions for staleness)",
+        "category": "AXME"
+      },
+      {
+        "command": "axme.showStats",
+        "title": "AXME: Show stats (usage telemetry)",
+        "category": "AXME"
+      },
+      {
+        "command": "axme.cleanup",
+        "title": "AXME: Clean up orphaned session state",
+        "category": "AXME"
+      },
+      {
+        "command": "axme.showLastHandoff",
+        "title": "AXME: Show last handoff (latest session-close summary)",
+        "category": "AXME"
+      },
+      {
+        "command": "axme.showWorklog",
+        "title": "AXME: Show worklog (timeline of all events)",
+        "category": "AXME"
+      },
+      {
+        "command": "axme.showAuditLog",
+        "title": "AXME: Show last audit log",
+        "category": "AXME"
+      },
+      {
+        "command": "axme.showTestPlan",
+        "title": "AXME: Show test plan",
+        "category": "AXME"
+      },
+      {
+        "command": "axme.showDeployStaging",
+        "title": "AXME: Show staging deploy checklist",
+        "category": "AXME"
+      },
+      {
+        "command": "axme.showDeployProd",
+        "title": "AXME: Show production deploy checklist",
+        "category": "AXME"
+      },
+      {
+        "command": "axme.showFilesChanged",
+        "title": "AXME: Show files changed across sessions",
+        "category": "AXME"
       }
     ]
   },

@@ -263,6 +263,12 @@ function buildInstructions(): string {
         "scope=[\"workspace\"]) for gotchas / edge cases.\n" +
         "  4. EXECUTE axme_update_safety for dangerous patterns in " +
         "scripts/ or destructive commands.\n" +
+        "  4b. EXECUTE 4 axme_save_oracle calls — one per section (stack, " +
+        "structure, patterns, glossary). Stack: languages + frameworks " +
+        "+ build tools. Structure: top-level dirs + entry points. " +
+        "Patterns: observed conventions. Glossary: project-specific " +
+        "terms. Oracle is the high-level overview the agent reads at " +
+        "startup of every future session.\n" +
         "  5. ONLY after all tool calls are committed, summarize:\n" +
         "     First line: \"Saved X decisions, Y memories, Z safety rules " +
         "+ N preset rules\" where N is the count of enforcement entries " +
@@ -520,6 +526,12 @@ server.tool(
     const sid = getOwnedSessionIdForLogging();
     const resolved = ppWithScope(project_path, scope);
     const result = saveMemoryTool(resolved, { type, title, description, body, keywords, scope }, sid);
+    // First save lands here for cooperative-flow projects → seed the
+    // oracle with a deterministic stack/structure snapshot so axme_oracle
+    // never returns the "Oracle is empty" placeholder. No-op if oracle
+    // already has content.
+    const { ensureOracleBootstrapped } = await import("./storage/oracle.js");
+    ensureOracleBootstrapped(resolved);
     // Update the embeddings index when search mode is on. Awaited so the
     // index is consistent on return; ~50-200ms once the embedder is warm.
     // Skips silently in full mode and on missing runtime.
@@ -544,6 +556,9 @@ server.tool(
 
     const resolved = ppWithScope(project_path, scope);
     const result = saveDecisionTool(resolved, { title, decision, reasoning, enforce, scope });
+    // See axme_save_memory above — same bootstrap reasoning.
+    const { ensureOracleBootstrapped } = await import("./storage/oracle.js");
+    ensureOracleBootstrapped(resolved);
     // Use decision text as description so the search index returns hits
     // ranked by the actual rule, not just the title.
     await embedKbEntry(resolved, result.id, "decision", title, decision, readConfig(resolved).contextMode);
@@ -577,6 +592,31 @@ server.tool(
   async ({ project_path }) => {
 
     return { content: [{ type: "text" as const, text: showSafetyTool(pp(project_path)) }] };
+  },
+);
+
+// --- axme_save_oracle ---
+// Cooperative-flow companion to axme_oracle. Lets the agent write oracle
+// sections inline during chat — the API-key path's LLM scanner is great
+// for first-time setup but uses a separate billing channel; cooperative
+// users do everything on their Cursor subscription, and oracle was the
+// only KB area they couldn't reach. The agent fills `stack` / `structure`
+// / `patterns` / `glossary` one section at a time, just like decisions
+// or memories.
+server.tool(
+  "axme_save_oracle",
+  "Write or append to one oracle section. Use during cooperative setup to populate stack / structure / patterns / glossary inline. Replaces by default; pass mode='append' to add to existing content.",
+  {
+    project_path: z.string().optional().describe("Absolute path to the project root (defaults to server cwd)"),
+    section: z.enum(["stack", "structure", "patterns", "glossary"]).describe("Which oracle section to write"),
+    content: z.string().describe("Markdown body for this section"),
+    mode: z.enum(["replace", "append"]).optional().describe("Default 'replace'. 'append' adds to existing content."),
+  },
+  async ({ project_path, section, content, mode }) => {
+    const { saveOracleSection } = await import("./storage/oracle.js");
+    const resolved = pp(project_path);
+    saveOracleSection(resolved, section, content, mode ?? "replace");
+    return { content: [{ type: "text" as const, text: `Oracle ${section} ${mode === "append" ? "appended" : "saved"}.` }] };
   },
 );
 
