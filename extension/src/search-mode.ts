@@ -77,14 +77,30 @@ export function indexedCount(workspaceRoot: string): number {
  */
 export async function enableSearchMode(binary: string, workspaceRoot: string): Promise<void> {
   const needsRuntime = !runtimeInstalled();
+  const kbPath = join(workspaceRoot, ".axme-code");
+  const kbInitialized = existsSync(kbPath);
+
   const sizeNote = needsRuntime
     ? " The first time will download ~770 MB of ML runtime (one-time, lives in ~/.local/share/axme-code/runtime/)."
     : "";
+
+  // Pre-setup edge case: enabling search before .axme-code/ exists is
+  // legal but produces an empty index. axme-code setup (when the user
+  // runs it later) auto-reindexes on completion so the populated KB
+  // lands in the index, but tell the user upfront so it's not a surprise.
+  const preSetupNote = kbInitialized
+    ? ""
+    : "\n\nNote: this project's knowledge base hasn't been set up yet. " +
+      "Semantic search will turn on with an empty index. The next time " +
+      "you run AXME setup, scanned decisions / memories will be auto- " +
+      "indexed; cooperative-flow saves via the agent auto-embed too. " +
+      "Result either way: search works the moment KB has content.";
+
   const choice = await vscode.window.showWarningMessage(
     `Enable semantic search?${sizeNote}\n\n` +
       `After enabling, axme_context will load only the catalog (titles + ` +
       `1-line descriptions) at session start. The agent fetches full ` +
-      `bodies on demand via axme_search_kb — saves tokens on large knowledge bases.`,
+      `bodies on demand via axme_search_kb — saves tokens on large knowledge bases.${preSetupNote}`,
     { modal: true },
     "Enable",
     "Cancel",
@@ -112,6 +128,7 @@ export async function enableSearchMode(binary: string, workspaceRoot: string): P
         child.on("exit", (code) => {
           if (code === 0) {
             void vscode.window.showInformationMessage("AXME: semantic search enabled.");
+            void vscode.commands.executeCommand("axme.refreshSidebar");
           } else {
             void vscode.window.showErrorMessage(
               `AXME: failed to enable semantic search (exit ${code}). See output channel.`,
@@ -152,6 +169,7 @@ export async function disableSearchMode(binary: string, workspaceRoot: string): 
   });
   if (code === 0) {
     void vscode.window.showInformationMessage("AXME: switched to full context mode.");
+    void vscode.commands.executeCommand("axme.refreshSidebar");
   } else {
     log(`search-disable: ${out.trim()}`);
     void vscode.window.showErrorMessage(`AXME: failed to switch (exit ${code}). See output channel.`);

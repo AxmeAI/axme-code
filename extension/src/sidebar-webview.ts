@@ -155,6 +155,27 @@ export class AxmeSidebarProvider implements vscode.WebviewViewProvider {
     this.push({ auditorKeyConfigured: !!mode });
   }
 
+  /**
+   * Force-refresh the volatile sidebar state — context mode, indexed
+   * entry count, health snapshot, KB counts. Called by external commands
+   * (enableSearchMode / disableSearchMode / etc.) right after a CLI
+   * mutation lands, so the sidebar doesn't wait for the 5-second
+   * KbWatcher poll to notice. KbWatcher's signature is counts-only and
+   * wouldn't fire if only contextMode changed; this method bypasses
+   * that gate by always pushing fresh state.
+   */
+  refreshAll(): void {
+    if (!this.workspaceRoot) return;
+    this.push({
+      counts: readCounts(this.workspaceRoot),
+      backlog: readBacklog(this.workspaceRoot).slice(0, 5),
+      health: readHealth(this.workspaceRoot),
+      contextMode: readContextMode(this.workspaceRoot),
+      indexedEntries: indexedCount(this.workspaceRoot),
+      hooksOk: hooksAreInstalled(),
+    });
+  }
+
   resolveWebviewView(webviewView: vscode.WebviewView): void {
     this.view = webviewView;
     webviewView.webview.options = {

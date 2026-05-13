@@ -214,6 +214,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       webviewOptions: { retainContextWhenHidden: true },
     }),
     { dispose: () => sidebar.dispose() },
+    // Hidden command for the rest of the extension to nudge a full
+    // sidebar refresh after CLI mutations that the KbWatcher's
+    // counts-only signature wouldn't notice (e.g. context-mode flip,
+    // config edits). Commands call this with executeCommand right
+    // after their CLI subprocess returns success.
+    vscode.commands.registerCommand("axme.refreshSidebar", () => sidebar.refreshAll()),
   );
 
   context.subscriptions.push(

@@ -603,6 +603,33 @@ async function main() {
       setupOutcome = setupMethod === "llm" ? "success" : "fallback";
       await sendSetupTelemetry();
 
+      // If semantic search was already enabled before setup (e.g. the user
+      // turned it on in a different project where the runtime is already
+      // installed, or pre-enabled in expectation of running setup), the
+      // LLM/deterministic scanners just wrote a bunch of decisions and
+      // memories directly to disk via the storage layer — bypassing the
+      // MCP save-tool's auto-embed step. The result is a populated KB but
+      // an empty embeddings index, and axme_search_kb returns nothing.
+      // Auto-reindex here so the user doesn't have to remember to run
+      // `axme-code reindex` after every setup.
+      try {
+        const { readConfig } = await import("./storage/config.js");
+        const cfg = readConfig(projectPath);
+        if (cfg.contextMode === "search") {
+          const { isRuntimeInstalled } = await import("./storage/embeddings.js");
+          if (isRuntimeInstalled()) {
+            const { reindexAll } = await import("./tools/search-install.js");
+            const r = await reindexAll(projectPath);
+            if (r.ok) console.log(`Indexed ${r.indexed} entries for semantic search.`);
+            else console.error(`Search reindex skipped: ${r.error}`);
+          } else {
+            console.error("Search mode is on but the embeddings runtime is missing — run `axme-code reindex` manually after installing.");
+          }
+        }
+      } catch (err) {
+        console.error(`Search reindex post-setup failed (non-fatal): ${(err as Error).message}`);
+      }
+
       // IDE-aware final message. The CLI is invoked both standalone
       // (Claude Code users — `axme-code setup` from terminal) and via
       // the Cursor extension's setup-controller (`--ide=cursor`).
