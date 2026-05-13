@@ -23,6 +23,7 @@ import { readActiveSession, ActiveSession } from "./session-tracker.js";
 import { readHealth, HealthSnapshot } from "./health-reader.js";
 import { detectCurrentMode } from "./auditor-auth.js";
 import { hooksAreInstalled } from "./hooks-state.js";
+import { readContextMode, indexedCount, ContextMode } from "./search-mode.js";
 import { log } from "./log.js";
 
 /**
@@ -60,6 +61,10 @@ export interface SidebarState {
   session: ActiveSession | null;
   /** KB health signals — pending audits, last error, last handoff. */
   health: HealthSnapshot;
+  /** Context mode: full (default) or search (semantic). */
+  contextMode: ContextMode;
+  /** How many entries in the embeddings index. 0 when full mode or no index. */
+  indexedEntries: number;
 }
 
 export type SidebarMessage =
@@ -87,7 +92,7 @@ export class AxmeSidebarProvider implements vscode.WebviewViewProvider {
 
   constructor(
     private readonly context: vscode.ExtensionContext,
-    private readonly initialState: Omit<SidebarState, "counts" | "backlog" | "auditorKeyConfigured" | "session" | "health">,
+    private readonly initialState: Omit<SidebarState, "counts" | "backlog" | "auditorKeyConfigured" | "session" | "health" | "contextMode" | "indexedEntries">,
   ) {}
 
   attach(workspaceRoot: string | undefined, binary: string): void {
@@ -106,18 +111,26 @@ export class AxmeSidebarProvider implements vscode.WebviewViewProvider {
       this.kbWatcher.attach(
         workspaceRoot,
         (counts) => {
-          // KB-content changes typically coincide with health changes
-          // (a saved memory means a session is in-flight, etc.), so we
-          // refresh both together on the watcher tick — saves wiring a
-          // second polling timer.
+          // KB-content changes typically coincide with health + context-
+          // mode changes (a saved memory means a session is in-flight,
+          // a reindex bumps indexedEntries), so we refresh all live
+          // signals together on the watcher tick — saves wiring extra
+          // polling timers.
           this.push({
             counts,
             backlog: readBacklog(workspaceRoot).slice(0, 5),
             health: readHealth(workspaceRoot),
+            contextMode: readContextMode(workspaceRoot),
+            indexedEntries: indexedCount(workspaceRoot),
           });
         },
         () => {
-          this.push({ setupDone: true, health: readHealth(workspaceRoot) });
+          this.push({
+            setupDone: true,
+            health: readHealth(workspaceRoot),
+            contextMode: readContextMode(workspaceRoot),
+            indexedEntries: indexedCount(workspaceRoot),
+          });
           void vscode.commands.executeCommand(
             "setContext",
             "axme.workspaceInitialized",
@@ -158,11 +171,15 @@ export class AxmeSidebarProvider implements vscode.WebviewViewProvider {
     const counts = this.workspaceRoot ? readCounts(this.workspaceRoot) : emptyCounts();
     const backlog = this.workspaceRoot ? readBacklog(this.workspaceRoot).slice(0, 5) : [];
     const health = this.workspaceRoot ? readHealth(this.workspaceRoot) : { pendingAudits: 0 };
+    const contextMode = this.workspaceRoot ? readContextMode(this.workspaceRoot) : "full";
+    const indexedEntries = this.workspaceRoot ? indexedCount(this.workspaceRoot) : 0;
     this.push({
       ...this.initialState,
       counts,
       backlog,
       health,
+      contextMode,
+      indexedEntries,
       hooksOk: hooksAreInstalled(),
       ...this.pendingState,
     });
@@ -465,7 +482,7 @@ select, input[type=text], input[type=password] {
 
 const SIDEBAR_JS = `
 const vscode = acquireVsCodeApi();
-let S = { setupDone: false, counts: { memories:0, decisions:0, safety:0, backlog:0, questions:0 }, backlog: [], auditorMode: "cooperative", auditorKeyConfigured: false, hooksOk: false, isCursor: true, session: null, health: { pendingAudits: 0 } };
+let S = { setupDone: false, counts: { memories:0, decisions:0, safety:0, backlog:0, questions:0 }, backlog: [], auditorMode: "cooperative", auditorKeyConfigured: false, hooksOk: false, isCursor: true, session: null, health: { pendingAudits: 0 }, contextMode: "full", indexedEntries: 0 };
 
 function formatDuration(ms) {
   if (ms <= 0) return "just now";
@@ -529,12 +546,20 @@ function render() {
       </div>
     \`);
   }
-  if (h.lastHandoffPath) {
-    const ageMin = h.lastHandoffAgeMs ? Math.floor(h.lastHandoffAgeMs / 60000) : 0;
-    const ageText = ageMin < 60 ? \`\${ageMin}m\` : ageMin < 1440 ? \`\${Math.floor(ageMin/60)}h\` : \`\${Math.floor(ageMin/1440)}d\`;
+  if (h.lastHandoffMtimeMs) {
+    // Compute age in the webview, not on the host. The host pushes the
+    // absolute mtime once; webview's tick timer (see bottom of this script)
+    // re-renders every 30 s so the displayed age stays current without
+    // the host needing to push state for time-only drift.
+    const ageMs = Date.now() - h.lastHandoffMtimeMs;
+    const ageMin = Math.max(0, Math.floor(ageMs / 60000));
+    const ageText = ageMin < 1 ? "just now"
+      : ageMin < 60 ? \`\${ageMin}m ago\`
+      : ageMin < 1440 ? \`\${Math.floor(ageMin/60)}h ago\`
+      : \`\${Math.floor(ageMin/1440)}d ago\`;
     healthBits.push(\`
       <div class="row kb-row" data-cmd="axme.showLastHandoff">
-        <span class="k">Last handoff</span><span class="v">\${ageText} ago →</span>
+        <span class="k">Last handoff</span><span class="v">\${ageText} →</span>
       </div>
     \`);
   }
@@ -574,6 +599,10 @@ function render() {
   // corresponding folder (memories/decisions) or opens the single file
   // (safety rules YAML / open-questions markdown) in the editor.
   const c = S.counts;
+  const searchOn = S.contextMode === "search";
+  const searchToggle = searchOn
+    ? \`<button class="link" data-cmd="axme.disableSemanticSearch">Disable</button>\`
+    : \`<button class="link" data-cmd="axme.enableSemanticSearch">Enable (one-time ~770 MB download)</button>\`;
   const counters = document.getElementById("counters-section");
   counters.innerHTML = \`
     <h3>Knowledge base</h3>
@@ -589,6 +618,11 @@ function render() {
     <div class="row kb-row" data-cmd="axme.openQuestions">
       <span class="k">Open questions</span><span class="v">\${c.questions}</span>
     </div>
+    <div class="row">
+      <span class="k">Search mode</span>
+      <span class="v">\${searchOn ? \`semantic (\${S.indexedEntries} indexed)\` : "full"}</span>
+    </div>
+    <div class="row" style="justify-content:flex-end">\${searchToggle}</div>
   \`;
 
   // Backlog list — top 5 by status/priority/recency, see backlog-reader.ts.
@@ -683,6 +717,13 @@ document.addEventListener("click", (e) => {
   const target = e.target.closest("[data-cmd]");
   if (target) cmd(target.getAttribute("data-cmd"));
 });
+
+// Re-render once a minute so time-sensitive rows (last handoff age,
+// session started age) stay current without the host having to push
+// state. The 60-second interval matches the granularity we display
+// ("Xm ago" / "Xh ago") — finer ticks would just thrash the DOM with
+// the same text.
+setInterval(() => { try { render(); } catch (_e) {} }, 60_000);
 
 window.addEventListener("message", (e) => {
   if (e.data && e.data.type === "state") {

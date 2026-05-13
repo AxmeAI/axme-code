@@ -18,6 +18,7 @@ import { openStatusWebview } from "./status-webview.js";
 import { runReset } from "./reset.js";
 import { deliverChatPrompt, PROMPT_SETUP } from "./chat-prompt.js";
 import { installUserHooks } from "./hooks-install.js";
+import { enableSearchMode, disableSearchMode } from "./search-mode.js";
 import { log, logError, show as showOutput } from "./log.js";
 
 function workspaceRoot(): string | undefined {
@@ -454,6 +455,16 @@ export function registerCommands(
       const out = await runCli(binary, ["stats", root], root);
       log(`stats:\n${out.text}`);
       showOutput();
+    }),
+    vscode.commands.registerCommand("axme.enableSemanticSearch", async () => {
+      const root = workspaceRoot();
+      if (!root) { void vscode.window.showWarningMessage("AXME Code: open a folder first."); return; }
+      await enableSearchMode(binary, root);
+    }),
+    vscode.commands.registerCommand("axme.disableSemanticSearch", async () => {
+      const root = workspaceRoot();
+      if (!root) { void vscode.window.showWarningMessage("AXME Code: open a folder first."); return; }
+      await disableSearchMode(binary, root);
     }),
     vscode.commands.registerCommand("axme.cleanup", async () => {
       const root = workspaceRoot() ?? process.cwd();

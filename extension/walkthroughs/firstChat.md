@@ -55,6 +55,25 @@ project-specific rules or remove ones you don't need.
   background audits, last audit failed, or a recent handoff). Otherwise
   hidden.
 
+## Semantic search (opt-in)
+
+By default, AXME loads every memory + decision body into the agent's context
+at session start (**full mode**). Works great until your knowledge base grows
+past ~50 entries — then context bloat becomes a problem.
+
+**Semantic search mode** loads only the catalog (slug + title + 1-line
+description) at startup and exposes `axme_search_kb` so the agent fetches
+relevant bodies on demand. Saves significant tokens on large KBs.
+
+Enable from the sidebar's **Knowledge base** section (`Search mode: full →
+[Enable]` button) or via `AXME: Enable semantic search` command. The first
+enable downloads `@huggingface/transformers` (~770 MB) into
+`~/.local/share/axme-code/runtime/` and indexes every existing memory +
+decision. Subsequent re-enables are instant.
+
+Disable any time with the sidebar toggle or `AXME: Disable semantic search`.
+The runtime and the embeddings index stay on disk — re-enabling is fast.
+
 ## Power-user palette commands
 
 `Cmd+Shift+P → AXME:`

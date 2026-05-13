@@ -30,8 +30,12 @@ export interface HealthSnapshot {
   lastAuditError?: { message: string; whenIso: string };
   /** Path to most recent handoff-*.md. Undefined if no handoff yet. */
   lastHandoffPath?: string;
-  /** ms since most recent handoff mtime. Undefined if none. */
-  lastHandoffAgeMs?: number;
+  /** Absolute mtime of the most recent handoff (ms epoch). Undefined if
+   *  no handoff yet. Sent to the webview so it can compute "X minutes
+   *  ago" on its own ticking timer — pushing a pre-computed age would
+   *  freeze at the value captured when the snapshot was taken (bug
+   *  reported May 2026: "Last handoff stays at 0 minutes forever"). */
+  lastHandoffMtimeMs?: number;
 }
 
 interface SessionMetaShape {
@@ -69,7 +73,7 @@ export function readHealth(workspaceRoot: string): HealthSnapshot {
   }
 
   let lastHandoffPath: string | undefined;
-  let lastHandoffAgeMs: number | undefined;
+  let lastHandoffMtimeMs: number | undefined;
   const plansDir = join(axmeDir, "plans");
   if (existsSync(plansDir)) {
     let files: string[] = [];
@@ -83,8 +87,8 @@ export function readHealth(workspaceRoot: string): HealthSnapshot {
         if (m > bestMtime) { bestMtime = m; lastHandoffPath = p; }
       } catch { /* skip */ }
     }
-    if (bestMtime > 0) lastHandoffAgeMs = Date.now() - bestMtime;
+    if (bestMtime > 0) lastHandoffMtimeMs = bestMtime;
   }
 
-  return { pendingAudits, lastAuditError: lastError, lastHandoffPath, lastHandoffAgeMs };
+  return { pendingAudits, lastAuditError: lastError, lastHandoffPath, lastHandoffMtimeMs };
 }

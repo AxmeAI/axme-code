@@ -69,7 +69,7 @@
             "search"
           ],
           "default": "full",
-          "markdownDescription": "Knowledge-base loading mode. `full` loads every memory + decision into agent context (default, simple). `search` loads only catalog + uses semantic search (saves tokens at scale; requires the search-mode runtime — install via `axme-code config set context.mode search`)."
+          "markdownDescription": "**Deprecated for v0.0.3** — this setting is read-only and reflects what's in your workspace's `.axme-code/config.yaml`. Change the mode via `AXME: Enable semantic search` / `AXME: Disable semantic search` commands or via the sidebar toggle (those actually install/uninstall the runtime + reindex)."
         },
         "axme.enableHooks": {
           "type": "boolean",
@@ -221,6 +221,16 @@
       {
         "command": "axme.showFilesChanged",
         "title": "AXME: Show files changed across sessions",
+        "category": "AXME"
+      },
+      {
+        "command": "axme.enableSemanticSearch",
+        "title": "AXME: Enable semantic search (downloads ~770 MB runtime, one-time)",
+        "category": "AXME"
+      },
+      {
+        "command": "axme.disableSemanticSearch",
+        "title": "AXME: Disable semantic search (back to full context mode)",
         "category": "AXME"
       }
     ]
