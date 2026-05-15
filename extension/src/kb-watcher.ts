@@ -30,10 +30,32 @@ function emptyCounts(): KbCounts {
 }
 
 /** Compact signature for change detection. Only fires the listener
- *  callback when at least one count actually moved — keeps the sidebar
- *  from re-rendering on every 5-second poll tick when nothing changed. */
-function signatureOf(c: KbCounts): string {
-  return `${c.memories}|${c.decisions}|${c.safety}|${c.backlog}|${c.questions}`;
+ *  callback when at least one tracked value actually moved — keeps the
+ *  sidebar from re-rendering on every 5-second poll tick when nothing
+ *  changed.
+ *
+ *  Includes BOTH KB counts AND lightweight health signals (pending
+ *  audit count + most-recent handoff mtime). Without health in the
+ *  signature, transitions like "1 pending audit → 0" (auditor just
+ *  finished) wouldn't trigger a refresh — the sidebar's pending banner
+ *  would stay up forever until something else moved counts. This was
+ *  the actual bug the user hit: closing the session set auditStatus to
+ *  "pending" → auditor finished → "done", but the banner stayed.
+ */
+function signatureOf(c: KbCounts, healthSig: string): string {
+  return `${c.memories}|${c.decisions}|${c.safety}|${c.backlog}|${c.questions}|${healthSig}`;
+}
+
+/** Compact view of health used by signatureOf. We don't want the whole
+ *  HealthSnapshot in the signature — just the bits that, if they
+ *  change, mean the sidebar render output also changes. */
+function healthSignature(workspaceRoot: string): string {
+  // Lazy require to avoid circular deps with health-reader if it ever
+  // grows to import from kb-watcher.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { readHealth } = require("./health-reader.js") as typeof import("./health-reader.js");
+  const h = readHealth(workspaceRoot);
+  return `${h.pendingAudits}|${h.lastAuditError?.whenIso ?? ""}|${h.lastHandoffMtimeMs ?? ""}`;
 }
 
 function countFilesIn(dir: string, suffix = ".md"): number {
@@ -192,11 +214,11 @@ export class KbWatcher implements vscode.Disposable {
     if (existsSync(join(workspaceRoot, ".axme-code"))) {
       this.startContentWatcher(workspaceRoot);
       const c = readCounts(workspaceRoot);
-      this.lastSig = signatureOf(c);
+      this.lastSig = signatureOf(c, healthSignature(workspaceRoot));
       onChange(c);
     } else {
       onChange(emptyCounts());
-      this.lastSig = signatureOf(emptyCounts());
+      this.lastSig = signatureOf(emptyCounts(), "");
       this.startRootWatcher(workspaceRoot);
     }
     this.startPolling();
@@ -227,7 +249,7 @@ export class KbWatcher implements vscode.Disposable {
           try { this.creationListener?.(); } catch { /* swallow */ }
         }
         const counts = readCounts(this.workspaceRoot);
-        const sig = signatureOf(counts);
+        const sig = signatureOf(counts, healthSignature(this.workspaceRoot));
         if (sig !== this.lastSig) {
           this.lastSig = sig;
           this.listener(counts);
@@ -260,7 +282,7 @@ export class KbWatcher implements vscode.Disposable {
         if (!this.workspaceRoot || !this.listener) return;
         try { statSync(join(this.workspaceRoot, ".axme-code")); } catch { return; }
         const counts = readCounts(this.workspaceRoot);
-        const sig = signatureOf(counts);
+        const sig = signatureOf(counts, healthSignature(this.workspaceRoot));
         if (sig !== this.lastSig) {
           this.lastSig = sig;
           this.listener(counts);
