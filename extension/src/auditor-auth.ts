@@ -19,7 +19,6 @@
  */
 
 import * as vscode from "vscode";
-import { spawn } from "node:child_process";
 import { spawnBinary } from "./spawn-binary.js";
 import { log, logError } from "./log.js";
 

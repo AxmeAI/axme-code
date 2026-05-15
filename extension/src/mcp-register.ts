@@ -49,12 +49,27 @@ export async function registerMcpServer(
   // flag, axme_context defaults project_path to /home/$USER and reports
   // "project not initialised" even after a successful setup in the real
   // workspace. The server's resolveServerRoot() reads this flag.
-  const args = workspaceRoot ? ["serve", "--workspace", workspaceRoot] : ["serve"];
+  const serveArgs = workspaceRoot ? ["serve", "--workspace", workspaceRoot] : ["serve"];
+
+  // Cross-platform spawn: the bundled binary in extension/bin/ is a
+  // shebang-shim text file (`#!/usr/bin/env node` + CJS payload, no
+  // extension on POSIX, .exe on Windows). POSIX honors the shebang and
+  // runs the file via node. Windows ignores shebangs and refuses to
+  // execute the file as a PE binary → Cursor's MCP runner does
+  // `spawn(command, args)` directly and gets ENOENT, which surfaces in
+  // the chat as "MCP server does not exist … No MCP servers available."
+  // The fix mirrors what spawn-binary.ts does for our own child_process
+  // spawns: register with command="node" and the binary as the first
+  // argv on Windows, so Node loads the JS payload regardless of the
+  // file extension. Linux + macOS keep the direct path.
+  const isWindows = process.platform === "win32";
+  const command = isWindows ? "node" : binary;
+  const args = isWindows ? [binary, ...serveArgs] : serveArgs;
   cursor.registerServer({
     name: "axme",
-    server: { command: binary, args, env: {} },
+    server: { command, args, env: {} },
   });
-  log(`MCP: registered 'axme' (binary=${binary}, workspace=${workspaceRoot ?? "(none)"})`);
+  log(`MCP: registered 'axme' (command=${command}, binary=${binary}, workspace=${workspaceRoot ?? "(none)"})`);
   // Cursor needs ~3s to process the registration before tools become
   // available to the chat agent. Verified empirically against the
   // browser-devtools-mcp reference implementation.

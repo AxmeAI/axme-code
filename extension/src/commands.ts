@@ -7,7 +7,6 @@
  */
 
 import * as vscode from "vscode";
-import { spawn } from "node:child_process";
 import { spawnBinary } from "./spawn-binary.js";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
@@ -265,7 +264,7 @@ export function registerCommands(
       if (!picked) return;
       // backlog has no MCP write path with status — but the CLI's update
       // function reads/writes the file atomically. Shell out.
-      const child = spawn(
+      const child = spawnBinary(
         binary,
         ["backlog", "update", "--id", id, "--status", picked.label],
         { cwd: root, stdio: ["ignore", "pipe", "pipe"] },
@@ -303,7 +302,7 @@ export function registerCommands(
         { placeHolder: "Priority" },
       );
       if (!priority) return;
-      const child = spawn(
+      const child = spawnBinary(
         binary,
         ["backlog", "add", "--title", title, "--priority", priority.label],
         { cwd: root, stdio: ["ignore", "pipe", "pipe"] },

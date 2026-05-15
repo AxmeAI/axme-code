@@ -17,7 +17,6 @@
  */
 
 import * as vscode from "vscode";
-import { spawn } from "node:child_process";
 import { spawnBinary } from "./spawn-binary.js";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -131,13 +130,13 @@ export async function enableSearchMode(binary: string, workspaceRoot: string): P
     },
     () =>
       new Promise<void>((resolve) => {
-        const child = spawn(
+        const child = spawnBinary(
           binary,
           ["config", "set", "context.mode", "search"],
           { cwd: workspaceRoot, stdio: ["ignore", "pipe", "pipe"] },
         );
-        child.stdout.on("data", (c) => log(`search-enable: ${String(c).trimEnd()}`));
-        child.stderr.on("data", (c) => log(`search-enable: ${String(c).trimEnd()}`));
+        child.stdout!.on("data", (c) => log(`search-enable: ${String(c).trimEnd()}`));
+        child.stderr!.on("data", (c) => log(`search-enable: ${String(c).trimEnd()}`));
         child.on("error", (err) => { logError("enableSearchMode spawn", err); resolve(); });
         child.on("exit", (code) => {
           if (code === 0) {
@@ -169,14 +168,14 @@ export async function disableSearchMode(binary: string, workspaceRoot: string): 
   );
   if (choice !== "Switch") return;
 
-  const child = spawn(
+  const child = spawnBinary(
     binary,
     ["config", "set", "context.mode", "full"],
     { cwd: workspaceRoot, stdio: ["ignore", "pipe", "pipe"] },
   );
   let out = "";
-  child.stdout.on("data", (c) => (out += c.toString()));
-  child.stderr.on("data", (c) => (out += c.toString()));
+  child.stdout!.on("data", (c) => (out += c.toString()));
+  child.stderr!.on("data", (c) => (out += c.toString()));
   const code: number = await new Promise((res) => {
     child.on("exit", (c) => res(c ?? 1));
     child.on("error", () => res(1));
