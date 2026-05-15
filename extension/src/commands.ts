@@ -8,6 +8,7 @@
 
 import * as vscode from "vscode";
 import { spawn } from "node:child_process";
+import { spawnBinary } from "./spawn-binary.js";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { IdeKind } from "./ide-detect.js";
@@ -35,10 +36,10 @@ async function runCli(
   cwd: string,
 ): Promise<{ code: number; text: string }> {
   return new Promise((resolve) => {
-    const child = spawn(binary, args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawnBinary(binary, args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
     let out = "";
-    child.stdout.on("data", (c) => (out += c.toString()));
-    child.stderr.on("data", (c) => (out += c.toString()));
+    child.stdout!.on("data", (c) => (out += c.toString()));
+    child.stderr!.on("data", (c) => (out += c.toString()));
     child.on("error", () => resolve({ code: 1, text: out }));
     child.on("exit", (code) => resolve({ code: code ?? 0, text: out }));
   });
@@ -141,13 +142,13 @@ export function registerCommands(
         },
         () =>
           new Promise<number>((resolve) => {
-            const child = spawn(binary, ["reindex", root], { cwd: root });
-            child.stdout.on("data", (c) => {
+            const child = spawnBinary(binary, ["reindex", root], { cwd: root });
+            child.stdout!.on("data", (c) => {
               const s = String(c).trimEnd();
               if (s) lastLine = s;
               log(`reindex: ${s}`);
             });
-            child.stderr.on("data", (c) => log(`reindex stderr: ${String(c).trimEnd()}`));
+            child.stderr!.on("data", (c) => log(`reindex stderr: ${String(c).trimEnd()}`));
             child.on("error", (err) => { logError("reindex", err); resolve(1); });
             child.on("exit", (code) => resolve(code ?? 1));
           }),
@@ -183,10 +184,10 @@ export function registerCommands(
         void vscode.window.showWarningMessage("AXME Code: open a folder first.");
         return;
       }
-      const child = spawn(binary, ["status", root], { stdio: ["ignore", "pipe", "pipe"] });
+      const child = spawnBinary(binary, ["status", root], { stdio: ["ignore", "pipe", "pipe"] });
       let out = "";
-      child.stdout.on("data", (c) => (out += c.toString()));
-      child.stderr.on("data", (c) => (out += c.toString()));
+      child.stdout!.on("data", (c) => (out += c.toString()));
+      child.stderr!.on("data", (c) => (out += c.toString()));
       await new Promise<void>((resolve) => {
         child.on("exit", () => resolve());
         child.on("error", () => resolve());
@@ -270,7 +271,7 @@ export function registerCommands(
         { cwd: root, stdio: ["ignore", "pipe", "pipe"] },
       );
       let err = "";
-      child.stderr.on("data", (c) => (err += c.toString()));
+      child.stderr!.on("data", (c) => (err += c.toString()));
       const code: number = await new Promise((res) => {
         child.on("exit", (c) => res(c ?? 1));
         child.on("error", () => res(1));
@@ -308,8 +309,8 @@ export function registerCommands(
         { cwd: root, stdio: ["ignore", "pipe", "pipe"] },
       );
       let out = "", err = "";
-      child.stdout.on("data", (c) => (out += c.toString()));
-      child.stderr.on("data", (c) => (err += c.toString()));
+      child.stdout!.on("data", (c) => (out += c.toString()));
+      child.stderr!.on("data", (c) => (err += c.toString()));
       const code: number = await new Promise((res) => {
         child.on("exit", (c) => res(c ?? 1));
         child.on("error", () => res(1));

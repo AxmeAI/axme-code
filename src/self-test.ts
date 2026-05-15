@@ -126,8 +126,18 @@ async function checkHookParseAndDeny(): Promise<void> {
 async function checkMcpServerBoot(binaryPath: string): Promise<void> {
   // Spawn `axme-code serve`, send initialize, expect `protocolVersion` in
   // reply within 5s. Then kill the subprocess.
+  //
+  // Cross-platform spawn: the bundled binary is a shebang-shim text file
+  // (CJS code with `#!/usr/bin/env node` prefix). POSIX systems execute
+  // it directly via the shebang; Windows treats it as an unrecognized
+  // executable and spawn() throws ENOENT / UNKNOWN. On Windows we call
+  // through `node <binary>` so the JS payload runs regardless of the
+  // file extension (.exe / .cjs / no-ext — all are text).
+  const isWindows = process.platform === "win32";
   return new Promise<void>((resolve) => {
-    const child = spawn(binaryPath, ["serve"], { stdio: ["pipe", "pipe", "pipe"] });
+    const child = isWindows
+      ? spawn(process.execPath, [binaryPath, "serve"], { stdio: ["pipe", "pipe", "pipe"] })
+      : spawn(binaryPath, ["serve"], { stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "";
     let resolved = false;
     const finish = (ok: boolean, detail: string) => {

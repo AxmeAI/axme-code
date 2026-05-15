@@ -61,6 +61,17 @@ function quote(s: string): string {
 function buildHookCommand(binary: string, hookName: string): string {
   // No --workspace flag — handler core resolves it from stdin
   // workspace_roots[0] (PR #129 commit d267b82).
+  //
+  // Cross-platform: the bundled binary is a shebang shim (`#!/usr/bin/env
+  // node` + CJS payload). POSIX honors the shebang and runs it directly.
+  // Windows ignores shebangs and fails with ENOENT when cmd.exe / Cursor
+  // tries to exec the file. On Windows we prefix the command with `node`,
+  // which Cursor users on Windows typically have on PATH (standard dev
+  // setup). Falls through gracefully — Cursor's hook runner uses cmd.exe
+  // /c so PATH lookup works the same as in any terminal.
+  if (process.platform === "win32") {
+    return `node ${quote(binary)} hook ${hookName} --ide cursor`;
+  }
   return `${quote(binary)} hook ${hookName} --ide cursor`;
 }
 

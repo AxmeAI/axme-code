@@ -20,6 +20,7 @@
 
 import * as vscode from "vscode";
 import { spawn } from "node:child_process";
+import { spawnBinary } from "./spawn-binary.js";
 import { log, logError } from "./log.js";
 
 export type AuditorAuthMode = "api_key" | "cursor_sdk" | "subscription" | "disabled";
@@ -169,7 +170,7 @@ async function runShell(
   envExtra: Record<string, string> = {},
 ): Promise<boolean> {
   return new Promise((resolve) => {
-    const child = spawn(binary, args, {
+    const child = spawnBinary(binary, args, {
       env: { ...process.env, ...envExtra },
       stdio: "ignore",
     });
@@ -190,9 +191,9 @@ async function runShell(
 
 export async function detectCurrentMode(binary: string): Promise<AuditorAuthMode | undefined> {
   return new Promise((resolve) => {
-    const child = spawn(binary, ["auth", "status"], { stdio: ["ignore", "pipe", "ignore"] });
+    const child = spawnBinary(binary, ["auth", "status"], { stdio: ["ignore", "pipe", "ignore"] });
     let stdout = "";
-    child.stdout.on("data", (chunk) => (stdout += chunk.toString()));
+    child.stdout!.on("data", (chunk) => (stdout += chunk.toString()));
     child.on("exit", () => {
       const m = /Current mode:\s*(\w+)/m.exec(stdout);
       if (!m) return resolve(undefined);

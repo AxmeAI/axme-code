@@ -18,6 +18,7 @@
 
 import * as vscode from "vscode";
 import { spawn } from "node:child_process";
+import { spawnBinary } from "./spawn-binary.js";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";

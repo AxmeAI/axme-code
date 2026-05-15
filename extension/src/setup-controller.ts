@@ -12,6 +12,7 @@
 
 import * as vscode from "vscode";
 import { spawn } from "node:child_process";
+import { spawnBinary } from "./spawn-binary.js";
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { IdeKind } from "./ide-detect.js";
@@ -108,12 +109,12 @@ export async function runSetup(binary: string, ide: IdeKind): Promise<void> {
       progress.report({ message: "scanning project + writing .axme-code/ ..." });
 
       const exitCode = await new Promise<number>((resolve) => {
-        const child = spawn(binary, args, {
+        const child = spawnBinary(binary, args, {
           cwd: root,
           env: { ...process.env, AXME_TELEMETRY_DISABLED: "1" },
         });
-        child.stdout.on("data", (chunk) => log(`setup stdout: ${String(chunk).trimEnd()}`));
-        child.stderr.on("data", (chunk) => log(`setup stderr: ${String(chunk).trimEnd()}`));
+        child.stdout!.on("data", (chunk) => log(`setup stdout: ${String(chunk).trimEnd()}`));
+        child.stderr!.on("data", (chunk) => log(`setup stderr: ${String(chunk).trimEnd()}`));
         child.on("error", (err) => {
           logError("setup spawn", err);
           resolve(1);

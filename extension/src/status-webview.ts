@@ -22,6 +22,7 @@
 
 import * as vscode from "vscode";
 import { spawn } from "node:child_process";
+import { spawnBinary } from "./spawn-binary.js";
 import { existsSync, readFileSync, statSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -40,7 +41,7 @@ interface StatusRow {
 
 async function exec(binary: string, args: string[], timeoutMs = 5000): Promise<{ stdout: string; stderr: string; code: number | null }> {
   return new Promise((resolve) => {
-    const child = spawn(binary, args, { stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawnBinary(binary, args, { stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
     let resolved = false;
@@ -50,8 +51,8 @@ async function exec(binary: string, args: string[], timeoutMs = 5000): Promise<{
       child.kill();
       resolve({ stdout, stderr, code: null });
     }, timeoutMs);
-    child.stdout.on("data", (c) => (stdout += c.toString()));
-    child.stderr.on("data", (c) => (stderr += c.toString()));
+    child.stdout!.on("data", (c) => (stdout += c.toString()));
+    child.stderr!.on("data", (c) => (stderr += c.toString()));
     child.on("exit", (code) => {
       if (resolved) return;
       resolved = true;
@@ -222,7 +223,7 @@ async function probeMcp(binary: string): Promise<{ ok: boolean; detail: string }
     params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "axme-status", version: "0.0.2" } },
   });
   return new Promise((resolve) => {
-    const child = spawn(binary, ["serve"], { stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawnBinary(binary, ["serve"], { stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "";
     let resolved = false;
     const timer = setTimeout(() => {
@@ -231,7 +232,7 @@ async function probeMcp(binary: string): Promise<{ ok: boolean; detail: string }
       child.kill();
       resolve({ ok: stdout.includes("\"protocolVersion\""), detail: stdout ? "partial response" : "timeout (5s)" });
     }, 5000);
-    child.stdout.on("data", (c) => {
+    child.stdout!.on("data", (c) => {
       stdout += c.toString();
       if (stdout.includes("\"protocolVersion\"")) {
         if (resolved) return;
@@ -247,7 +248,7 @@ async function probeMcp(binary: string): Promise<{ ok: boolean; detail: string }
       clearTimeout(timer);
       resolve({ ok: false, detail: err.message });
     });
-    child.stdin.write(initMsg + "\n");
+    child.stdin!.write(initMsg + "\n");
   });
 }
 
