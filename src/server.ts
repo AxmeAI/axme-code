@@ -280,6 +280,17 @@ function buildInstructions(): string {
         "with AXME Code. You can edit .axme-code/safety/rules.yaml " +
         "directly to add project-specific rules or remove ones you " +
         "don't need.\"\n" +
+        "     Then list DECISIONS saved this session — one per line as " +
+        "\"  - D-NNN: <short title>\". Header: \"Decisions saved this " +
+        "session (full bodies in .axme-code/decisions/):\". Keep titles " +
+        "short — rationale already lives in the .md files.\n" +
+        "     Then list MEMORIES saved — one per line as \"  - <slug>: " +
+        "<short title>\". Header: \"Memories saved this session (full " +
+        "bodies in .axme-code/memory/patterns/ and memory/feedback/):\".\n" +
+        "     End with verbatim line: \"All saved artifacts are persistent " +
+        "across sessions. Open the folders above to read full bodies, " +
+        "or ask me 'show decision D-NNN' / 'show memory <slug>' to " +
+        "fetch any of them.\"\n" +
         "If you catch yourself writing \"Save decision: X / Save memory: " +
         "Y\" as text, STOP and call axme_save_decision / axme_save_memory " +
         "instead. The .axme-code/ directory is auto-bootstrapped by the " +

@@ -128,9 +128,20 @@ export const PROMPT_SETUP =
   `         ...\n` +
   `       readOnlyPaths:\n` +
   `         ...\n` +
-  `   - Final note to the user (verbatim): "These presets ship with AXME ` +
-  `Code. You can edit \`.axme-code/safety/rules.yaml\` directly to add ` +
-  `project-specific rules or remove ones you don't need."\n\n` +
+  `   - Final note about presets (verbatim): "These presets ship with ` +
+  `AXME Code. You can edit \`.axme-code/safety/rules.yaml\` directly to ` +
+  `add project-specific rules or remove ones you don't need."\n` +
+  `   - Then list the DECISIONS you saved this session — one per line, ` +
+  `format: "  - D-NNN: <short title>". Header: "Decisions saved this ` +
+  `session (full bodies in .axme-code/decisions/):". This is the user's ` +
+  `quick index of what your scan captured — keep titles short, no ` +
+  `rationale dumps in the summary (they're already in the .md files).\n` +
+  `   - Then list the MEMORIES you saved — one per line, format: ` +
+  `"  - <slug>: <short title>". Header: "Memories saved this session ` +
+  `(full bodies in .axme-code/memory/patterns/ and memory/feedback/):"\n` +
+  `   - Final verbatim line: "All saved artifacts are persistent across ` +
+  `sessions. Open the folders above to read full bodies, or ask me ` +
+  `'show decision D-NNN' / 'show memory <slug>' to fetch any of them."\n\n` +
   `The .axme-code/ directory does not need to exist beforehand — the save ` +
   `tools bootstrap it on first call. If a tool returns an error, retry once ` +
   `with corrected arguments, then move to the next. Stay focused on setup, ` +
