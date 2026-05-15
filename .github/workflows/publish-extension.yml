@@ -38,7 +38,7 @@ jobs:
             binary_name: axme-code-linux-arm64
             extension_bin: axme-code
           - target: darwin-x64
-            runner: macos-13
+            runner: macos-latest
             binary_name: axme-code-darwin-x64
             extension_bin: axme-code
           - target: darwin-arm64
