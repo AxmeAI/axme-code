@@ -97,7 +97,10 @@
             "id": "axme.step.installed",
             "title": "Extension installed",
             "description": "The AXME Code extension is active. The Activity Bar now has an AXME icon — that's your monitor for memories, decisions, backlog, and the current chat session.\n\n**AXME is configured per-project**: each repo you open needs a one-time setup (step 2 below). When you update AXME in the future, reload Cursor with `Ctrl+R` / `Cmd+R` to apply.\n[Open AXME sidebar](command:workbench.view.extension.axme)",
-            "media": { "image": "media/axme.svg", "altText": "AXME Code icon" },
+            "media": {
+              "image": "media/axme.svg",
+              "altText": "AXME Code icon"
+            },
             "completionEvents": [
               "extensionInstalled:AxmeAI.axme-code"
             ]
@@ -106,7 +109,9 @@
             "id": "axme.step.setup",
             "title": "Set up the workspace",
             "description": "Run setup once per project. Recommended: ask the agent in chat — no extra API key needed, everything runs on your Cursor subscription.\n\n**How**: click the button below, the prompt copies to your clipboard. Then open or focus a Cursor chat (Cmd/Ctrl+L), paste (Cmd/Ctrl+V), hit Enter. The agent scans the repo and saves architecture decisions / patterns / safety rules through MCP tools.\n\n[Copy setup prompt → paste in chat](command:axme.askAgentSetup)\n\nAlternative (uses your own API key, billed separately):\n[Run setup with API key](command:axme.setup)",
-            "media": { "markdown": "walkthroughs/setup.md" },
+            "media": {
+              "markdown": "walkthroughs/setup.md"
+            },
             "completionEvents": [
               "onContext:axme.workspaceInitialized"
             ]
@@ -115,7 +120,9 @@
             "id": "axme.step.auditor",
             "title": "Pick your auditor mode",
             "description": "Cooperative (default): zero extra cost — the agent saves inline during the chat, then you ask it to close the session at the end.\nBackground: uses its own API key, runs after every chat for thorough extraction (billed separately).\n[Open AXME settings](command:workbench.action.openSettings?%5B%22axme.auditorMode%22%5D)",
-            "media": { "markdown": "walkthroughs/auditor.md" },
+            "media": {
+              "markdown": "walkthroughs/auditor.md"
+            },
             "completionEvents": [
               "onSettingChanged:axme.auditorMode"
             ]
@@ -124,7 +131,9 @@
             "id": "axme.step.firstChat",
             "title": "Open your first AXME-aware chat",
             "description": "Open a fresh chat tab. The agent will see your AXME tools in its toolbox and call axme_context automatically at startup. Try asking it to make any change — safety hooks will block dangerous commands, and the sidebar will start showing live token / memory counts.",
-            "media": { "markdown": "walkthroughs/firstChat.md" },
+            "media": {
+              "markdown": "walkthroughs/firstChat.md"
+            },
             "completionEvents": [
               "onView:axme.monitor"
             ]
@@ -133,7 +142,9 @@
             "id": "axme.step.semanticSearch",
             "title": "Semantic search — opt-in for large knowledge bases",
             "description": "AXME runs in **full mode** by default — every memory + decision body is loaded into the agent at session start. Zero setup, simple.\n\nFor larger KBs (>50 entries, or decisions with long rationale): **semantic search mode** loads only the catalog at startup, agent fetches bodies on demand via smart similarity search. Saves significant tokens.\n\nThe trade-off: a one-time ~770 MB download (`@huggingface/transformers` runtime). It's reversible any time.\n\n[Enable semantic search now](command:axme.enableSemanticSearch)\n\nLeave it for later? Just skip this step — full mode keeps working. You can enable from the sidebar (Knowledge base → Search mode) or `AXME: Enable semantic search` whenever.",
-            "media": { "markdown": "walkthroughs/semanticSearch.md" },
+            "media": {
+              "markdown": "walkthroughs/semanticSearch.md"
+            },
             "completionEvents": [
               "onCommand:axme.enableSemanticSearch"
             ]
@@ -248,13 +259,20 @@
     "build": "node build.mjs",
     "watch": "node build.mjs --watch",
     "package": "vsce package --no-dependencies",
-    "publish:ovsx": "ovsx publish --pat $OVSX_TOKEN"
+    "publish:ovsx": "ovsx publish --pat $OVSX_TOKEN",
+    "build:tests": "tsc -p test/tsconfig.json",
+    "test": "npm run build && npm run build:tests && node out-test/runTest.js"
   },
   "devDependencies": {
+    "@types/glob": "^8.1.0",
+    "@types/mocha": "^10.0.10",
     "@types/node": "^22.0.0",
     "@types/vscode": "^1.96.0",
+    "@vscode/test-electron": "^2.5.2",
     "@vscode/vsce": "^3.2.0",
     "esbuild": "^0.25.0",
+    "glob": "^10.5.0",
+    "mocha": "^10.8.2",
     "ovsx": "^0.10.0",
     "typescript": "^5.9.0"
   }
