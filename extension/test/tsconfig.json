@@ -3,6 +3,7 @@
     "target": "ES2022",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
+    "ignoreDeprecations": "5.0",
     "lib": ["ES2022"],
     "strict": true,
     "esModuleInterop": true,
