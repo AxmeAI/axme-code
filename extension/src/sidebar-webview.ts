@@ -712,34 +712,26 @@ function render() {
   });
 
   // Live session block — driven by readActiveSession on the host side.
-  // We deliberately do NOT show a token count: our only data source is the
-  // local Cursor JSONL transcript which contains compact message envelopes,
-  // not the expanded tool results that dominate Cursor's actual context
-  // budget. Showing "3.8k" while Cursor's own Context panel shows 43.5k
-  // confused users more than it helped. Instead we show two signals we CAN
-  // measure honestly: messages (count) and duration (age).
+  // We deliberately do NOT show a token count: our only data source is
+  // the local Cursor JSONL transcript which contains compact message
+  // envelopes, not the expanded tool results that dominate Cursor's
+  // actual context budget.
   //
-  // Warning threshold uses both. >50 messages OR >2h is a reasonable
-  // proxy for "you're heading toward Cursor's ~50–60% auto-summarize
-  // trigger" without lying about a token number we can't see.
+  // Earlier drafts also fired a warning banner above some threshold
+  // ("Session is getting long…"). Removed after user feedback: the
+  // threshold was always either too low (65 messages on a single
+  // verification run triggered it) or arbitrary (no objective signal
+  // for when Cursor's own auto-summarize kicks in). Each user decides
+  // when to close — the [Close session] flow is always one chat
+  // message away, no banner needed to surface it.
   const sess = S.session;
   let sessionHtml = '<p class="muted">No active chat detected. Tools will record activity when an MCP call lands.</p>';
   if (sess && sess.hasData) {
     const startedMs = Date.parse(sess.startedAt);
     const ageMs = Number.isFinite(startedMs) ? Date.now() - startedMs : 0;
-    const ageHours = ageMs / 3_600_000;
-    const overWarn = sess.messages >= 50 || ageHours >= 2;
     sessionHtml = \`
       <div class="row"><span class="k">Started</span><span class="v">\${formatDuration(ageMs)} ago</span></div>
       <div class="row"><span class="k">Messages</span><span class="v">\${sess.messages}</span></div>
-      \${overWarn ? \`
-        <div class="warning-banner">
-          Session is getting long (\${sess.messages} messages, \${formatDuration(ageMs)}).
-          Cursor auto-summarizes around the ~50% context mark and quality often
-          regresses after that. Ask the agent to <b>close the session</b> —
-          it will extract memories / decisions / safety inline and give you a
-          startup prompt for a fresh chat with zero context loss.
-        </div>\` : ""}
     \`;
   } else if (sess) {
     sessionHtml = \`
