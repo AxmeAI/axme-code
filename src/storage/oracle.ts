@@ -68,7 +68,20 @@ export function showOracle(projectPath: string): string {
 /** Return oracle as array of sections (for pagination). */
 export function getOracleSections(projectPath: string): string[] {
   const files = loadOracleFiles(projectPath);
-  if (!files) return ["Oracle not initialized. Run axme_init first."];
+  if (!files) {
+    return [
+      "Oracle is empty for this project. Two ways to populate:\n\n" +
+        "• Cooperative — ask the agent to enrich oracle inline (calls " +
+        "axme_save_oracle for each section: stack, structure, patterns, " +
+        "glossary).\n" +
+        "• API-key path — run `axme-code setup` in a terminal (or " +
+        "`AXME: Set up workspace` from Cursor's Command Palette) to run " +
+        "the LLM oracle scanner.\n\n" +
+        "If `.axme-code/oracle/` already exists but is empty, the MCP " +
+        "server bootstraps a deterministic skeleton (detected stack + " +
+        "structure) on the next save call — the agent can then enrich it.",
+    ];
+  }
 
   const sections: string[] = [];
   if (files.stack) sections.push("# Stack\n\n" + files.stack);
@@ -76,6 +89,44 @@ export function getOracleSections(projectPath: string): string[] {
   if (files.patterns) sections.push("# Patterns\n\n" + files.patterns);
   if (files.glossary) sections.push("# Glossary\n\n" + files.glossary);
   return sections;
+}
+
+/**
+ * Bootstrap oracle deterministically if `.axme-code/oracle/` is empty.
+ * Called by MCP save tools so cooperative-setup workflows never see the
+ * "Oracle is empty" placeholder — the deterministic scan fills stack +
+ * structure from package.json / file layout immediately, and the agent
+ * can enrich patterns + glossary via axme_save_oracle later.
+ *
+ * No-op when oracle has any content (we never overwrite). No-op when
+ * `.axme-code/` itself doesn't exist (different bootstrap path).
+ */
+export function ensureOracleBootstrapped(projectPath: string): void {
+  if (!pathExists(join(projectPath, AXME_CODE_DIR))) return;
+  if (loadOracleFiles(projectPath)) return;
+  try { initOracleDeterministic(projectPath); } catch { /* swallow */ }
+}
+
+/**
+ * Write or update a single oracle section. Used by the axme_save_oracle
+ * MCP tool. Mode "replace" overwrites; "append" concatenates with a
+ * blank-line separator. Other sections are preserved as-is so the agent
+ * can populate one at a time.
+ */
+export function saveOracleSection(
+  projectPath: string,
+  section: keyof OracleFiles,
+  content: string,
+  mode: "replace" | "append" = "replace",
+): void {
+  const existing = loadOracleFiles(projectPath) ?? { stack: "", structure: "", patterns: "", glossary: "" };
+  const next: OracleFiles = { ...existing };
+  if (mode === "append" && existing[section]) {
+    next[section] = existing[section] + "\n\n" + content;
+  } else {
+    next[section] = content;
+  }
+  writeOracleFiles(projectPath, next);
 }
 
 export function oracleExists(projectPath: string): boolean {

@@ -347,6 +347,10 @@ Usage:
                                                 for Claude Code, or .cursor/{mcp,hooks}.json + rules
                                                 /axme-code.mdc for Cursor). Defaults to claude-code.
   axme-code serve                               Start MCP server (stdio transport)
+  axme-code self-test                           Run local healthcheck (storage write,
+                                                hook parse, MCP boot). Exits 0 on
+                                                pass, 1 on any failure. Use in CI or
+                                                from terminal when debugging install.
   axme-code status [path]                       Show project status
   axme-code --version | -v                      Print the installed version
 
@@ -599,13 +603,57 @@ async function main() {
       setupOutcome = setupMethod === "llm" ? "success" : "fallback";
       await sendSetupTelemetry();
 
-      console.log("\nDone! Run 'claude' to start using AXME tools.");
+      // If semantic search was already enabled before setup (e.g. the user
+      // turned it on in a different project where the runtime is already
+      // installed, or pre-enabled in expectation of running setup), the
+      // LLM/deterministic scanners just wrote a bunch of decisions and
+      // memories directly to disk via the storage layer — bypassing the
+      // MCP save-tool's auto-embed step. The result is a populated KB but
+      // an empty embeddings index, and axme_search_kb returns nothing.
+      // Auto-reindex here so the user doesn't have to remember to run
+      // `axme-code reindex` after every setup.
+      try {
+        const { readConfig } = await import("./storage/config.js");
+        const cfg = readConfig(projectPath);
+        if (cfg.contextMode === "search") {
+          const { isRuntimeInstalled } = await import("./storage/embeddings.js");
+          if (isRuntimeInstalled()) {
+            const { reindexAll } = await import("./tools/search-install.js");
+            const r = await reindexAll(projectPath);
+            if (r.ok) console.log(`Indexed ${r.indexed} entries for semantic search.`);
+            else console.error(`Search reindex skipped: ${r.error}`);
+          } else {
+            console.error("Search mode is on but the embeddings runtime is missing — run `axme-code reindex` manually after installing.");
+          }
+        }
+      } catch (err) {
+        console.error(`Search reindex post-setup failed (non-fatal): ${(err as Error).message}`);
+      }
+
+      // IDE-aware final message. The CLI is invoked both standalone
+      // (Claude Code users — `axme-code setup` from terminal) and via
+      // the Cursor extension's setup-controller (`--ide=cursor`).
+      // Tell each user what their next step actually is.
+      if (ide === "cursor") {
+        console.log("\nDone! Open a new chat in Cursor — AXME tools are now available.");
+      } else {
+        console.log("\nDone! Run 'claude' to start using AXME tools.");
+      }
       break;
     }
 
     case "serve": {
       await import("./server.js");
       break;
+    }
+
+    case "self-test": {
+      // v0.0.2: local healthcheck for storage / hook adapters / MCP boot.
+      // Used by `AXME: Show Status` webview indirectly + by power users
+      // running the binary from terminal when something looks wrong.
+      const { runSelfTest } = await import("./self-test.js");
+      const code = await runSelfTest();
+      process.exit(code);
     }
 
     case "status": {
@@ -979,6 +1027,63 @@ Do NOT skip — without context you will miss critical project rules.
       const result = await reindexAll(projectPath);
       if (result.ok) console.log(`Reindexed ${result.indexed} entries.`);
       else { console.error(`Reindex failed: ${result.error}`); process.exit(1); }
+      break;
+    }
+
+    case "backlog": {
+      // Lightweight CLI for the v0.0.3 extension sidebar's [+ Add] button.
+      // The MCP `axme_backlog_add` tool already handles agent-driven
+      // writes; this subcommand is the user-driven equivalent so the
+      // sidebar doesn't need to duplicate the ID-generation + atomic-
+      // write logic, and isn't dependent on an agent being in the loop.
+      const sub = args[1];
+      const projectPath = resolve(process.cwd());
+      const { addBacklogItem, listBacklogItems } = await import("./storage/backlog.js");
+      if (sub === "list") {
+        // --json prints machine-readable for the extension; default is
+        // human-readable so power users can `axme-code backlog list` in
+        // a terminal too.
+        const items = listBacklogItems(projectPath);
+        if (args.includes("--json")) {
+          console.log(JSON.stringify(items));
+        } else if (items.length === 0) {
+          console.log("No backlog items.");
+        } else {
+          for (const i of items) console.log(`${i.id} [${i.status}/${i.priority}] ${i.title}`);
+        }
+        break;
+      }
+      if (sub === "add") {
+        const flag = (name: string): string | undefined => {
+          const idx = args.indexOf(`--${name}`);
+          return idx >= 0 && args[idx + 1] ? args[idx + 1] : undefined;
+        };
+        const title = flag("title");
+        if (!title) { console.error("backlog add: --title is required"); process.exit(1); }
+        const priority = (flag("priority") || "medium") as "high" | "medium" | "low";
+        const description = flag("description") || "";
+        const item = addBacklogItem(projectPath, { title, description, priority });
+        console.log(item.id);
+        break;
+      }
+      if (sub === "update") {
+        const flag = (name: string): string | undefined => {
+          const idx = args.indexOf(`--${name}`);
+          return idx >= 0 && args[idx + 1] ? args[idx + 1] : undefined;
+        };
+        const id = flag("id");
+        if (!id) { console.error("backlog update: --id is required"); process.exit(1); }
+        const status = flag("status") as "open" | "in-progress" | "done" | "blocked" | undefined;
+        const priority = flag("priority") as "high" | "medium" | "low" | undefined;
+        const notes = flag("notes");
+        const { updateBacklogItem } = await import("./storage/backlog.js");
+        const updated = updateBacklogItem(projectPath, id, { status, priority, notes });
+        if (!updated) { console.error(`backlog update: ${id} not found`); process.exit(1); }
+        console.log(`${updated.id} → status=${updated.status}, priority=${updated.priority}`);
+        break;
+      }
+      console.error("Usage: axme-code backlog <list|add|update> [--title ... --priority ... --description ... --id ... --status ...]");
+      process.exit(1);
       break;
     }
 

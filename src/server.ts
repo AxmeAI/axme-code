@@ -41,9 +41,31 @@ import {
 import { logEvent } from "./storage/worklog.js";
 import { spawnDetachedAuditWorker } from "./audit-spawner.js";
 
-// --- Server state (detected at startup from cwd) ---
+// --- Server state (detected at startup from --workspace flag or cwd) ---
+//
+// When the Cursor extension registers the MCP server it cannot control the
+// cwd Cursor uses to spawn us — empirically Cursor spawns from the user's
+// home directory regardless of which workspace is open. Falling back to
+// cwd makes the server report a wrong `defaultProjectPath` and tools like
+// axme_context (called without explicit project_path) look up
+// `.axme-code/` in the wrong place. The fix is the extension passing
+// `--workspace <abs>` at registration time so the server has the right
+// root from the first tool call.
+//
+// Resolution order:
+//   1. --workspace <path> CLI flag (passed by the Cursor extension)
+//   2. AXME_WORKSPACE env var (escape hatch for hand-spawned servers)
+//   3. process.cwd() (legacy Claude Code CLI behaviour — server spawns
+//      from the project root so cwd already points at the right place)
+function resolveServerRoot(): string {
+  const argv = process.argv;
+  const flagIdx = argv.indexOf("--workspace");
+  if (flagIdx > -1 && argv[flagIdx + 1]) return argv[flagIdx + 1];
+  if (process.env.AXME_WORKSPACE) return process.env.AXME_WORKSPACE;
+  return process.cwd();
+}
 
-const serverCwd = process.cwd();
+const serverCwd = resolveServerRoot();
 const serverHasGit = existsSync(join(serverCwd, ".git"));
 const serverWorkspace = detectWorkspace(serverCwd);
 const isWorkspace = serverHasGit ? false : serverWorkspace.type !== "single";
@@ -212,6 +234,69 @@ function buildInstructions(): string {
     parts.push("Before working with any specific repo, call axme_context with that repo's path.");
   } else {
     parts.push("Call axme_context at session start. It returns compact meta and instructions to call axme_oracle, axme_decisions, axme_memories in parallel.");
+  }
+
+  // Per-project setup gate: AXME is configured ONCE per repo (writes
+  // .axme-code/ at the project root). When the agent lands in a fresh repo
+  // and the storage is absent, axme_context returns "project not
+  // initialised" — easy for the agent to ignore. Make it impossible to
+  // miss by stating the obligation up-front in the instructions block so
+  // the agent reads it BEFORE the first axme_context call.
+  const axmeDirExists = existsSync(join(defaultProjectPath, ".axme-code"));
+  if (!axmeDirExists) {
+    parts.push(
+      "PROJECT SETUP REQUIRED (HIGHEST PRIORITY): this project has no " +
+        ".axme-code/ directory. BEFORE doing anything else, tell the user " +
+        "in their language: \"AXME is not set up for this project. Want " +
+        "me to do it now? I'll scan the repo and save architecture " +
+        "decisions, patterns and safety rules into .axme-code/ — runs " +
+        "inline on your Cursor subscription, no extra cost.\" If the user " +
+        "agrees (any affirmative in any language), EXECUTE setup. " +
+        "Important — setup is a sequence of MCP TOOL CALLS, not a plan " +
+        "to describe. Bullet-listing what you would save in prose is a " +
+        "FAILURE — call the tool instead. Required:\n" +
+        "  1. Scan: read package.json/README/main configs + key source " +
+        "folders to understand stack, conventions, layout.\n" +
+        "  2. EXECUTE at least 5 axme_save_decision calls (scope=" +
+        "[\"workspace\"], with concrete rationale tied to evidence).\n" +
+        "  3. EXECUTE at least 3 axme_save_memory calls (type=\"pattern\", " +
+        "scope=[\"workspace\"]) for gotchas / edge cases.\n" +
+        "  4. EXECUTE axme_update_safety for dangerous patterns in " +
+        "scripts/ or destructive commands.\n" +
+        "  4b. EXECUTE 4 axme_save_oracle calls — one per section (stack, " +
+        "structure, patterns, glossary). Stack: languages + frameworks " +
+        "+ build tools. Structure: top-level dirs + entry points. " +
+        "Patterns: observed conventions. Glossary: project-specific " +
+        "terms. Oracle is the high-level overview the agent reads at " +
+        "startup of every future session.\n" +
+        "  5. ONLY after all tool calls are committed, summarize:\n" +
+        "     First line: \"Saved X decisions, Y memories, Z safety rules " +
+        "+ N preset rules\" where N is the count of enforcement entries " +
+        "(deniedPrefixes + deniedCommands + protectedBranches + " +
+        "deniedPaths + readOnlyPaths) ALREADY in .axme-code/safety/" +
+        "rules.yaml that you did NOT add this session.\n" +
+        "     Then list those preset rules grouped by section (one " +
+        "per line under each header) and add: \"These presets ship " +
+        "with AXME Code. You can edit .axme-code/safety/rules.yaml " +
+        "directly to add project-specific rules or remove ones you " +
+        "don't need.\"\n" +
+        "     Then list DECISIONS saved this session — one per line as " +
+        "\"  - D-NNN: <short title>\". Header: \"Decisions saved this " +
+        "session (full bodies in .axme-code/decisions/):\". Keep titles " +
+        "short — rationale already lives in the .md files.\n" +
+        "     Then list MEMORIES saved — one per line as \"  - <slug>: " +
+        "<short title>\". Header: \"Memories saved this session (full " +
+        "bodies in .axme-code/memory/patterns/ and memory/feedback/):\".\n" +
+        "     End with verbatim line: \"All saved artifacts are persistent " +
+        "across sessions. Open the folders above to read full bodies, " +
+        "or ask me 'show decision D-NNN' / 'show memory <slug>' to " +
+        "fetch any of them.\"\n" +
+        "If you catch yourself writing \"Save decision: X / Save memory: " +
+        "Y\" as text, STOP and call axme_save_decision / axme_save_memory " +
+        "instead. The .axme-code/ directory is auto-bootstrapped by the " +
+        "first save call — you do not need to create it beforehand. After " +
+        "setup, proceed with the user's original request.",
+    );
   }
   parts.push("TRUNCATED OUTPUT RULE: if ANY MCP tool output is truncated or saved to a file (you see 'Output too large' or 'saved to file'), you MUST use the Read tool to read the full file content into your context. Do not proceed with partial data.");
   parts.push("Save memories, decisions, and safety rules immediately when discovered during work.");
@@ -452,6 +537,12 @@ server.tool(
     const sid = getOwnedSessionIdForLogging();
     const resolved = ppWithScope(project_path, scope);
     const result = saveMemoryTool(resolved, { type, title, description, body, keywords, scope }, sid);
+    // First save lands here for cooperative-flow projects → seed the
+    // oracle with a deterministic stack/structure snapshot so axme_oracle
+    // never returns the "Oracle is empty" placeholder. No-op if oracle
+    // already has content.
+    const { ensureOracleBootstrapped } = await import("./storage/oracle.js");
+    ensureOracleBootstrapped(resolved);
     // Update the embeddings index when search mode is on. Awaited so the
     // index is consistent on return; ~50-200ms once the embedder is warm.
     // Skips silently in full mode and on missing runtime.
@@ -476,6 +567,9 @@ server.tool(
 
     const resolved = ppWithScope(project_path, scope);
     const result = saveDecisionTool(resolved, { title, decision, reasoning, enforce, scope });
+    // See axme_save_memory above — same bootstrap reasoning.
+    const { ensureOracleBootstrapped } = await import("./storage/oracle.js");
+    ensureOracleBootstrapped(resolved);
     // Use decision text as description so the search index returns hits
     // ranked by the actual rule, not just the title.
     await embedKbEntry(resolved, result.id, "decision", title, decision, readConfig(resolved).contextMode);
@@ -509,6 +603,31 @@ server.tool(
   async ({ project_path }) => {
 
     return { content: [{ type: "text" as const, text: showSafetyTool(pp(project_path)) }] };
+  },
+);
+
+// --- axme_save_oracle ---
+// Cooperative-flow companion to axme_oracle. Lets the agent write oracle
+// sections inline during chat — the API-key path's LLM scanner is great
+// for first-time setup but uses a separate billing channel; cooperative
+// users do everything on their Cursor subscription, and oracle was the
+// only KB area they couldn't reach. The agent fills `stack` / `structure`
+// / `patterns` / `glossary` one section at a time, just like decisions
+// or memories.
+server.tool(
+  "axme_save_oracle",
+  "Write or append to one oracle section. Use during cooperative setup to populate stack / structure / patterns / glossary inline. Replaces by default; pass mode='append' to add to existing content.",
+  {
+    project_path: z.string().optional().describe("Absolute path to the project root (defaults to server cwd)"),
+    section: z.enum(["stack", "structure", "patterns", "glossary"]).describe("Which oracle section to write"),
+    content: z.string().describe("Markdown body for this section"),
+    mode: z.enum(["replace", "append"]).optional().describe("Default 'replace'. 'append' adds to existing content."),
+  },
+  async ({ project_path, section, content, mode }) => {
+    const { saveOracleSection } = await import("./storage/oracle.js");
+    const resolved = pp(project_path);
+    saveOracleSection(resolved, section, content, mode ?? "replace");
+    return { content: [{ type: "text" as const, text: `Oracle ${section} ${mode === "append" ? "appended" : "saved"}.` }] };
   },
 );
 

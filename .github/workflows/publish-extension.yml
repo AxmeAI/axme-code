@@ -8,12 +8,14 @@ on:
   push:
     branches:
       - feat/vscode-extension-**
+      - feat/sidebar-monitor-**
     tags:
       - "extension-v*"
   pull_request:
     paths:
       - "extension/**"
       - ".github/workflows/publish-extension.yml"
+      - "src/**"
   workflow_dispatch:
 
 permissions:
@@ -32,7 +34,7 @@ jobs:
             binary_name: axme-code-linux-x64
             extension_bin: axme-code
           - target: linux-arm64
-            runner: ubuntu-latest
+            runner: ubuntu-22.04-arm
             binary_name: axme-code-linux-arm64
             extension_bin: axme-code
           - target: darwin-x64
@@ -60,6 +62,15 @@ jobs:
 
       - name: Build core
         run: npm run build
+
+      - name: Run core test suite (Node test runner, 608 tests)
+        # Runs natively on each platform's runner. Catches platform-
+        # specific failures in storage / hooks / agent / scanner code.
+        # Skipped on linux-arm64 (only) because the runner image lacks
+        # claude-agent-sdk's native deps; the rest of the binary is
+        # pure JS and our self-test below proves it boots.
+        if: matrix.target != 'linux-arm64'
+        run: npm test
 
       - name: Bundle core CLI to a single platform-specific file
         shell: bash
@@ -98,6 +109,21 @@ jobs:
           rm extension/bin/axme-code.cjs
           chmod +x extension/bin/${{ matrix.extension_bin }} || true
 
+      - name: Run bundled-binary self-test (hooks + MCP + storage)
+        # The shebang-shim binary is executable on Linux + macOS. On
+        # Windows the `.exe` is just renamed text without PE headers
+        # — Windows can't execute it directly, so we invoke via Node.
+        # Either way, our axme-code self-test runs 6 internal checks:
+        # storage write, Cursor hook parse + deny, Claude hook parse +
+        # deny, and MCP server stdio handshake. Failure aborts CI.
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            node "extension/bin/${{ matrix.extension_bin }}" self-test
+          else
+            "extension/bin/${{ matrix.extension_bin }}" self-test
+          fi
+
       - name: Install extension deps
         working-directory: extension
         run: npm install
@@ -105,6 +131,34 @@ jobs:
       - name: Build extension bundle
         working-directory: extension
         run: npm run build
+
+      - name: Run extension activation tests (vscode-test-electron)
+        # Headless VS Code spawn that loads our extension from disk and
+        # asserts: activates clean, all declared commands registered,
+        # axme view container contributed. Linux runners need xvfb because
+        # vscode-test-electron starts a real display; macOS / Windows
+        # have display natively. Skipped on linux-arm64 — the
+        # @vscode/test-electron prebuilt VS Code download doesn't ship
+        # arm64 Linux yet.
+        #
+        # Non-blocking (continue-on-error: true). The downloaded VS Code
+        # 1.96 binary rejects the CLI flags that @vscode/test-electron
+        # passes ("bad option: --no-sandbox", etc.) — an upstream
+        # interaction issue we're tracking separately. The bundled-binary
+        # self-test above gives strong end-to-end coverage independent
+        # of the IDE host, so a failing activation suite shouldn't block
+        # marketplace publishing.
+        if: matrix.target != 'linux-arm64' && matrix.target != 'win32-arm64'
+        continue-on-error: true
+        working-directory: extension
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            sudo apt-get update -qq && sudo apt-get install -y xvfb
+            xvfb-run -a npm test
+          else
+            npm test
+          fi
 
       - name: Package .vsix
         working-directory: extension
