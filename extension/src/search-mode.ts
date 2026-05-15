@@ -28,13 +28,26 @@ export type ContextMode = "full" | "search";
 /**
  * Read context.mode from `.axme-code/config.yaml`. Falls back to "full"
  * when missing — matches CORE's readConfig default.
+ *
+ * The YAML schema is nested:
+ *
+ *   context:
+ *     mode: full | search
+ *
+ * Earlier drafts used a flat `^contextMode:` regex (camelCase) which
+ * never matched anything in the actual file — sidebar always read
+ * "full" even after the CLI flipped the config to "search", and the
+ * Enable/Disable toggle UI showed wrong state. The fix is a multiline
+ * regex anchored on the `context:` header then the indented `mode:`
+ * line. We don't pull a full YAML parser because the schema is stable
+ * and the extension bundle stays smaller without it.
  */
 export function readContextMode(workspaceRoot: string): ContextMode {
   const cfg = join(workspaceRoot, ".axme-code", "config.yaml");
   if (!existsSync(cfg)) return "full";
   try {
     const txt = readFileSync(cfg, "utf-8");
-    const m = /^contextMode\s*:\s*(\w+)/m.exec(txt);
+    const m = /^context\s*:\s*\r?\n\s+mode\s*:\s*(\w+)/m.exec(txt);
     if (m && (m[1] === "full" || m[1] === "search")) return m[1];
   } catch { /* swallow */ }
   return "full";
