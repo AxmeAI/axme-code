@@ -58,18 +58,26 @@ export async function registerMcpServer(
   // execute the file as a PE binary → Cursor's MCP runner does
   // `spawn(command, args)` directly and gets ENOENT, which surfaces in
   // the chat as "MCP server does not exist … No MCP servers available."
-  // The fix mirrors what spawn-binary.ts does for our own child_process
-  // spawns: register with command="node" and the binary as the first
-  // argv on Windows, so Node loads the JS payload regardless of the
-  // file extension. Linux + macOS keep the direct path.
+  //
+  // The fix uses Cursor's own Electron binary as the Node interpreter.
+  // `process.execPath` in the extension host = path to Cursor.exe (or
+  // Code.exe in VS Code), which is an Electron binary that can run as
+  // plain Node when invoked with the env var `ELECTRON_RUN_AS_NODE=1`.
+  // This eliminates the dependency on the user having `node.exe` on
+  // PATH — most Windows users of a chat-agent IDE will not. Same
+  // pattern VS Code uses internally for language servers and other
+  // Node subprocesses.
+  //
+  // Documented: https://www.electronjs.org/docs/latest/api/environment-variables#electron_run_as_node
   const isWindows = process.platform === "win32";
-  const command = isWindows ? "node" : binary;
+  const command = isWindows ? process.execPath : binary;
   const args = isWindows ? [binary, ...serveArgs] : serveArgs;
+  const env: Record<string, string> = isWindows ? { ELECTRON_RUN_AS_NODE: "1" } : {};
   cursor.registerServer({
     name: "axme",
-    server: { command, args, env: {} },
+    server: { command, args, env },
   });
-  log(`MCP: registered 'axme' (command=${command}, binary=${binary}, workspace=${workspaceRoot ?? "(none)"})`);
+  log(`MCP: registered 'axme' (command=${command}, binary=${binary}, workspace=${workspaceRoot ?? "(none)"}, electron-as-node=${isWindows ? "yes" : "no"})`);
   // Cursor needs ~3s to process the registration before tools become
   // available to the chat agent. Verified empirically against the
   // browser-devtools-mcp reference implementation.

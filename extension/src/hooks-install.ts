@@ -21,7 +21,7 @@
  * added entries are preserved verbatim.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { IdeKind } from "./ide-detect.js";
@@ -58,6 +58,48 @@ function quote(s: string): string {
   return `"${s.replace(/"/g, '\\"')}"`;
 }
 
+/**
+ * Path to the Windows wrapper script. Lives next to hooks.json so a
+ * single uninstall sweep deletes both. The wrapper is a one-liner .cmd
+ * that sets ELECTRON_RUN_AS_NODE=1 and invokes Cursor.exe as a Node
+ * interpreter on the bundled binary — see buildHookCommand() rationale
+ * below for the full explanation.
+ */
+function windowsHookWrapperPath(): string {
+  return join(homedir(), ".cursor", "axme-hook.cmd");
+}
+
+/**
+ * Write the Windows .cmd wrapper that lets Cursor's hook runner invoke
+ * our shebang-shim binary without requiring `node.exe` on PATH. Returns
+ * the wrapper path (caller writes it into the hook command string).
+ *
+ * The wrapper captures the Cursor.exe path (process.execPath in the
+ * extension host) AND the absolute path to the bundled binary, so it
+ * works even when the user's PATH lacks Node and even when Cursor is
+ * installed in a non-standard location. ELECTRON_RUN_AS_NODE=1 tells
+ * Electron to behave as a plain Node interpreter; same trick VS Code
+ * uses internally for language servers.
+ */
+function writeWindowsHookWrapper(binary: string): string {
+  const path = windowsHookWrapperPath();
+  // cmd.exe parser quirks:
+  //   - `@echo off` silences the prompt echo
+  //   - `setlocal` scopes the env var to this script invocation
+  //   - `%*` forwards all caller args verbatim (with quoting preserved)
+  // The Cursor.exe path comes from process.execPath at install time —
+  // if Cursor relocates, user re-runs setup and we rewrite this file.
+  const content =
+    `@echo off\r\n` +
+    `setlocal\r\n` +
+    `set ELECTRON_RUN_AS_NODE=1\r\n` +
+    `"${process.execPath}" "${binary}" %*\r\n`;
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, content, "utf-8");
+  log(`Hooks: wrote Windows wrapper at ${path}`);
+  return path;
+}
+
 function buildHookCommand(binary: string, hookName: string): string {
   // No --workspace flag — handler core resolves it from stdin
   // workspace_roots[0] (PR #129 commit d267b82).
@@ -65,12 +107,16 @@ function buildHookCommand(binary: string, hookName: string): string {
   // Cross-platform: the bundled binary is a shebang shim (`#!/usr/bin/env
   // node` + CJS payload). POSIX honors the shebang and runs it directly.
   // Windows ignores shebangs and fails with ENOENT when cmd.exe / Cursor
-  // tries to exec the file. On Windows we prefix the command with `node`,
-  // which Cursor users on Windows typically have on PATH (standard dev
-  // setup). Falls through gracefully — Cursor's hook runner uses cmd.exe
-  // /c so PATH lookup works the same as in any terminal.
+  // tries to exec the file. We do NOT rely on Node being on PATH (most
+  // Windows chat-IDE users do not have it) — instead, the .cmd wrapper
+  // we write at install time invokes Cursor.exe with the
+  // ELECTRON_RUN_AS_NODE=1 env var, making Cursor's bundled Electron
+  // behave as a Node interpreter for our JS payload. The wrapper
+  // captures absolute Cursor.exe + binary paths at install time so
+  // the hook fires the same way regardless of the user's shell config.
   if (process.platform === "win32") {
-    return `node ${quote(binary)} hook ${hookName} --ide cursor`;
+    const wrapper = writeWindowsHookWrapper(binary);
+    return `${quote(wrapper)} hook ${hookName} --ide cursor`;
   }
   return `${quote(binary)} hook ${hookName} --ide cursor`;
 }
@@ -156,5 +202,17 @@ export function uninstallUserHooks(): void {
     }
   } catch (err) {
     logError("Hooks: uninstall failed", err);
+  }
+  // Drop the Windows .cmd wrapper (no-op on POSIX — the file never existed).
+  if (process.platform === "win32") {
+    const wrapper = windowsHookWrapperPath();
+    if (existsSync(wrapper)) {
+      try {
+        unlinkSync(wrapper);
+        log(`Hooks: removed Windows wrapper ${wrapper}`);
+      } catch (err) {
+        logError("Hooks: wrapper removal failed", err);
+      }
+    }
   }
 }
