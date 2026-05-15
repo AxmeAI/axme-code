@@ -12,7 +12,7 @@
 
 import * as vscode from "vscode";
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { IdeKind } from "./ide-detect.js";
 import { detectCurrentMode, ensureAuditorAuth } from "./auditor-auth.js";
@@ -27,7 +27,32 @@ function workspaceRoot(): string | undefined {
 export function isAxmeInitialized(): boolean {
   const root = workspaceRoot();
   if (!root) return false;
-  return existsSync(join(root, ".axme-code"));
+  // The directory alone is NOT a setup-complete signal: enabling
+  // semantic search runs `axme-code config set context.mode search`
+  // which writes .axme-code/config.yaml as a side effect even when
+  // setup has never run. Pre-flight reindex of search-mode does the
+  // same for .axme-code/_index/. We need a marker that's only ever
+  // created by actual setup OR by the cooperative auto-bootstrap that
+  // fires from the first axme_save_memory / axme_save_decision call.
+  //
+  // oracle/stack.md fits: it's written by:
+  //   - tools/init.ts writeOracleFiles (API-key setup's LLM scanner)
+  //   - tools/init.ts presets path (deterministic fallback if no LLM)
+  //   - storage/oracle.ts ensureOracleBootstrapped (called from
+  //     axme_save_memory / axme_save_decision MCP tools after first save)
+  // None of those fire during pure "enable semantic search" — so absence
+  // of oracle/stack.md correctly reflects "setup has not run yet".
+  const axmeDir = join(root, ".axme-code");
+  if (!existsSync(axmeDir)) return false;
+  if (existsSync(join(axmeDir, "oracle", "stack.md"))) return true;
+  // Belt-and-braces: also accept any saved decision (D-NNN-*.md) — covers
+  // sessions where the agent saved decisions but for some reason the
+  // oracle bootstrap was suppressed.
+  try {
+    const decisions = readdirSync(join(axmeDir, "decisions"));
+    if (decisions.some((f) => /^D-\d+-.*\.md$/.test(f))) return true;
+  } catch { /* directory missing or unreadable — that's fine */ }
+  return false;
 }
 
 export async function offerSetupIfMissing(binary: string, ide: IdeKind): Promise<void> {
