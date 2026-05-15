@@ -725,17 +725,20 @@ function render() {
   // when to close — the [Close session] flow is always one chat
   // message away, no banner needed to surface it.
   const sess = S.session;
-  let sessionHtml = '<p class="muted">No active chat detected. Tools will record activity when an MCP call lands.</p>';
+  const closeHint = '<p class="muted" style="margin-top:8px">To close: ask the agent in chat — <i>"close the session"</i>. It scans the whole conversation for things worth saving (memories, decisions, safety rules), persists them to <code>.axme-code/</code>, and writes a handoff for your next chat.</p>';
+  let sessionHtml = '<p class="muted">No active chat detected. Tools will record activity when an MCP call lands.</p>' + closeHint;
   if (sess && sess.hasData) {
     const startedMs = Date.parse(sess.startedAt);
     const ageMs = Number.isFinite(startedMs) ? Date.now() - startedMs : 0;
     sessionHtml = \`
       <div class="row"><span class="k">Started</span><span class="v">\${formatDuration(ageMs)} ago</span></div>
       <div class="row"><span class="k">Messages</span><span class="v">\${sess.messages}</span></div>
+      \${closeHint}
     \`;
   } else if (sess) {
     sessionHtml = \`
       <p class="muted">Session \${escapeHtml(sess.axmeSessionId.slice(0, 8))} just started — transcript empty.</p>
+      \${closeHint}
     \`;
   }
   document.getElementById("session-section").innerHTML = \`
