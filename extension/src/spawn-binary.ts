@@ -7,10 +7,15 @@
  * and rejects the file with ENOENT / UNKNOWN when treated as an
  * executable, regardless of the .exe / .cjs file-extension we ship.
  *
- * The fix on Windows is to invoke via `node <binary>` so Node executes
- * the JS payload directly. Cursor users on Windows nearly always have
- * Node installed for dev work; we rely on `node` being on PATH (cmd.exe
- * /c looks up commands the same way an interactive shell does).
+ * The fix on Windows: invoke via Cursor's own Electron binary
+ * (`process.execPath`) with the env var `ELECTRON_RUN_AS_NODE=1`. That
+ * makes Cursor.exe behave as a plain Node interpreter and execute the
+ * JS payload. We DO NOT rely on the user having `node.exe` on PATH —
+ * most Windows users of a chat-agent IDE will not.
+ *
+ * This is the same pattern VS Code itself uses internally for spawning
+ * Node subprocesses (e.g. language servers via vscode-languageclient).
+ * Documented at https://www.electronjs.org/docs/latest/api/environment-variables#electron_run_as_node
  *
  * Every spawn of the bundled binary in the extension should go through
  * this helper. A direct `spawn(binary, args)` will work on Linux + macOS
@@ -40,7 +45,10 @@ export function spawnBinary(
 ): ChildProcess {
   const opts = options ?? {};
   if (process.platform === "win32") {
-    return spawn("node", [binary, ...args], opts);
+    return spawn(process.execPath, [binary, ...args], {
+      ...opts,
+      env: { ...process.env, ...(opts.env as NodeJS.ProcessEnv | undefined), ELECTRON_RUN_AS_NODE: "1" },
+    });
   }
   return spawn(binary, args, opts);
 }
