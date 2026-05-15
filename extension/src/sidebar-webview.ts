@@ -24,6 +24,7 @@ import { readHealth, HealthSnapshot } from "./health-reader.js";
 import { detectCurrentMode } from "./auditor-auth.js";
 import { hooksAreInstalled } from "./hooks-state.js";
 import { readContextMode, indexedCount, ContextMode } from "./search-mode.js";
+import { isAxmeInitialized } from "./setup-controller.js";
 import { log } from "./log.js";
 
 /**
@@ -115,18 +116,36 @@ export class AxmeSidebarProvider implements vscode.WebviewViewProvider {
           // mode changes (a saved memory means a session is in-flight,
           // a reindex bumps indexedEntries), so we refresh all live
           // signals together on the watcher tick — saves wiring extra
-          // polling timers.
+          // polling timers. setupDone is re-checked here too because
+          // the agent's first save during cooperative setup creates
+          // oracle/stack.md, which is exactly the moment the pill
+          // should flip from "setup required" to "ready".
+          const setupDone = isAxmeInitialized(workspaceRoot);
           this.push({
             counts,
             backlog: readBacklog(workspaceRoot).slice(0, 5),
             health: readHealth(workspaceRoot),
             contextMode: readContextMode(workspaceRoot),
             indexedEntries: indexedCount(workspaceRoot),
+            setupDone,
           });
+          void vscode.commands.executeCommand(
+            "setContext",
+            "axme.workspaceInitialized",
+            setupDone,
+          );
         },
         () => {
+          // .axme-code/ just appeared on disk. This is NOT the same as
+          // "setup completed" — `axme-code config set context.mode search`
+          // creates .axme-code/ as a side effect of writing config.yaml
+          // even without any setup. Re-check the canonical signal
+          // (isAxmeInitialized → oracle/stack.md or any D-NNN-*.md) and
+          // flip setupDone + the walkthrough context key only when it's
+          // really true.
+          const setupDone = isAxmeInitialized(workspaceRoot);
           this.push({
-            setupDone: true,
+            setupDone,
             health: readHealth(workspaceRoot),
             contextMode: readContextMode(workspaceRoot),
             indexedEntries: indexedCount(workspaceRoot),
@@ -134,9 +153,9 @@ export class AxmeSidebarProvider implements vscode.WebviewViewProvider {
           void vscode.commands.executeCommand(
             "setContext",
             "axme.workspaceInitialized",
-            true,
+            setupDone,
           );
-          log("KbWatcher: .axme-code/ created — sidebar + walkthrough updated.");
+          log(`KbWatcher: .axme-code/ appeared — setupDone=${setupDone}.`);
         },
       );
     }
@@ -173,6 +192,7 @@ export class AxmeSidebarProvider implements vscode.WebviewViewProvider {
       contextMode: readContextMode(this.workspaceRoot),
       indexedEntries: indexedCount(this.workspaceRoot),
       hooksOk: hooksAreInstalled(),
+      setupDone: isAxmeInitialized(this.workspaceRoot),
     });
   }
 
@@ -194,6 +214,12 @@ export class AxmeSidebarProvider implements vscode.WebviewViewProvider {
     const health = this.workspaceRoot ? readHealth(this.workspaceRoot) : { pendingAudits: 0 };
     const contextMode = this.workspaceRoot ? readContextMode(this.workspaceRoot) : "full";
     const indexedEntries = this.workspaceRoot ? indexedCount(this.workspaceRoot) : 0;
+    // setupDone overrides whatever was passed in via initialState. The
+    // initial value was computed at activate time; by the time the
+    // webview first resolves, the user may have flipped state via
+    // Enable semantic search (which creates .axme-code/ without doing
+    // setup) — re-check on disk so the pill reflects truth.
+    const setupDone = this.workspaceRoot ? isAxmeInitialized(this.workspaceRoot) : false;
     this.push({
       ...this.initialState,
       counts,
@@ -201,6 +227,7 @@ export class AxmeSidebarProvider implements vscode.WebviewViewProvider {
       health,
       contextMode,
       indexedEntries,
+      setupDone,
       hooksOk: hooksAreInstalled(),
       ...this.pendingState,
     });

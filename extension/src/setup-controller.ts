@@ -24,8 +24,8 @@ function workspaceRoot(): string | undefined {
   return folders[0].uri.fsPath;
 }
 
-export function isAxmeInitialized(): boolean {
-  const root = workspaceRoot();
+export function isAxmeInitialized(rootOverride?: string): boolean {
+  const root = rootOverride ?? workspaceRoot();
   if (!root) return false;
   // The directory alone is NOT a setup-complete signal: enabling
   // semantic search runs `axme-code config set context.mode search`
