@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="media/icon.png" width="160" height="160" alt="AXME Code logo" />
+</p>
+
 # AXME Code
 
 Persistent memory, decisions, and safety guardrails for AI coding agents — Cursor, GitHub Copilot, Cline, Continue, Roo Code, Windsurf, and any VS Code chat agent that respects the Language Model API.
