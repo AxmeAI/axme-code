@@ -43,22 +43,23 @@ The sidebar exposes additional one-click flows: **Ask agent to setup** (cooperat
 
 The `axme-code` CLI alone writes `.cursor/mcp.json` and `.cursor/hooks.json` per project. Cursor 0.42+ requires a manual **Enable** click in Settings → MCP for any new project-level server (security feature). This extension registers MCP via Cursor's extension API directly, bypassing the per-project Enable gate — install the extension once, every project just works.
 
-## Platform support (v0.0.3)
+## Platform support (v0.1.1)
 
 | Platform | Bundled CLI | Setup + MCP + hooks | Sidebar UI | Notes |
 | --- | --- | --- | --- | --- |
 | **macOS arm64** (Apple Silicon) | ✅ verified | ✅ verified | ✅ verified | Primary dev/test platform; full UI verification done |
 | **Linux x64** | ✅ verified | ✅ verified | ⚠️ binary verified, full UI not yet sampled | CI matrix runs the 608-test core suite + binary self-test on every push |
 | **Linux arm64** | ✅ CI builds | ✅ via CI runner | ❌ not verified | First-class target via Open VSX matrix publish |
-| **Windows x64** | ✅ verified headlessly (Azure VM) | ✅ verified — setup wrote oracle/decisions/memories/safety, hooks.json correct | ❌ real Cursor UI not yet verified | See "Windows notes" below |
 | **macOS x64** (Intel) | ⚠️ CI builds | ⚠️ untested | ❌ untested | Apple discontinuing Intel; ship best-effort |
-| **Windows arm64** | ⚠️ no CI runner yet | ❌ untested | ❌ untested | GitHub Actions free tier lacks this runner as of 2026 |
+| **Windows** | ⏸ temporarily not published | ⏸ | ⏸ | See "Windows status" below |
 
-### Windows notes
+### Windows status
 
-The bundled `axme-code` binary inside the `.vsix` is a shebang shim — text starting with `#!/usr/bin/env node` followed by a CJS payload. POSIX (Linux/macOS) honours the shebang and executes it directly. **Windows ignores shebangs**, so the binary is always invoked via `node` on Windows — both internally (extension's spawnBinary helper) and in the generated `~/.cursor/hooks.json` commands.
+v0.1.0 shipped a `win32-x64` build that did not work end-to-end on a real Cursor install (MCP server failed to boot, sidebar empty). v0.1.1 contains an `ELECTRON_RUN_AS_NODE` fix (PR #136) that should resolve it, but at release time we hadn't verified the fix on a real Windows machine, so we **dropped Windows from the publish matrix for v0.1.1 to avoid offering a known-broken build**.
 
-**Requirement on Windows**: `node` must be on the user's PATH. The vast majority of Windows Cursor users have Node installed for dev work; if you don't, install from <https://nodejs.org> first.
+If you're on Windows: skip the extension for now and use the standalone Claude Code CLI flow (`curl ... | sh` install then `axme-code setup` in your project). Windows extension support returns in v0.1.2 once a real-Cursor smoke test passes.
+
+The previously-published `v0.1.0@win32-x64` is still visible on Open VSX (the registry is immutable — extensions can't be unpublished without an Eclipse Foundation manual request). Windows users searching the marketplace will see v0.1.0 as the latest Windows version. Please don't install it; it doesn't work.
 
 ### macOS notes
 
