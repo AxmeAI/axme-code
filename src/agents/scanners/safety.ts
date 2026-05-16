@@ -11,6 +11,7 @@ import type { SafetyRules } from "../../types.js";
 import { extractCostFromResult, zeroCost, type CostInfo } from "../../utils/cost-extractor.js";
 import { buildAgentQueryOptions } from "../../utils/agent-options.js";
 import { createAgentSdk } from "../../utils/agent-sdk.js";
+import { buildScopeConstraint } from "./_scope.js";
 
 export interface SafetyScanResult {
   rules: Partial<SafetyRules>;
@@ -103,7 +104,9 @@ export async function runSafetyScan(opts: {
     "scanner",
   );
 
-  const q = sdk.query({ prompt: SAFETY_SCAN_PROMPT, options: queryOpts });
+  // Scope boundary — see src/agents/scanners/_scope.ts header for why.
+  const prompt = buildScopeConstraint(opts.projectPath) + SAFETY_SCAN_PROMPT;
+  const q = sdk.query({ prompt, options: queryOpts });
 
   let result = "";
   let cost: CostInfo | undefined;

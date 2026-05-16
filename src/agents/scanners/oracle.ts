@@ -11,6 +11,7 @@ import type { OracleFiles } from "../../types.js";
 import { extractCostFromResult, zeroCost, type CostInfo } from "../../utils/cost-extractor.js";
 import { buildAgentQueryOptions } from "../../utils/agent-options.js";
 import { createAgentSdk } from "../../utils/agent-sdk.js";
+import { buildScopeConstraint } from "./_scope.js";
 
 export interface OracleScanResult {
   files: OracleFiles;
@@ -130,7 +131,11 @@ export async function runOracleScan(opts: {
     "scanner",
   );
 
-  let prompt = ORACLE_SCAN_PROMPT;
+  // Scope boundary: keep all Read/Glob/Grep/Bash tool calls inside
+  // opts.projectPath. Oracle is the one scanner that legitimately reads
+  // outside cwd (the Claude auto-memory dir at ~/.claude/projects/<encoded>/),
+  // so we whitelist that exception explicitly. See _scope.ts header.
+  let prompt = buildScopeConstraint(opts.projectPath, { allowAutoMemoryRead: true }) + ORACLE_SCAN_PROMPT;
 
   if (opts.workspaceMode) {
     prompt += `\n\n## WORKSPACE MODE - IMPORTANT

@@ -12,6 +12,7 @@ import { extractCostFromResult, zeroCost, type CostInfo } from "../../utils/cost
 import { buildAgentQueryOptions } from "../../utils/agent-options.js";
 import { createAgentSdk } from "../../utils/agent-sdk.js";
 import { toSlug } from "../../storage/decisions.js";
+import { buildScopeConstraint } from "./_scope.js";
 
 export interface DecisionScanResult {
   decisions: Decision[];
@@ -113,7 +114,8 @@ export async function runDecisionScan(opts: {
     "scanner",
   );
 
-  let prompt = DECISION_SCAN_PROMPT;
+  // Scope boundary — see src/agents/scanners/_scope.ts header for why.
+  let prompt = buildScopeConstraint(opts.projectPath) + DECISION_SCAN_PROMPT;
   if (opts.existingDecisions && opts.existingDecisions.length > 0) {
     const list = opts.existingDecisions.map(d =>
       `- ${d.id}: ${d.title} [${d.enforce ?? "info"}] — ${d.decision}`
