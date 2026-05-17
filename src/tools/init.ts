@@ -6,7 +6,7 @@
  */
 
 import { join, basename } from "node:path";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { ensureDir, pathExists } from "../storage/engine.js";
 import { writeOracleFiles, initOracleDeterministic, oracleExists } from "../storage/oracle.js";
 import { initDecisionStore, saveDecisions, listDecisions } from "../storage/decisions.js";
@@ -23,6 +23,75 @@ import { addCost, zeroCost, type CostInfo } from "../utils/cost-extractor.js";
 import { atomicWrite, removeFile } from "../storage/engine.js";
 import { findClaudePath } from "../utils/agent-options.js";
 import yaml from "js-yaml";
+
+/**
+ * Heuristic: how few non-trivial files in the project tree before we treat
+ * it as "effectively empty" and skip the LLM scan block? Three covers the
+ * fresh-repo case (a `git init` + maybe a README + .gitignore = 0-1
+ * non-trivial files) without false-positiving on real but small projects
+ * (a tiny library is usually 5+ files).
+ */
+const EMPTY_PROJECT_THRESHOLD = 3;
+
+/**
+ * Directories the empty-project walk skips entirely. Build outputs and
+ * vendor trees can contain millions of files but don't represent "user
+ * code" — including them would mean every node_modules-bearing project
+ * looks "huge" even when newly initialised.
+ */
+const EMPTY_PROBE_IGNORE_DIRS = new Set([
+  ".git", ".axme-code", "node_modules", "dist", "build", ".next",
+  "target", ".venv", "venv", "__pycache__", ".idea", ".vscode",
+  "out", "out-test", ".gradle", ".dart_tool", "bin", "obj", ".pytest_cache",
+  ".turbo", ".cache", "coverage",
+]);
+
+/**
+ * Files that count as boilerplate, not "user code" — a folder with just
+ * a README + LICENSE + .gitignore is still effectively empty for our
+ * purposes (LLM scanners would produce empty STACK/STRUCTURE output).
+ */
+const EMPTY_PROBE_TRIVIAL_FILES = new Set([
+  "README.md", "README", "README.txt", "README.rst",
+  "LICENSE", "LICENSE.md", "LICENSE.txt", "COPYING",
+  ".gitignore", ".gitattributes", ".editorconfig",
+  "CLAUDE.md", "AGENTS.md", ".cursorrules",
+]);
+
+/**
+ * Walk the project tree (capped depth + early exit) and return true when
+ * fewer than EMPTY_PROJECT_THRESHOLD non-trivial files are present. Cheap
+ * — exits as soon as the threshold is reached, never enters ignored
+ * dirs, never reads file content.
+ *
+ * Trade-off: this is a heuristic, not a sandbox. False positives (real
+ * project misidentified as empty) result in presets-only setup, which is
+ * still useful and the user can re-run with `--force` after adding code.
+ * False negatives (truly empty project misidentified as non-empty) mean
+ * we run the LLM scan unnecessarily — annoying but not broken.
+ */
+function isEffectivelyEmpty(projectPath: string): boolean {
+  let count = 0;
+  function walk(dir: string, depth: number): void {
+    if (depth > 4 || count >= EMPTY_PROJECT_THRESHOLD) return;
+    let entries: string[];
+    try { entries = readdirSync(dir); } catch { return; }
+    for (const entry of entries) {
+      if (count >= EMPTY_PROJECT_THRESHOLD) return;
+      if (EMPTY_PROBE_IGNORE_DIRS.has(entry) || entry.startsWith(".")) continue;
+      const full = join(dir, entry);
+      let s;
+      try { s = statSync(full); } catch { continue; }
+      if (s.isDirectory()) {
+        walk(full, depth + 1);
+      } else if (!EMPTY_PROBE_TRIVIAL_FILES.has(entry)) {
+        count++;
+      }
+    }
+  }
+  walk(projectPath, 0);
+  return count < EMPTY_PROJECT_THRESHOLD;
+}
 
 export interface InitResult {
   projectPath: string;
@@ -150,12 +219,23 @@ export async function initProjectWithLLM(projectPath: string, opts?: {
   let safetyLlm = false;
   let safetySummary = "";
 
-  // Pre-flight: require the `claude` CLI to be installed. Without it the Agent
-  // SDK bundled inside us crashes on `fileURLToPath(undefined)` before it can
-  // reach the user's OAuth/API key. Skip cleanly and surface a friendly error
-  // rather than leaking the SDK stack trace.
-  const claudePath = findClaudePath();
-  const scanners = claudePath
+  // Empty-project short-circuit: an effectively-empty folder (fresh
+  // `git init`, maybe a README) has nothing for the LLM scanners to
+  // analyse. They would still spend 1-3 minutes round-tripping to
+  // Claude only to produce empty STACK/STRUCTURE/decisions output, plus
+  // the user sees no progress between "starting scanners" and "scanners
+  // complete". Skip them entirely; presets + deterministic oracle init
+  // (the existing fallback below) produce the same end state instantly.
+  // Re-run with `--force` after adding code if you want LLM scan later.
+  const empty = isEffectivelyEmpty(projectPath);
+
+  // Pre-flight: require the `claude` CLI to be installed (unless we're
+  // skipping LLM scan anyway). Without it the Agent SDK bundled inside us
+  // crashes on `fileURLToPath(undefined)` before it can reach the user's
+  // OAuth/API key. Skip cleanly and surface a friendly error rather than
+  // leaking the SDK stack trace.
+  const claudePath = empty ? undefined : findClaudePath();
+  const scanners = (!empty && claudePath)
     ? await (async () => {
         log(`  [${projectName}] LLM scanning (oracle + decisions + safety + deploy)...`);
         return Promise.allSettled([
@@ -185,7 +265,9 @@ export async function initProjectWithLLM(projectPath: string, opts?: {
         ]);
       })()
     : [];
-  if (!claudePath) {
+  if (empty) {
+    log(`  [${projectName}] Project appears empty (< ${EMPTY_PROJECT_THRESHOLD} non-trivial files outside .git/node_modules/etc) — skipping LLM scanners, writing presets + deterministic oracle only. Re-run with --force after adding code to get an LLM scan.`);
+  } else if (!claudePath) {
     log(`  [${projectName}] Claude Code CLI not found on PATH — skipping LLM scanners (install with: npm install -g @anthropic-ai/claude-code)`);
     errors.push("Claude Code CLI not installed — LLM scanners skipped, using deterministic fallback");
   }
