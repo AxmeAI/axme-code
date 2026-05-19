@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="media/icon.png" width="160" height="160" alt="AXME Code logo" />
+  <img src="https://raw.githubusercontent.com/AxmeAI/axme-code/main/extension/media/icon.png" width="160" height="160" alt="AXME Code logo" />
 </p>
 
 # AXME Code
