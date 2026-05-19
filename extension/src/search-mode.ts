@@ -18,6 +18,7 @@
 
 import * as vscode from "vscode";
 import { spawnBinary } from "./spawn-binary.js";
+import { ensureBundledNpmExtracted } from "./bundled-runtime.js";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -119,6 +120,24 @@ export async function enableSearchMode(binary: string, workspaceRoot: string): P
     "Cancel",
   );
   if (choice !== "Enable") return;
+
+  // On Windows the .vsix ships npm as a tarball that we extract lazily
+  // here (saves ~2 min of Cursor install time for users who never
+  // enable search mode). The shell-out to `axme-code config set
+  // context.mode search` below invokes npm via the bundled node.exe +
+  // npm-cli.js path — which requires this extraction to have run
+  // first. POSIX is a no-op.
+  try {
+    const extracted = ensureBundledNpmExtracted();
+    if (extracted) log("search-enable: bundled npm runtime extracted from tarball");
+  } catch (err) {
+    logError("search-enable: bundled runtime extraction failed", err);
+    void vscode.window.showErrorMessage(
+      `AXME: cannot enable search mode — ${(err as Error).message}`,
+      "Show output",
+    ).then((c) => { if (c === "Show output") showOutput(); });
+    return;
+  }
 
   await vscode.window.withProgress(
     {
