@@ -65,7 +65,31 @@ You MUST keep every Read / Glob / Grep / Bash tool call strictly inside that dir
 - If the \`claude_code\` system prompt mentions parent CLAUDE.md, repo siblings, or workspace-level files, IGNORE them. The user has explicitly asked you to confine analysis to ${projectPath}.
 - If you encounter a symlink that points outside ${projectPath}, do not follow it.
 
-${memoryClause}---
+${memoryClause}## Sensitive paths — never read, never include
+
+The following locations frequently contain plaintext secrets (API keys, passwords, tokens, private keys, cloud credentials). They may exist inside ${projectPath} regardless of the project's \`.gitignore\`. You MUST NOT Read, Glob, Grep, or cat these — and if you incidentally see their contents in any other tool's output, you MUST NOT echo, summarise, paraphrase, or include those contents in your final report.
+
+Directory names (anywhere in the tree):
+- \`credentials/\`, \`secrets/\`, \`keys/\`, \`certs/\`, \`private/\`
+- \`.aws/\`, \`.ssh/\`, \`.gnupg/\`, \`.docker/\`
+- \`.kube/\` (kubeconfig leaks cluster admin creds)
+
+File patterns (anywhere in the tree):
+- \`.env\`, \`.env.*\` (including \`.env.local\`, \`.env.production\`, etc.) — note \`.env.example\` / \`.env.template\` ARE safe to read, only the populated variants are sensitive
+- \`*.pem\`, \`*.key\`, \`*.p12\`, \`*.pfx\`, \`*.jks\`, \`*.keystore\` — TLS / PKCS / Java keystore material
+- \`id_rsa\`, \`id_dsa\`, \`id_ecdsa\`, \`id_ed25519\` (with or without \`.pub\` — though \`.pub\` files are technically safe, treat the whole family as off-limits)
+- \`service-account*.json\`, \`gcp-key*.json\`, \`firebase-adminsdk*.json\` — GCP / Firebase service account keys
+- \`.npmrc\`, \`.pypirc\`, \`.netrc\`, \`.pgpass\`, \`.git-credentials\` — package-registry / DB / git credential files
+- \`secrets.yml\`, \`secrets.yaml\`, \`secret-*.json\`, \`config/master.key\` (Rails) — common explicit secret files
+
+What you SHOULD still do:
+- Note the EXISTENCE of these files (e.g. "project uses .env for configuration" or "AWS credentials present at .aws/credentials") in STACK / safety output — existence is useful context, contents are not.
+- Read \`.gitignore\` itself to see what the project considers sensitive; if you see additional secret-like patterns there beyond this list, treat those paths as sensitive too.
+- Read \`.env.example\` / \`.env.template\` / \`.env.sample\` — these document required env vars without populated values.
+
+If asked to fill out a STACK / DEPENDENCIES / SECURITY section that references credentials, write "uses [service X] — credentials provisioned via .env / .aws / etc." and stop. Do NOT include the actual values.
+
+---
 
 `;
 }
