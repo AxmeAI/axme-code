@@ -44,36 +44,40 @@ export interface InstallResult {
  * platform automatically. ~30s on a fresh runtime, no-op if already there.
  */
 /**
- * Resolve the npm executable to use for installing the transformers
- * runtime. On Windows we prefer the npm.cmd bundled inside the .vsix
- * (sibling of the Node.exe currently running us) so the user doesn't
- * need a system Node/npm install. Falls back to `npm.cmd` on PATH
- * if no bundled npm is found (e.g. axme-code installed standalone via
- * the curl one-liner, not via the VS Code extension).
+ * Resolve how to invoke npm for installing the transformers runtime.
  *
- * On POSIX, just `npm` — Linux/macOS users running standalone have
- * Node + npm on PATH; users running through the extension's shebang-
- * shim are also on Node, which means they have npm.
+ * Windows: spawning a .cmd/.bat (npm.cmd) with shell:false throws EINVAL
+ * after the Node CVE-2024-27980 fix (Node >= 18.20.2/20.12.2/21.7.3) —
+ * an absolute path does NOT make it safe. So we invoke npm's CLI JS
+ * directly with the bundled node.exe (a real executable, safe with
+ * shell:false, and Node quotes argv correctly for paths with spaces).
+ * Only if npm-cli.js can't be found do we fall back to npm.cmd, which
+ * then must go through a shell.
  *
- * Returns { cmd, useShell } — useShell controls whether spawn() needs
- * shell:true. Direct .exe / absolute-path invocations are safe without
- * a shell; bare-name lookups (`npm`, `npm.cmd`) need the shell to do
- * PATH resolution on Windows.
+ * POSIX: `npm` on PATH (no .cmd wrapper, spawns fine without a shell).
+ *
+ * Returns { cmd, args, useShell }. args is prepended to the npm argv
+ * (the node.exe + npm-cli.js form). useShell is true only for the
+ * .cmd fallbacks, where the caller also shell-quotes arguments.
  */
-function resolveNpm(): { cmd: string; useShell: boolean } {
+function resolveNpm(): { cmd: string; args: string[]; useShell: boolean } {
   if (process.platform !== "win32") {
-    return { cmd: "npm", useShell: false };
+    return { cmd: "npm", args: [], useShell: false };
   }
-  // process.execPath inside this child = the Node.exe that was spawned
-  // by the extension's bundled-Node path (extension/bin/node-runtime/
-  // node.exe). npm.cmd lives in the same directory.
-  const candidate = join(dirname(process.execPath), "npm.cmd");
-  if (existsSync(candidate)) {
-    return { cmd: candidate, useShell: false };
+  // process.execPath = the node.exe running us (the extension's bundled
+  // bin/node-runtime/node.exe, or the user's global node when standalone).
+  const nodeDir = dirname(process.execPath);
+  // Standard Node distributions ship npm's CLI here, next to node.exe.
+  const npmCli = join(nodeDir, "node_modules", "npm", "bin", "npm-cli.js");
+  if (existsSync(npmCli)) {
+    return { cmd: process.execPath, args: [npmCli], useShell: false };
   }
-  // Standalone install path — user is running axme-code from a global
-  // Node, npm is on PATH. shell:true so cmd.exe resolves npm.cmd via PATHEXT.
-  return { cmd: "npm.cmd", useShell: true };
+  const cmdCandidate = join(nodeDir, "npm.cmd");
+  if (existsSync(cmdCandidate)) {
+    return { cmd: cmdCandidate, args: [], useShell: true };
+  }
+  // Standalone, no bundled node: npm.cmd via PATH (cmd.exe + PATHEXT).
+  return { cmd: "npm.cmd", args: [], useShell: true };
 }
 
 function installTransformers(): { ok: boolean; error?: string } {
@@ -89,13 +93,25 @@ function installTransformers(): { ok: boolean; error?: string } {
 
   process.stderr.write(`AXME: installing semantic-search runtime into ${dir} (one-time, ~100 MB)...\n`);
   const npm = resolveNpm();
-  const result = spawnSync(npm.cmd, [
+  const npmArgs = [
+    ...npm.args,
     "install",
     "--prefix", dir,
     "--no-audit",
     "--no-fund",
     `@huggingface/transformers@${TRANSFORMERS_VERSION}`,
-  ], { stdio: ["ignore", "inherit", "inherit"], shell: npm.useShell });
+  ];
+  // shell:true (the .cmd fallback) does NOT quote argv — Node joins on
+  // spaces and hands the string to cmd.exe — so quote whitespace args
+  // ourselves (the --prefix path may sit under a profile dir with
+  // spaces). shell:false needs no quoting: Node escapes for CreateProcess.
+  const spawnArgs = npm.useShell
+    ? npmArgs.map((a) => (/[\s"]/.test(a) ? `"${a.replace(/"/g, '\\"')}"` : a))
+    : npmArgs;
+  const result = spawnSync(npm.cmd, spawnArgs, {
+    stdio: ["ignore", "inherit", "inherit"],
+    shell: npm.useShell,
+  });
 
   if (result.error) return { ok: false, error: `npm spawn failed (${npm.cmd}): ${result.error.message}` };
   if (result.status !== 0) return { ok: false, error: `npm install exited with code ${result.status} (npm=${npm.cmd})` };
