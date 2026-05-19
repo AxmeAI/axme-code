@@ -26,6 +26,7 @@ import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { IdeKind } from "./ide-detect.js";
 import { log, logError } from "./log.js";
+import { getBundledNode } from "./spawn-binary.js";
 
 type HookKind = "preToolUse" | "postToolUse" | "sessionEnd";
 
@@ -71,29 +72,40 @@ function windowsHookWrapperPath(): string {
 
 /**
  * Write the Windows .cmd wrapper that lets Cursor's hook runner invoke
- * our shebang-shim binary without requiring `node.exe` on PATH. Returns
- * the wrapper path (caller writes it into the hook command string).
+ * our shebang-shim binary using the bundled Node.exe that ships inside
+ * the .vsix. Returns the wrapper path (caller writes it into the hook
+ * command string).
  *
- * The wrapper captures the Cursor.exe path (process.execPath in the
- * extension host) AND the absolute path to the bundled binary, so it
- * works even when the user's PATH lacks Node and even when Cursor is
- * installed in a non-standard location. ELECTRON_RUN_AS_NODE=1 tells
- * Electron to behave as a plain Node interpreter; same trick VS Code
- * uses internally for language servers.
+ * Previously this wrapper invoked Cursor.exe with ELECTRON_RUN_AS_NODE=1
+ * to use Cursor's own Electron as a Node interpreter. That approach
+ * worked in theory but proved fragile in practice — Cursor's spawn
+ * behaviour around that env var is inconsistent, and any Cursor update
+ * could change it. Now the wrapper points at the Node.exe we ship
+ * ourselves (extension/bin/node-windows-x64.exe), which is a plain
+ * Node interpreter that just works.
  */
 function writeWindowsHookWrapper(binary: string): string {
   const path = windowsHookWrapperPath();
+  const bundledNode = getBundledNode();
+  if (!bundledNode) {
+    throw new Error(
+      "AXME Code: cannot install Cursor hooks — bundled Node.exe not " +
+        "found at extension/bin/node-windows-x64.exe. The .vsix may be " +
+        "incomplete; please reinstall the extension.",
+    );
+  }
   // cmd.exe parser quirks:
   //   - `@echo off` silences the prompt echo
-  //   - `setlocal` scopes the env var to this script invocation
+  //   - `setlocal` scopes any env changes to this script invocation
   //   - `%*` forwards all caller args verbatim (with quoting preserved)
-  // The Cursor.exe path comes from process.execPath at install time —
-  // if Cursor relocates, user re-runs setup and we rewrite this file.
+  // The bundled Node and binary paths are absolute, captured at install
+  // time. If the extension is uninstalled and reinstalled to a
+  // different location, the user runs setup again and we rewrite this
+  // file with the new paths.
   const content =
     `@echo off\r\n` +
     `setlocal\r\n` +
-    `set ELECTRON_RUN_AS_NODE=1\r\n` +
-    `"${process.execPath}" "${binary}" %*\r\n`;
+    `"${bundledNode}" "${binary}" %*\r\n`;
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, content, "utf-8");
   log(`Hooks: wrote Windows wrapper at ${path}`);

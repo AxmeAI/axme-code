@@ -26,9 +26,10 @@
 
 import * as vscode from "vscode";
 import { detectIde, IdeKind } from "./ide-detect.js";
-import { findAxmeBinary } from "./binary-detect.js";
+import { findAxmeBinary, findBundledNode } from "./binary-detect.js";
 import { registerMcpServer } from "./mcp-register.js";
 import { installUserHooks } from "./hooks-install.js";
+import { setBundledNode } from "./spawn-binary.js";
 import { ensureAuditorAuth } from "./auditor-auth.js";
 import { isAxmeInitialized } from "./setup-controller.js";
 import { AxmeStatusBar } from "./status-bar.js";
@@ -114,6 +115,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     // anyway so user sees the failure in toast form.
     await report.present();
     return;
+  }
+
+  // Cache the bundled Node.exe path (Windows only). Used by mcp-register,
+  // hooks-install, and every spawn through spawnBinary(). On Linux/macOS
+  // this resolves to undefined and the shebang shim is executed directly.
+  // If we're on Windows and node-windows-x64.exe is missing from the
+  // .vsix, downstream spawns throw a clear "reinstall the extension"
+  // error rather than failing mysteriously with ENOENT.
+  const bundledNode = findBundledNode(context);
+  setBundledNode(bundledNode);
+  if (process.platform === "win32") {
+    log(`  Bundled Node: ${bundledNode ?? "(missing — Windows spawns will fail)"}`);
   }
 
   // ---- Step 3: MCP registration ------------------------------------------

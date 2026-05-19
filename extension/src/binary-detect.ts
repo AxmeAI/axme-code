@@ -46,6 +46,35 @@ function bundledBinaryPath(context: vscode.ExtensionContext): string {
   return join(context.extensionPath, "bin", `axme-code${ext}`);
 }
 
+/**
+ * Locate the bundled Node.exe that ships inside the .vsix on Windows.
+ *
+ * Why we need this: extension/bin/axme-code.exe is a shebang-shim text
+ * file (`#!/usr/bin/env node` + CJS payload). POSIX systems execute it
+ * via the shebang. Windows ignores shebangs entirely — it can't execute
+ * the file as a PE binary. Previous fixes tried using Cursor's own
+ * Electron binary as a Node interpreter via ELECTRON_RUN_AS_NODE=1, but
+ * Cursor's `registerServer({env})` API is undocumented and the env var
+ * doesn't reliably reach the spawned process. The current strategy is
+ * the simplest one that works: ship an actual Node.exe inside the .vsix
+ * and invoke it directly.
+ *
+ * The CI matrix downloads node-v20.x.x-win-x64.zip during build, copies
+ * node.exe into extension/bin/node-windows-x64.exe, and packages it
+ * into the win32-x64 .vsix. This function returns its absolute path at
+ * runtime so spawn-binary / mcp-register / hooks-install can use it.
+ *
+ * Returns undefined on non-Windows platforms (Linux/macOS execute the
+ * shebang shim natively, no bundled Node needed there) and when the
+ * file is missing (broken install — caller surfaces an actionable
+ * error to the user).
+ */
+export function findBundledNode(context: vscode.ExtensionContext): string | undefined {
+  if (process.platform !== "win32") return undefined;
+  const p = join(context.extensionPath, "bin", "node-windows-x64.exe");
+  return existsSync(p) ? p : undefined;
+}
+
 function standardInstallLocations(): string[] {
   const home = homedir();
   const ext = process.platform === "win32" ? ".cmd" : "";

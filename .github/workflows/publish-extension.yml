@@ -72,6 +72,35 @@ jobs:
         if: matrix.target != 'linux-arm64'
         run: npm test
 
+      - name: Download Node.exe for Windows bundling
+        # The win32-x64 .vsix ships a real Node interpreter inside
+        # extension/bin/node-windows-x64.exe. The extension invokes
+        # bundled-node.exe + bundled-axme-code.exe (text/CJS payload)
+        # directly — no shebang-shim trickery, no ELECTRON_RUN_AS_NODE
+        # pass-through dependency, no system-Node-on-PATH requirement.
+        #
+        # Version + SHA pinned for reproducible builds. Bump explicitly
+        # in this file when refreshing the bundled Node. SHA256 source:
+        #   curl -fsSL https://nodejs.org/dist/v20.20.2/SHASUMS256.txt
+        # Earlier attempts (PR #136) used the user's own Node or
+        # Cursor's bundled Electron via ELECTRON_RUN_AS_NODE — both
+        # fragile and inconsistent on real Windows machines.
+        if: matrix.target == 'win32-x64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          NODE_VERSION="20.20.2"
+          ZIP="node-v${NODE_VERSION}-win-x64.zip"
+          curl -fsSL -o "$ZIP" "https://nodejs.org/dist/v${NODE_VERSION}/${ZIP}"
+          echo "dc3700fdd57a63eedb8fd7e3c7baaa32e6a740a1b904167ff4204bc68ed8bf77  $ZIP" | sha256sum -c -
+          # The Windows runner image already has 7z / unzip available.
+          # `unzip -q` works on the runner's Git-Bash environment.
+          unzip -q "$ZIP"
+          mkdir -p extension/bin
+          cp "node-v${NODE_VERSION}-win-x64/node.exe" extension/bin/node-windows-x64.exe
+          ls -la extension/bin/node-windows-x64.exe
+          rm -rf "$ZIP" "node-v${NODE_VERSION}-win-x64"
+
       - name: Bundle core CLI to a single platform-specific file
         shell: bash
         run: |

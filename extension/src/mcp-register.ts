@@ -15,6 +15,7 @@
 
 import * as vscode from "vscode";
 import { log, logError } from "./log.js";
+import { getBundledNode } from "./spawn-binary.js";
 
 interface CursorMcpApi {
   registerServer(config: {
@@ -59,25 +60,43 @@ export async function registerMcpServer(
   // `spawn(command, args)` directly and gets ENOENT, which surfaces in
   // the chat as "MCP server does not exist … No MCP servers available."
   //
-  // The fix uses Cursor's own Electron binary as the Node interpreter.
-  // `process.execPath` in the extension host = path to Cursor.exe (or
-  // Code.exe in VS Code), which is an Electron binary that can run as
-  // plain Node when invoked with the env var `ELECTRON_RUN_AS_NODE=1`.
-  // This eliminates the dependency on the user having `node.exe` on
-  // PATH — most Windows users of a chat-agent IDE will not. Same
-  // pattern VS Code uses internally for language servers and other
-  // Node subprocesses.
+  // Earlier attempts:
+  //   1. spawn("node", ...) — required user to have Node on PATH, which
+  //      most Windows chat-IDE users don't.
+  //   2. spawn(process.execPath, ..., env: { ELECTRON_RUN_AS_NODE: "1" })
+  //      — relied on Cursor's MCP runner passing the env field through
+  //      to spawn(). Cursor's registerServer() API is undocumented and
+  //      the env pass-through is NOT reliable in practice. User-reported
+  //      MCP still failed to boot on Windows even with this fix.
   //
-  // Documented: https://www.electronjs.org/docs/latest/api/environment-variables#electron_run_as_node
+  // Current strategy: ship an actual Node.exe inside the .vsix and tell
+  // Cursor to spawn THAT as the MCP server command, with the bundled JS
+  // payload as argv[0]. This is a plain process spawn — no env tricks,
+  // no Electron-as-Node, no system Node dependency. The bundled Node
+  // path is resolved at activation time via findBundledNode() and
+  // cached in spawn-binary.ts.
   const isWindows = process.platform === "win32";
-  const command = isWindows ? process.execPath : binary;
-  const args = isWindows ? [binary, ...serveArgs] : serveArgs;
-  const env: Record<string, string> = isWindows ? { ELECTRON_RUN_AS_NODE: "1" } : {};
+  let command: string;
+  let args: string[];
+  if (isWindows) {
+    const bundledNode = getBundledNode();
+    if (!bundledNode) {
+      throw new Error(
+        "AXME Code: bundled Node.exe not found at extension/bin/node-windows-x64.exe. " +
+          "MCP server cannot start. This usually means the .vsix is incomplete — please reinstall.",
+      );
+    }
+    command = bundledNode;
+    args = [binary, ...serveArgs];
+  } else {
+    command = binary;
+    args = serveArgs;
+  }
   cursor.registerServer({
     name: "axme",
-    server: { command, args, env },
+    server: { command, args, env: {} },
   });
-  log(`MCP: registered 'axme' (command=${command}, binary=${binary}, workspace=${workspaceRoot ?? "(none)"}, electron-as-node=${isWindows ? "yes" : "no"})`);
+  log(`MCP: registered 'axme' (command=${command}, binary=${binary}, workspace=${workspaceRoot ?? "(none)"})`);
   // Cursor needs ~3s to process the registration before tools become
   // available to the chat agent. Verified empirically against the
   // browser-devtools-mcp reference implementation.

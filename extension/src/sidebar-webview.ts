@@ -16,7 +16,7 @@
 
 import * as vscode from "vscode";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { KbWatcher, KbCounts, readCounts } from "./kb-watcher.js";
 import { readBacklog, BacklogItemLite } from "./backlog-reader.js";
 import { readActiveSession, ActiveSession } from "./session-tracker.js";
@@ -323,9 +323,13 @@ export class AxmeSidebarProvider implements vscode.WebviewViewProvider {
     // it obvious WHICH repo the current numbers / setup state belong to.
     // VS Code reloads the window on folder switch, so this static bake
     // is safe — the webview's lifetime equals one workspace's lifetime.
-    const projectName = this.workspaceRoot
-      ? this.workspaceRoot.split("/").filter(Boolean).pop() ?? ""
-      : "";
+    // path.basename() is platform-aware: returns "repo" on both
+    // /home/me/repo and C:\Users\me\repo. The previous split("/") form
+    // broke on Windows backslash paths — the entire workspaceRoot
+    // rendered into the sidebar header as one long string, which in
+    // turn corrupted the rest of the HTML layout (reported by
+    // @geobelsky as "монитор пустой экран" on Windows v0.1.0).
+    const projectName = this.workspaceRoot ? basename(this.workspaceRoot) : "";
     const titleHtml = projectName
       ? `AXME · ${escapeHtmlServer(projectName)}`
       : `AXME Code`;
