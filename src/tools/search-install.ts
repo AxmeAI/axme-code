@@ -99,6 +99,14 @@ function installTransformers(): { ok: boolean; error?: string } {
     "--prefix", dir,
     "--no-audit",
     "--no-fund",
+    // @huggingface/transformers lists `sharp` (image processing) as an
+    // optional dependency. sharp's postinstall script calls `node
+    // install/check.js` via cmd.exe — and cmd.exe can't find `node` on
+    // the user's PATH because the user has no system Node (which is
+    // the whole point of our bundled Node runtime). For our use case
+    // (text embeddings via @xenova MiniLM), sharp isn't needed.
+    // Skip it. Also drops onnxruntime-web (we only want -node).
+    "--omit=optional",
     `@huggingface/transformers@${TRANSFORMERS_VERSION}`,
   ];
   // shell:true (the .cmd fallback) does NOT quote argv — Node joins on
@@ -108,9 +116,18 @@ function installTransformers(): { ok: boolean; error?: string } {
   const spawnArgs = npm.useShell
     ? npmArgs.map((a) => (/[\s"]/.test(a) ? `"${a.replace(/"/g, '\\"')}"` : a))
     : npmArgs;
+  // Augment PATH so any subprocess npm spawns (preinstall / postinstall
+  // scripts of dependencies) can find `node` and `npm` — they shell
+  // out via cmd.exe which inherits PATH. Without this, even with
+  // --omit=optional in place a future dependency with a postinstall
+  // script would fail the same way sharp did. Belt-and-braces.
+  const nodeDir = dirname(process.execPath);
+  const sep = process.platform === "win32" ? ";" : ":";
+  const augmentedPath = `${nodeDir}${sep}${process.env.PATH ?? ""}`;
   const result = spawnSync(npm.cmd, spawnArgs, {
     stdio: ["ignore", "inherit", "inherit"],
     shell: npm.useShell,
+    env: { ...process.env, PATH: augmentedPath },
   });
 
   if (result.error) return { ok: false, error: `npm spawn failed (${npm.cmd}): ${result.error.message}` };
