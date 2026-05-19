@@ -99,14 +99,18 @@ function installTransformers(): { ok: boolean; error?: string } {
     "--prefix", dir,
     "--no-audit",
     "--no-fund",
-    // @huggingface/transformers lists `sharp` (image processing) as an
-    // optional dependency. sharp's postinstall script calls `node
-    // install/check.js` via cmd.exe — and cmd.exe can't find `node` on
-    // the user's PATH because the user has no system Node (which is
-    // the whole point of our bundled Node runtime). For our use case
-    // (text embeddings via @xenova MiniLM), sharp isn't needed.
-    // Skip it. Also drops onnxruntime-web (we only want -node).
-    "--omit=optional",
+    // sharp is listed as an optionalDependency of @huggingface/
+    // transformers, but transformers' code unconditionally requires
+    // it at module load time (image utils are imported even when the
+    // caller only uses text pipelines). An earlier round of fixes
+    // tried `--omit=optional` to skip sharp's troublesome postinstall
+    // — that worked at install time, but the runtime then failed with
+    // `Could not load the "sharp" module using the win32-x64 runtime`
+    // when our embedder tried to import transformers (verified on a
+    // clean Windows VM 2026-05-19). PATH augmentation below is the
+    // real fix — sharp's postinstall `cmd /c node install/check.js`
+    // finds `node` via PATH, downloads its prebuilt binary, and the
+    // runtime load succeeds.
     `@huggingface/transformers@${TRANSFORMERS_VERSION}`,
   ];
   // shell:true (the .cmd fallback) does NOT quote argv — Node joins on
