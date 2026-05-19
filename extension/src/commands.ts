@@ -9,7 +9,7 @@
 import * as vscode from "vscode";
 import { spawnBinary } from "./spawn-binary.js";
 import { existsSync, readdirSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { IdeKind } from "./ide-detect.js";
 import { runSetup } from "./setup-controller.js";
 import { ensureAuditorAuth } from "./auditor-auth.js";
@@ -415,7 +415,7 @@ export function registerCommands(
         return;
       }
       const picked = await vscode.window.showQuickPick(
-        Array.from(fileSet).sort().map((f) => ({ label: f.split("/").pop() ?? f, description: f, path: f })),
+        Array.from(fileSet).sort().map((f) => ({ label: basename(f) || f, description: f, path: f })),
         { placeHolder: `Files changed across all sessions (${fileSet.size}) — pick to open` },
       );
       if (!picked) return;

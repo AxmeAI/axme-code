@@ -61,13 +61,16 @@ export function detectWorkspace(cwd: string): WorkspaceInfo {
  */
 function enrichWithGitRepos(root: string, ws: WorkspaceInfo): WorkspaceInfo {
   // Use a Set for O(1) dedup and normalize paths to bare entry names
-  // (no leading ./ or dir/ prefix — just the directory name).
-  const knownPaths = new Set(ws.projects.map(p => p.path.replace(/^\.\/?/, "")));
+  // (no leading ./ or .\\ or dir/ prefix — just the directory name).
+  // Both POSIX `./packages` and Windows `.\\packages` need to collapse
+  // to `packages`; previously the regex matched only `/`.
+  const stripDotPrefix = (p: string): string => p.replace(/^\.[\\/]?/, "");
+  const knownPaths = new Set(ws.projects.map(p => stripDotPrefix(p.path)));
   const newProjects = [...ws.projects];
 
   for (const entry of safeReaddir(root)) {
     if (entry.startsWith(".") || ["node_modules", "dist", "build", ".git"].includes(entry)) continue;
-    const normalized = entry.replace(/^\.\/?/, "");
+    const normalized = stripDotPrefix(entry);
     if (knownPaths.has(normalized)) continue;
 
     const entryPath = join(root, entry);
@@ -322,8 +325,12 @@ function isDir(path: string): boolean {
 function resolveGlobs(root: string, globs: string[]): WorkspaceProject[] {
   const projects: WorkspaceProject[] = [];
   for (const glob of globs) {
-    if (glob.endsWith("/*") || glob.endsWith("/**")) {
-      const dir = glob.replace(/\/\*\*?$/, "");
+    if (glob.endsWith("/*") || glob.endsWith("/**") || glob.endsWith("\\*") || glob.endsWith("\\**")) {
+      // Strip trailing `/*`, `/**`, `\*`, or `\**` from the glob.
+      // Workspace manifests (pnpm-workspace.yaml, package.json workspaces)
+      // sometimes ship with Windows-style separators when authored on
+      // Windows; previously the regex matched only `/`.
+      const dir = glob.replace(/[\\/]\*\*?$/, "");
       const fullDir = join(root, dir);
       if (!existsSync(fullDir)) continue;
       for (const entry of safeReaddir(fullDir)) {

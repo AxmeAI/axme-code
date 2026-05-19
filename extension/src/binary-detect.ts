@@ -59,10 +59,13 @@ function bundledBinaryPath(context: vscode.ExtensionContext): string {
  * the simplest one that works: ship an actual Node.exe inside the .vsix
  * and invoke it directly.
  *
- * The CI matrix downloads node-v20.x.x-win-x64.zip during build, copies
- * node.exe into extension/bin/node-windows-x64.exe, and packages it
- * into the win32-x64 .vsix. This function returns its absolute path at
- * runtime so spawn-binary / mcp-register / hooks-install can use it.
+ * The CI matrix downloads node-v20.x.x-win-x64.zip during build and
+ * unpacks it into extension/bin/node-runtime/ (containing node.exe +
+ * npm.cmd + node_modules/npm/ so search-mode can run `npm install`
+ * without a system Node). This function returns the absolute path of
+ * node.exe at runtime so spawn-binary / mcp-register / hooks-install
+ * can use it. findBundledNpm() returns the sibling npm.cmd path for
+ * search-install.ts to invoke.
  *
  * Returns undefined on non-Windows platforms (Linux/macOS execute the
  * shebang shim natively, no bundled Node needed there) and when the
@@ -71,7 +74,27 @@ function bundledBinaryPath(context: vscode.ExtensionContext): string {
  */
 export function findBundledNode(context: vscode.ExtensionContext): string | undefined {
   if (process.platform !== "win32") return undefined;
-  const p = join(context.extensionPath, "bin", "node-windows-x64.exe");
+  const p = join(context.extensionPath, "bin", "node-runtime", "node.exe");
+  return existsSync(p) ? p : undefined;
+}
+
+/**
+ * Locate the bundled npm.cmd that ships alongside the bundled Node.
+ * Used by search-mode runtime install (`npm install @huggingface/
+ * transformers`). When the bundled Node is present, npm.cmd is its
+ * sibling. Returns undefined elsewhere.
+ *
+ * Note: search-install.ts runs inside the MCP-server child process
+ * (the bundled axme-code binary), not inside the extension host, so
+ * this function isn't called from search-install.ts directly. Instead,
+ * search-install.ts derives the npm.cmd path from process.execPath
+ * (the absolute path of node.exe under which the binary is running).
+ * This helper is provided for diagnostics / future extension-side
+ * features that want to check whether npm is available.
+ */
+export function findBundledNpm(context: vscode.ExtensionContext): string | undefined {
+  if (process.platform !== "win32") return undefined;
+  const p = join(context.extensionPath, "bin", "node-runtime", "npm.cmd");
   return existsSync(p) ? p : undefined;
 }
 

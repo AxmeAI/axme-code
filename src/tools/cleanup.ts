@@ -150,7 +150,11 @@ export function normalizeDecisions(
 
   for (const decDir of targets) {
     locations++;
-    const name = decDir.split("/").slice(-3, -1).join("/");
+    // decDir is "<repo>/.axme-code/decisions"; we want "<repo-basename>/.axme-code"
+    // for the log line. Using path.sep (not "/") so Windows backslash paths
+    // are handled correctly — the previous split("/") returned [decDir]
+    // unchanged on Windows, leaving `name` as the full path.
+    const name = `${basename(join(decDir, "..", ".."))}/${AXME_CODE_DIR}`;
     let updated = 0;
     try {
       for (const file of readdirSync(decDir).filter(f => f.startsWith("D-") && f.endsWith(".md"))) {

@@ -488,6 +488,18 @@ export function checkGit(rules: SafetyRules, command: string, _cwd?: string, ski
 }
 
 /**
+ * Normalize a filesystem path for safety-rule comparison. Folds backslashes
+ * to forward slashes (so rules written with `/` match Windows paths with
+ * `\\`) and lowercases on Windows (NTFS is case-insensitive by default —
+ * a rule "C:\Users\me" should match a write to "c:\users\me\file.txt").
+ * Linux / macOS stay case-sensitive.
+ */
+function normalizePathForSafety(p: string): string {
+  const slashed = p.replace(/\\/g, "/");
+  return process.platform === "win32" ? slashed.toLowerCase() : slashed;
+}
+
+/**
  * Check if a file path is allowed.
  */
 export function checkFilePath(rules: SafetyRules, filePath: string, operation: "read" | "write"): SafetyVerdict {
@@ -496,8 +508,17 @@ export function checkFilePath(rules: SafetyRules, filePath: string, operation: "
     if (matchesPattern(filePath, pattern)) return { allowed: false, reason: `Path denied: ${denied}` };
   }
   if (operation === "write") {
+    // Normalize separators + case so Windows rules match Windows file paths.
+    // The previous `filePath.startsWith(readOnly)` was case-sensitive and
+    // separator-sensitive — a rule "C:\Users\me" silently failed to match
+    // a write to "c:\users\me\file" (different case) or "C:/Users/me/file"
+    // (different separator).
+    const normFile = normalizePathForSafety(filePath);
     for (const readOnly of rules.filesystem.readOnlyPaths) {
-      if (filePath.startsWith(readOnly)) return { allowed: false, reason: `Path is read-only: ${readOnly}` };
+      const normRule = normalizePathForSafety(readOnly.replace("~", homedir()));
+      if (normFile === normRule || normFile.startsWith(normRule + "/")) {
+        return { allowed: false, reason: `Path is read-only: ${readOnly}` };
+      }
     }
   }
   return { allowed: true };

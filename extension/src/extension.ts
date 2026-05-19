@@ -25,6 +25,7 @@
  */
 
 import * as vscode from "vscode";
+import { basename } from "node:path";
 import { detectIde, IdeKind } from "./ide-detect.js";
 import { findAxmeBinary, findBundledNode } from "./binary-detect.js";
 import { registerMcpServer } from "./mcp-register.js";
@@ -99,7 +100,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const report = new ActivationReport();
 
   // ---- Step 2: binary detection ------------------------------------------
-  const binary = await runStep(report, "binary", (b) => b.split("/").pop() ?? "ok", async () => {
+  const binary = await runStep(report, "binary", (b) => basename(b) || "ok", async () => {
     const path = await findAxmeBinary(context);
     if (!path) {
       throw new Error(

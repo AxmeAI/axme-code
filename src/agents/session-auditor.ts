@@ -17,7 +17,7 @@
  * Budget: no cap (per project rule — see .axme-code/memory/feedback/no-llm-budget-caps.md)
  */
 
-import { basename, relative } from "node:path";
+import { basename, isAbsolute, join, relative } from "node:path";
 import type { Memory, Decision, SessionHandoff, WorkspaceInfo } from "../types.js";
 import { DEFAULT_AUDITOR_MODEL } from "../types.js";
 import { extractCostFromResult, zeroCost, type CostInfo } from "../utils/cost-extractor.js";
@@ -360,7 +360,16 @@ function buildExistingContext(sessionOrigin: string, workspaceInfo?: WorkspaceIn
   if (workspaceInfo && workspaceInfo.type !== "single") {
     const seen = new Set<string>([sessionOrigin]);
     for (const proj of workspaceInfo.projects) {
-      const absPath = proj.path.startsWith("/") ? proj.path : `${workspaceInfo.root}/${proj.path.replace(/^\.\/?/, "")}`;
+      // Resolve a workspace project entry to an absolute path. The
+      // previous form `proj.path.startsWith("/")` only caught POSIX
+      // absolute paths; on Windows an absolute path looks like `C:\...`
+      // which fails the check and fell into the string-concatenation
+      // branch with a hardcoded `/` separator → mixed path with both
+      // `/` and `\\` that downstream startsWith checks couldn't match.
+      // `path.isAbsolute` handles both POSIX `/foo` and Windows `C:\foo`,
+      // and `join()` uses the platform's native separator.
+      const cleanRel = proj.path.replace(/^\.[\\/]?/, "");
+      const absPath = isAbsolute(proj.path) ? proj.path : join(workspaceInfo.root, cleanRel);
       if (seen.has(absPath)) continue;
       seen.add(absPath);
       paths.push({ label: proj.name, path: absPath });
@@ -381,7 +390,7 @@ function buildExistingContext(sessionOrigin: string, workspaceInfo?: WorkspaceIn
       const decCount = listDecisions(path).length;
       const memCount = listMemories(path).length;
       if (decCount === 0 && memCount === 0) continue;
-      lines.push(`- [${label}] ${path}/.axme-code/   (${decCount} decisions, ${memCount} memories, plus safety/rules.yaml)`);
+      lines.push(`- [${label}] ${join(path, ".axme-code")}   (${decCount} decisions, ${memCount} memories, plus safety/rules.yaml)`);
     } catch {}
   }
   return lines.join("\n");
@@ -418,14 +427,21 @@ function buildWorkspaceContext(
     lines.push(`  - ${proj.name} (path: ${proj.path})`);
   }
 
-  // Map filesChanged to repos so the auditor sees which repos were touched
+  // Map filesChanged to repos so the auditor sees which repos were touched.
+  // Same isAbsolute / join fix as buildExistingContext above — the previous
+  // form used startsWith("/") (POSIX-only) and a hardcoded "/" separator,
+  // which mismatched Windows absolute paths like C:\... and produced a
+  // mixed-separator string that f.startsWith() never matched.
   if (filesChanged.length > 0) {
     const touched = new Map<string, number>();
     for (const f of filesChanged) {
       let matchedRepo: string | null = null;
       for (const proj of workspaceInfo.projects) {
-        const projAbs = proj.path.startsWith("/") ? proj.path : `${workspaceInfo.root}/${proj.path.replace(/^\.\/?/, "")}`;
-        if (f.startsWith(projAbs + "/") || f === projAbs) {
+        const cleanRel = proj.path.replace(/^\.[\\/]?/, "");
+        const projAbs = isAbsolute(proj.path) ? proj.path : join(workspaceInfo.root, cleanRel);
+        // path.sep covers both POSIX `/` and Windows `\\` so the prefix
+        // match works on either platform.
+        if (f === projAbs || f.startsWith(projAbs + "/") || f.startsWith(projAbs + "\\")) {
           matchedRepo = proj.name;
           break;
         }

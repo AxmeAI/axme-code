@@ -112,7 +112,7 @@ function writeWindowsHookWrapper(binary: string): string {
   return path;
 }
 
-function buildHookCommand(binary: string, hookName: string): string {
+function buildHookCommand(binary: string, hookName: string, wrapper?: string): string {
   // No --workspace flag — handler core resolves it from stdin
   // workspace_roots[0] (PR #129 commit d267b82).
   //
@@ -120,14 +120,14 @@ function buildHookCommand(binary: string, hookName: string): string {
   // node` + CJS payload). POSIX honors the shebang and runs it directly.
   // Windows ignores shebangs and fails with ENOENT when cmd.exe / Cursor
   // tries to exec the file. We do NOT rely on Node being on PATH (most
-  // Windows chat-IDE users do not have it) — instead, the .cmd wrapper
-  // we write at install time invokes Cursor.exe with the
-  // ELECTRON_RUN_AS_NODE=1 env var, making Cursor's bundled Electron
-  // behave as a Node interpreter for our JS payload. The wrapper
-  // captures absolute Cursor.exe + binary paths at install time so
-  // the hook fires the same way regardless of the user's shell config.
+  // Windows chat-IDE users do not have it) — instead, a .cmd wrapper
+  // invokes the bundled Node.exe (shipped inside the .vsix) directly.
+  // The wrapper is written ONCE by installUserHooks() before this
+  // function is called for each hook kind; we just reference the
+  // shared wrapper path here. Callers pass it via the `wrapper` arg
+  // on Windows; non-Windows callers can omit it.
   if (process.platform === "win32") {
-    const wrapper = writeWindowsHookWrapper(binary);
+    if (!wrapper) throw new Error("buildHookCommand: wrapper path is required on Windows");
     return `${quote(wrapper)} hook ${hookName} --ide cursor`;
   }
   return `${quote(binary)} hook ${hookName} --ide cursor`;
@@ -169,13 +169,20 @@ export function installUserHooks(ide: IdeKind, binary: string): boolean {
     sessionEnd: "session-end",
   };
 
+  // Write the Windows .cmd wrapper ONCE before the per-hook loop —
+  // the file is identical for all three hook kinds (it just forwards
+  // %* to the bundled Node + binary). Earlier the wrapper was
+  // written 3× inside the loop, producing 3 redundant "Hooks: wrote
+  // Windows wrapper" log lines on activation.
+  const wrapper = process.platform === "win32" ? writeWindowsHookWrapper(binary) : undefined;
+
   for (const kind of ["preToolUse", "postToolUse", "sessionEnd"] as HookKind[]) {
     const existing = cfg.hooks[kind] ?? [];
     const preserved = existing.filter(
       (e) => !String(e.command ?? "").includes("axme-code"),
     );
     const fresh: CursorHookEntry = {
-      command: buildHookCommand(binary, cliNames[kind]),
+      command: buildHookCommand(binary, cliNames[kind], wrapper),
       type: "command",
       timeout: HOOK_TIMEOUT_MS[kind],
     };

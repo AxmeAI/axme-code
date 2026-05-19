@@ -15,6 +15,7 @@
 
 import { spawnSync } from "node:child_process";
 import { mkdirSync, existsSync, writeFileSync } from "node:fs";
+import { join, dirname } from "node:path";
 import { listMemories } from "../storage/memory.js";
 import { listDecisions } from "../storage/decisions.js";
 import {
@@ -42,29 +43,62 @@ export interface InstallResult {
  * needs platform-specific binaries; npm picks the right one for the user's
  * platform automatically. ~30s on a fresh runtime, no-op if already there.
  */
+/**
+ * Resolve the npm executable to use for installing the transformers
+ * runtime. On Windows we prefer the npm.cmd bundled inside the .vsix
+ * (sibling of the Node.exe currently running us) so the user doesn't
+ * need a system Node/npm install. Falls back to `npm.cmd` on PATH
+ * if no bundled npm is found (e.g. axme-code installed standalone via
+ * the curl one-liner, not via the VS Code extension).
+ *
+ * On POSIX, just `npm` — Linux/macOS users running standalone have
+ * Node + npm on PATH; users running through the extension's shebang-
+ * shim are also on Node, which means they have npm.
+ *
+ * Returns { cmd, useShell } — useShell controls whether spawn() needs
+ * shell:true. Direct .exe / absolute-path invocations are safe without
+ * a shell; bare-name lookups (`npm`, `npm.cmd`) need the shell to do
+ * PATH resolution on Windows.
+ */
+function resolveNpm(): { cmd: string; useShell: boolean } {
+  if (process.platform !== "win32") {
+    return { cmd: "npm", useShell: false };
+  }
+  // process.execPath inside this child = the Node.exe that was spawned
+  // by the extension's bundled-Node path (extension/bin/node-runtime/
+  // node.exe). npm.cmd lives in the same directory.
+  const candidate = join(dirname(process.execPath), "npm.cmd");
+  if (existsSync(candidate)) {
+    return { cmd: candidate, useShell: false };
+  }
+  // Standalone install path — user is running axme-code from a global
+  // Node, npm is on PATH. shell:true so cmd.exe resolves npm.cmd via PATHEXT.
+  return { cmd: "npm.cmd", useShell: true };
+}
+
 function installTransformers(): { ok: boolean; error?: string } {
   const dir = runtimeDir();
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 
   // npm requires a package.json in the prefix dir to install into it
   // without polluting the parent project. Create a minimal one if missing.
-  const pkgJson = `${dir}/package.json`;
+  const pkgJson = join(dir, "package.json");
   if (!existsSync(pkgJson)) {
     writeFileSync(pkgJson, JSON.stringify({ name: "axme-code-runtime", private: true, version: "0.0.0" }, null, 2) + "\n");
   }
 
   process.stderr.write(`AXME: installing semantic-search runtime into ${dir} (one-time, ~100 MB)...\n`);
-  const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm";
-  const result = spawnSync(npmCmd, [
+  const npm = resolveNpm();
+  const result = spawnSync(npm.cmd, [
     "install",
     "--prefix", dir,
     "--no-audit",
     "--no-fund",
     `@huggingface/transformers@${TRANSFORMERS_VERSION}`,
-  ], { stdio: ["ignore", "inherit", "inherit"], shell: process.platform === "win32" });
+  ], { stdio: ["ignore", "inherit", "inherit"], shell: npm.useShell });
 
-  if (result.error) return { ok: false, error: `npm spawn failed: ${result.error.message}` };
-  if (result.status !== 0) return { ok: false, error: `npm install exited with code ${result.status}` };
+  if (result.error) return { ok: false, error: `npm spawn failed (${npm.cmd}): ${result.error.message}` };
+  if (result.status !== 0) return { ok: false, error: `npm install exited with code ${result.status} (npm=${npm.cmd})` };
 
   // Reset the embedder cache so the next loadEmbedder() picks up the freshly
   // installed runtime instead of returning the previous null.

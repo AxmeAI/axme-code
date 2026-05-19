@@ -305,7 +305,7 @@ function buildInstructions(): string {
   parts.push("SESSION CLOSE: when the user asks to close/end the session (any language), call axme_begin_close to get the close checklist. Follow it: extract memories/decisions/safety (choosing correct scope for each), prepare handoff data, then call axme_finalize_close with everything. After finalize, output to the user: storage summary (what saved where), then startup_text.");
   parts.push("DECISION CONFLICT RULE: if two active decisions contradict each other, treat the NEWER one (by date) as authoritative. The older one is a candidate for supersede at next audit.");
   parts.push(
-    `STORAGE ROOT: ${defaultProjectPath}/.axme-code — for any direct inspection of .axme-code/ files via Bash (ls, cat, grep, find), use this ABSOLUTE path. Do NOT use relative paths from your cwd; in a multi-repo workspace your cwd may point to a child repo with its own separate .axme-code/ storage.`,
+    `STORAGE ROOT: ${join(defaultProjectPath, ".axme-code")} — for any direct inspection of .axme-code/ files via Bash (ls, cat, grep, find), use this ABSOLUTE path. Do NOT use relative paths from your cwd; in a multi-repo workspace your cwd may point to a child repo with its own separate .axme-code/ storage.`,
   );
   parts.push(
     "IMPORTANT: if axme_context output contains a 'Pending audits' section, " +
