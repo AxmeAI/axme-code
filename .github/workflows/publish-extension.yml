@@ -225,14 +225,26 @@ jobs:
             "extension/bin/node-runtime/node_modules/npm/bin/npm-cli.js"
             "extension/bin/node-runtime/node_modules/npm/bin/npm-prefix.js"
           )
+          # `unzip -l` formats paths with variable leading whitespace
+          # (depending on the size + date columns), so anchoring with
+          # `  <path>$` in -E regex is unreliable and triggers false
+          # negatives. Use -F (fixed string) and just look for the
+          # path as a substring anywhere on the line — false positives
+          # would require a different file ending with the same suffix
+          # which doesn't happen in our .vsix layout.
           MANIFEST=$(unzip -l "$VSIX")
+          missing=0
           for path in "${REQUIRED[@]}"; do
-            if ! echo "$MANIFEST" | grep -qE "  ${path}\$"; then
+            if ! echo "$MANIFEST" | grep -qF "$path"; then
               echo "::error::Missing from $VSIX: $path"
-              echo "$MANIFEST" | head -40
-              exit 1
+              missing=1
             fi
           done
+          if [ "$missing" -ne 0 ]; then
+            echo "--- $VSIX contents (first 60 lines) ---"
+            echo "$MANIFEST" | head -60
+            exit 1
+          fi
           echo "OK — all required bundled-Node files are inside $VSIX."
 
       - uses: actions/upload-artifact@v4
