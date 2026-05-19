@@ -22,10 +22,13 @@
  * so this entire module is a no-op there.
  */
 
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { log, logError } from "./log.js";
+
+const execFileAsync = promisify(execFile);
 
 let _extensionPath: string | undefined;
 
@@ -49,10 +52,17 @@ export function setExtensionPath(p: string): void {
  * to the user via a toast — without npm extracted, search-mode
  * cannot fetch the transformers runtime.
  *
+ * Async (Promise-based) so the extension host event loop stays
+ * responsive during extraction — earlier versions used execFileSync
+ * which blocked all UI (button clicks, sidebar re-renders) for the
+ * 5-10 s of tar extraction. Users saw "frozen" buttons. Callers can
+ * `await` this from within a `withProgress` block to show a
+ * meaningful "Extracting bundled runtime..." indicator.
+ *
  * @returns true if extraction ran this call, false if it was
  *          already extracted (or non-Windows).
  */
-export function ensureBundledNpmExtracted(): boolean {
+export async function ensureBundledNpmExtracted(): Promise<boolean> {
   if (process.platform !== "win32") return false;
   if (!_extensionPath) {
     throw new Error(
@@ -85,10 +95,9 @@ export function ensureBundledNpmExtracted(): boolean {
   try {
     // Use Windows' built-in tar.exe (ships with Windows 10 1803+, 2018).
     // bsdtar under the hood. Handles .tar.gz transparently via -z.
-    // `-C` sets the destination dir. stdio:pipe captures stderr if it
-    // fails so we can report a meaningful error.
-    execFileSync("tar", ["-xzf", tarball, "-C", nodeRuntimeDir], {
-      stdio: "pipe",
+    // `-C` sets the destination dir. Async wrapper so the extension
+    // host event loop stays responsive.
+    await execFileAsync("tar", ["-xzf", tarball, "-C", nodeRuntimeDir], {
       windowsHide: true,
     });
   } catch (err) {
