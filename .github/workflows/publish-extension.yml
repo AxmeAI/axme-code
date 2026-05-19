@@ -225,26 +225,32 @@ jobs:
             "extension/bin/node-runtime/node_modules/npm/bin/npm-cli.js"
             "extension/bin/node-runtime/node_modules/npm/bin/npm-prefix.js"
           )
-          # `unzip -l` formats paths with variable leading whitespace
-          # (depending on the size + date columns), so anchoring with
-          # `  <path>$` in -E regex is unreliable and triggers false
-          # negatives. Use -F (fixed string) and just look for the
-          # path as a substring anywhere on the line — false positives
-          # would require a different file ending with the same suffix
-          # which doesn't happen in our .vsix layout.
-          MANIFEST=$(unzip -l "$VSIX")
+          # Earlier attempts grepped `unzip -l` output. That kept producing
+          # false negatives on Windows Git Bash — even when the files were
+          # clearly listed (we dumped them on failure), the grep didn't
+          # match. Suspected cause: CRLF / encoding quirks in the unzip
+          # listing. Switch to the bulletproof approach: actually extract
+          # the .vsix into a temp dir and use `test -f` on each required
+          # path. Same archive, real filesystem checks, no regex / grep
+          # ambiguity.
+          rm -rf .verify-extract
+          unzip -q "$VSIX" -d .verify-extract
           missing=0
           for path in "${REQUIRED[@]}"; do
-            if ! echo "$MANIFEST" | grep -qF "$path"; then
+            if [ ! -f ".verify-extract/$path" ]; then
               echo "::error::Missing from $VSIX: $path"
               missing=1
             fi
           done
           if [ "$missing" -ne 0 ]; then
-            echo "--- $VSIX contents (first 60 lines) ---"
-            echo "$MANIFEST" | head -60
+            echo "--- $VSIX contents (top of tree) ---"
+            ls -la .verify-extract/extension/bin/ || true
+            ls -la .verify-extract/extension/bin/node-runtime/ 2>/dev/null || echo "(node-runtime/ missing)"
+            ls -la .verify-extract/extension/bin/node-runtime/node_modules/npm/bin/ 2>/dev/null || echo "(npm/bin/ missing)"
+            rm -rf .verify-extract
             exit 1
           fi
+          rm -rf .verify-extract
           echo "OK — all required bundled-Node files are inside $VSIX."
 
       - uses: actions/upload-artifact@v4
