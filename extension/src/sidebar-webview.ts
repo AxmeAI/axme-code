@@ -16,7 +16,7 @@
 
 import * as vscode from "vscode";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { KbWatcher, KbCounts, readCounts } from "./kb-watcher.js";
 import { readBacklog, BacklogItemLite } from "./backlog-reader.js";
 import { readActiveSession, ActiveSession } from "./session-tracker.js";
@@ -25,7 +25,7 @@ import { detectCurrentMode } from "./auditor-auth.js";
 import { hooksAreInstalled } from "./hooks-state.js";
 import { readContextMode, indexedCount, ContextMode } from "./search-mode.js";
 import { isAxmeInitialized } from "./setup-controller.js";
-import { log } from "./log.js";
+import { log, logError } from "./log.js";
 
 /**
  * Sidebar polling interval for the session block. Three seconds is the
@@ -143,12 +143,24 @@ export class AxmeSidebarProvider implements vscode.WebviewViewProvider {
           // (isAxmeInitialized → oracle/stack.md or any D-NNN-*.md) and
           // flip setupDone + the walkthrough context key only when it's
           // really true.
+          //
+          // We push the FULL state here (counts + backlog included),
+          // not just the deltas that changed. Earlier the push was
+          // partial and combined with a shallow merge in the webview
+          // JS it WIPED counts/backlog on Windows, leaving the
+          // sidebar visibly empty after setup completed. The deep-
+          // merge in the webview JS is the real fix; this is belt-
+          // and-braces in case a future change reintroduces the
+          // shallow-merge path.
           const setupDone = isAxmeInitialized(workspaceRoot);
           this.push({
             setupDone,
+            counts: readCounts(workspaceRoot),
+            backlog: readBacklog(workspaceRoot).slice(0, 5),
             health: readHealth(workspaceRoot),
             contextMode: readContextMode(workspaceRoot),
             indexedEntries: indexedCount(workspaceRoot),
+            hooksOk: hooksAreInstalled(),
           });
           void vscode.commands.executeCommand(
             "setContext",
@@ -170,8 +182,19 @@ export class AxmeSidebarProvider implements vscode.WebviewViewProvider {
 
   async refreshAuthState(): Promise<void> {
     if (!this.binary) return;
-    const mode = await detectCurrentMode(this.binary).catch(() => undefined);
-    this.push({ auditorKeyConfigured: !!mode });
+    try {
+      const mode = await detectCurrentMode(this.binary);
+      this.push({ auditorKeyConfigured: !!mode });
+    } catch (err) {
+      // The previous form `.catch(() => undefined)` swallowed real
+      // errors (binary not found, spawn timeout, parse failure) and
+      // left the sidebar showing "Configure credential…" as if no
+      // credential were saved — masking the actual problem. Log so
+      // the user can diagnose via Output → AXME Code; render as
+      // "no credential" since we don't know either way.
+      logError("refreshAuthState", err);
+      this.push({ auditorKeyConfigured: false });
+    }
   }
 
   /**
@@ -323,9 +346,13 @@ export class AxmeSidebarProvider implements vscode.WebviewViewProvider {
     // it obvious WHICH repo the current numbers / setup state belong to.
     // VS Code reloads the window on folder switch, so this static bake
     // is safe — the webview's lifetime equals one workspace's lifetime.
-    const projectName = this.workspaceRoot
-      ? this.workspaceRoot.split("/").filter(Boolean).pop() ?? ""
-      : "";
+    // path.basename() is platform-aware: returns "repo" on both
+    // /home/me/repo and C:\Users\me\repo. The previous split("/") form
+    // broke on Windows backslash paths — the entire workspaceRoot
+    // rendered into the sidebar header as one long string, which in
+    // turn corrupted the rest of the HTML layout (reported by
+    // @geobelsky as "монитор пустой экран" on Windows v0.1.0).
+    const projectName = this.workspaceRoot ? basename(this.workspaceRoot) : "";
     const titleHtml = projectName
       ? `AXME · ${escapeHtmlServer(projectName)}`
       : `AXME Code`;
@@ -683,10 +710,10 @@ function render() {
   const rows = bl.length === 0
     ? '<p class="muted">No items yet. Use [+ Add] or ask the agent to triage.</p>'
     : bl.map((b) => \`
-        <div class="bl-row" data-path="\${b.path}" data-id="\${b.id}">
+        <div class="bl-row" data-path="\${escapeHtml(b.path)}" data-id="\${escapeHtml(b.id)}">
           <span class="bl-dot">\${dot(b.priority)}</span>
           <span class="bl-title">\${lbl(b.status)}\${escapeHtml(b.id + ": " + b.title)}</span>
-          <span class="bl-menu" data-bl-menu="\${b.id}" title="Change status">⋯</span>
+          <span class="bl-menu" data-bl-menu="\${escapeHtml(b.id)}" title="Change status">⋯</span>
         </div>
       \`).join("");
   document.getElementById("backlog-section").innerHTML = \`
@@ -770,10 +797,26 @@ setInterval(() => { try { render(); } catch (_e) {} }, 60_000);
 
 window.addEventListener("message", (e) => {
   if (e.data && e.data.type === "state") {
-    S = { ...S, ...e.data.state };
-    render();
+    // Shallow merge would WIPE nested objects when the host pushes a
+    // partial update — e.g. the onCreated callback in attach() sends
+    // { setupDone, health, contextMode, indexedEntries } without
+    // counts/backlog, so a naive { ...S, ...incoming } drops the
+    // current counts entirely and render() ends up dereferencing
+    // undefined.safety / undefined.questions, throwing inside the
+    // section build, leaving the sidebar visibly empty. Reported by
+    // @geobelsky on Windows 2026-05-19 as "монитор пустой экран".
+    // Deep-merge the known nested objects; everything else stays
+    // shallow.
+    const incoming = e.data.state;
+    S = {
+      ...S,
+      ...incoming,
+      counts: incoming.counts ? { ...S.counts, ...incoming.counts } : S.counts,
+      health: incoming.health ? { ...S.health, ...incoming.health } : S.health,
+    };
+    try { render(); } catch (e) { console.error("sidebar render failed:", e); }
   }
 });
 
-render();
+try { render(); } catch (e) { console.error("sidebar initial render failed:", e); }
 `;

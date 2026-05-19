@@ -9,7 +9,7 @@
 import * as vscode from "vscode";
 import { spawnBinary } from "./spawn-binary.js";
 import { existsSync, readdirSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { IdeKind } from "./ide-detect.js";
 import { runSetup } from "./setup-controller.js";
 import { ensureAuditorAuth } from "./auditor-auth.js";
@@ -107,6 +107,31 @@ async function openOrHint(
   await vscode.window.showTextDocument(doc);
 }
 
+/**
+ * Wrapper around vscode.commands.registerCommand that catches handler
+ * errors, logs them to the AXME output channel, AND surfaces a toast to
+ * the user. Without this, an uncaught error inside a command handler
+ * disappears silently — the user clicks a sidebar button and nothing
+ * visible happens, with no way to diagnose. registerSafe gives the
+ * user a clear "X failed: Y" message and a "Show output" affordance.
+ */
+function registerSafe(
+  id: string,
+  handler: (...args: any[]) => Promise<void> | void,
+): vscode.Disposable {
+  return vscode.commands.registerCommand(id, async (...args: any[]) => {
+    try {
+      await handler(...args);
+    } catch (err) {
+      logError(`Command ${id} failed`, err);
+      const msg = err instanceof Error ? err.message : String(err);
+      void vscode.window
+        .showErrorMessage(`AXME: ${id} failed — ${msg.slice(0, 200)}`, "Show output")
+        .then((c) => { if (c === "Show output") showOutput(); });
+    }
+  });
+}
+
 export function registerCommands(
   context: vscode.ExtensionContext,
   binary: string,
@@ -114,11 +139,11 @@ export function registerCommands(
   statusBar: AxmeStatusBar,
 ): vscode.Disposable[] {
   return [
-    vscode.commands.registerCommand("axme.setup", async () => {
+    registerSafe("axme.setup", async () => {
       await runSetup(binary, ide);
     }),
 
-    vscode.commands.registerCommand("axme.reauthAuditor", async () => {
+    registerSafe("axme.reauthAuditor", async () => {
       // Force re-prompt by stubbing the saved state via env override on the
       // `auth status` call would be ugly — simplest: shell out to
       // `axme-code auth` (interactive) or run our prompt flow regardless.
@@ -126,7 +151,7 @@ export function registerCommands(
       await ensureAuditorAuth(binary);
     }),
 
-    vscode.commands.registerCommand("axme.reindex", async () => {
+    registerSafe("axme.reindex", async () => {
       const root = workspaceRoot();
       if (!root) {
         void vscode.window.showWarningMessage("AXME Code: open a folder first.");
@@ -169,7 +194,7 @@ export function registerCommands(
       }
     }),
 
-    vscode.commands.registerCommand("axme.showStatus", async () => {
+    registerSafe("axme.showStatus", async () => {
       // v0.0.2: replace plain-text output dump with a full healthcheck
       // webview (status of binary, MCP, hooks, auth, KB per workspace).
       // The old "axme-code status" output dump is still accessible via the
@@ -177,7 +202,7 @@ export function registerCommands(
       await openStatusWebview(binary);
     }),
 
-    vscode.commands.registerCommand("axme.showStatusText", async () => {
+    registerSafe("axme.showStatusText", async () => {
       const root = workspaceRoot();
       if (!root) {
         void vscode.window.showWarningMessage("AXME Code: open a folder first.");
@@ -195,7 +220,7 @@ export function registerCommands(
       showOutput();
     }),
 
-    vscode.commands.registerCommand("axme.openDashboard", async () => {
+    registerSafe("axme.openDashboard", async () => {
       const root = workspaceRoot();
       if (!root) return;
       const dir = join(root, ".axme-code");
@@ -209,7 +234,7 @@ export function registerCommands(
       await vscode.commands.executeCommand("revealInExplorer", uri);
     }),
 
-    vscode.commands.registerCommand("axme.showRecentDecisions", async () => {
+    registerSafe("axme.showRecentDecisions", async () => {
       const items = statusBar.recentDecisions().map((d) => ({
         label: `${d.id}: ${d.title}`,
         description: d.path,
@@ -228,7 +253,7 @@ export function registerCommands(
       }
     }),
 
-    vscode.commands.registerCommand("axme.reset", async () => {
+    registerSafe("axme.reset", async () => {
       await runReset();
     }),
 
@@ -236,10 +261,10 @@ export function registerCommands(
     // Commands surfaced by the sidebar webview. Cooperative prompts copy
     // structured agent instructions to the clipboard; users paste them
     // into the active chat (no fresh-tab spawn — that was bad UX).
-    vscode.commands.registerCommand("axme.askAgentSetup", async () => {
+    registerSafe("axme.askAgentSetup", async () => {
       await deliverChatPrompt({ label: "setup prompt", body: PROMPT_SETUP });
     }),
-    vscode.commands.registerCommand("axme.openBacklog", async () => {
+    registerSafe("axme.openBacklog", async () => {
       const root = workspaceRoot();
       if (!root) {
         void vscode.window.showWarningMessage("AXME Code: open a folder first.");
@@ -248,7 +273,7 @@ export function registerCommands(
       const uri = vscode.Uri.file(join(root, ".axme-code", "backlog"));
       await vscode.commands.executeCommand("revealInExplorer", uri);
     }),
-    vscode.commands.registerCommand("axme.changeBacklogStatus", async (id: string) => {
+    registerSafe("axme.changeBacklogStatus", async (id: string) => {
       if (!id) return;
       const root = workspaceRoot();
       if (!root) { void vscode.window.showWarningMessage("AXME Code: open a folder first."); return; }
@@ -281,7 +306,7 @@ export function registerCommands(
         void vscode.window.showErrorMessage(`AXME: failed to update ${id} — ${err.trim() || `exit ${code}`}`);
       }
     }),
-    vscode.commands.registerCommand("axme.addBacklogItem", async () => {
+    registerSafe("axme.addBacklogItem", async () => {
       const root = workspaceRoot();
       if (!root) {
         void vscode.window.showWarningMessage("AXME Code: open a folder first.");
@@ -322,7 +347,7 @@ export function registerCommands(
         void vscode.window.showErrorMessage(`AXME: failed to add backlog item — ${err.trim() || `exit ${code}`}`);
       }
     }),
-    vscode.commands.registerCommand("axme.reinstallHooks", async () => {
+    registerSafe("axme.reinstallHooks", async () => {
       const ok = installUserHooks("cursor", binary);
       if (ok) {
         void vscode.window.showInformationMessage(
@@ -342,16 +367,16 @@ export function registerCommands(
     // If the target doesn't exist yet (workspace pre-setup), we surface a
     // gentle hint instead of an error — the agent might be just about to
     // create it via the cooperative setup flow.
-    vscode.commands.registerCommand("axme.openMemoryFolder", async () => {
+    registerSafe("axme.openMemoryFolder", async () => {
       await revealOrHint(workspaceRoot(), join(".axme-code", "memory"), "memories");
     }),
-    vscode.commands.registerCommand("axme.openDecisionsFolder", async () => {
+    registerSafe("axme.openDecisionsFolder", async () => {
       await revealOrHint(workspaceRoot(), join(".axme-code", "decisions"), "decisions");
     }),
-    vscode.commands.registerCommand("axme.openSafetyRules", async () => {
+    registerSafe("axme.openSafetyRules", async () => {
       await openOrHint(workspaceRoot(), join(".axme-code", "safety", "rules.yaml"), "safety rules");
     }),
-    vscode.commands.registerCommand("axme.openQuestions", async () => {
+    registerSafe("axme.openQuestions", async () => {
       await openOrHint(workspaceRoot(), join(".axme-code", "open-questions.md"), "open questions");
     }),
 
@@ -361,7 +386,7 @@ export function registerCommands(
     //   - openOrHint / revealOrHint for static files / folders
     //   - runCli for CLI subcommands that produce text output
     //   - pickLatest for "most recent of N files" (handoff, audit log)
-    vscode.commands.registerCommand("axme.showLastHandoff", async () => {
+    registerSafe("axme.showLastHandoff", async () => {
       const root = workspaceRoot();
       if (!root) { void vscode.window.showWarningMessage("AXME Code: open a folder first."); return; }
       const path = pickLatest(join(root, ".axme-code", "plans"), /^handoff-.*\.md$/);
@@ -369,7 +394,7 @@ export function registerCommands(
       const doc = await vscode.workspace.openTextDocument(path);
       await vscode.window.showTextDocument(doc);
     }),
-    vscode.commands.registerCommand("axme.showAuditLog", async () => {
+    registerSafe("axme.showAuditLog", async () => {
       const root = workspaceRoot();
       if (!root) { void vscode.window.showWarningMessage("AXME Code: open a folder first."); return; }
       const path = pickLatest(join(root, ".axme-code", "audit-worker-logs"), /\.log$/);
@@ -377,19 +402,19 @@ export function registerCommands(
       const doc = await vscode.workspace.openTextDocument(path);
       await vscode.window.showTextDocument(doc);
     }),
-    vscode.commands.registerCommand("axme.showWorklog", async () => {
+    registerSafe("axme.showWorklog", async () => {
       await openOrHint(workspaceRoot(), join(".axme-code", "worklog.md"), "worklog");
     }),
-    vscode.commands.registerCommand("axme.showTestPlan", async () => {
+    registerSafe("axme.showTestPlan", async () => {
       await openOrHint(workspaceRoot(), join(".axme-code", "test-plan.yaml"), "test plan");
     }),
-    vscode.commands.registerCommand("axme.showDeployStaging", async () => {
+    registerSafe("axme.showDeployStaging", async () => {
       await openOrHint(workspaceRoot(), join(".axme-code", "deploy", "staging-checklist.yaml"), "staging deploy checklist");
     }),
-    vscode.commands.registerCommand("axme.showDeployProd", async () => {
+    registerSafe("axme.showDeployProd", async () => {
       await openOrHint(workspaceRoot(), join(".axme-code", "deploy", "prod-checklist.yaml"), "production deploy checklist");
     }),
-    vscode.commands.registerCommand("axme.showFilesChanged", async () => {
+    registerSafe("axme.showFilesChanged", async () => {
       const root = workspaceRoot();
       if (!root) { void vscode.window.showWarningMessage("AXME Code: open a folder first."); return; }
       // Read all session metas, dedupe filesChanged across all owned by the
@@ -415,7 +440,7 @@ export function registerCommands(
         return;
       }
       const picked = await vscode.window.showQuickPick(
-        Array.from(fileSet).sort().map((f) => ({ label: f.split("/").pop() ?? f, description: f, path: f })),
+        Array.from(fileSet).sort().map((f) => ({ label: basename(f) || f, description: f, path: f })),
         { placeHolder: `Files changed across all sessions (${fileSet.size}) — pick to open` },
       );
       if (!picked) return;
@@ -426,7 +451,7 @@ export function registerCommands(
         void vscode.window.showWarningMessage(`AXME: couldn't open ${picked.path} — it may have been deleted.`);
       }
     }),
-    vscode.commands.registerCommand("axme.selfTest", async () => {
+    registerSafe("axme.selfTest", async () => {
       const root = workspaceRoot() ?? process.cwd();
       const out = await runCli(binary, ["self-test"], root);
       log(`self-test:\n${out.text}`);
@@ -437,7 +462,7 @@ export function registerCommands(
         void vscode.window.showErrorMessage(`AXME: self-test failed (exit ${out.code}) — see output.`);
       }
     }),
-    vscode.commands.registerCommand("axme.auditKb", async () => {
+    registerSafe("axme.auditKb", async () => {
       const root = workspaceRoot();
       if (!root) { void vscode.window.showWarningMessage("AXME Code: open a folder first."); return; }
       await vscode.window.withProgress(
@@ -450,23 +475,23 @@ export function registerCommands(
       );
       void vscode.window.showInformationMessage("AXME: KB audit finished. Reports in .axme-code/kb-audit/.");
     }),
-    vscode.commands.registerCommand("axme.showStats", async () => {
+    registerSafe("axme.showStats", async () => {
       const root = workspaceRoot() ?? process.cwd();
       const out = await runCli(binary, ["stats", root], root);
       log(`stats:\n${out.text}`);
       showOutput();
     }),
-    vscode.commands.registerCommand("axme.enableSemanticSearch", async () => {
+    registerSafe("axme.enableSemanticSearch", async () => {
       const root = workspaceRoot();
       if (!root) { void vscode.window.showWarningMessage("AXME Code: open a folder first."); return; }
       await enableSearchMode(binary, root);
     }),
-    vscode.commands.registerCommand("axme.disableSemanticSearch", async () => {
+    registerSafe("axme.disableSemanticSearch", async () => {
       const root = workspaceRoot();
       if (!root) { void vscode.window.showWarningMessage("AXME Code: open a folder first."); return; }
       await disableSearchMode(binary, root);
     }),
-    vscode.commands.registerCommand("axme.cleanup", async () => {
+    registerSafe("axme.cleanup", async () => {
       const root = workspaceRoot() ?? process.cwd();
       const confirm = await vscode.window.showWarningMessage(
         "AXME: clean up orphaned session state (mappings whose Cursor process is dead, abandoned active-sessions, etc.)?",

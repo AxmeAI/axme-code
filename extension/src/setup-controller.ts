@@ -14,7 +14,7 @@ import * as vscode from "vscode";
 import { spawn } from "node:child_process";
 import { spawnBinary } from "./spawn-binary.js";
 import { existsSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { IdeKind } from "./ide-detect.js";
 import { detectCurrentMode, ensureAuditorAuth } from "./auditor-auth.js";
 import { log, logError, show as showOutput } from "./log.js";
@@ -62,7 +62,7 @@ export async function offerSetupIfMissing(binary: string, ide: IdeKind): Promise
   if (!root) return;
 
   const choice = await vscode.window.showInformationMessage(
-    `AXME Code is not initialised in ${root.split("/").pop()}. Run setup now?`,
+    `AXME Code is not initialised in ${basename(root)}. Run setup now?`,
     "Run setup",
     "Not now",
   );

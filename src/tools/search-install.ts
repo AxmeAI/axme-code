@@ -15,6 +15,7 @@
 
 import { spawnSync } from "node:child_process";
 import { mkdirSync, existsSync, writeFileSync } from "node:fs";
+import { join, dirname } from "node:path";
 import { listMemories } from "../storage/memory.js";
 import { listDecisions } from "../storage/decisions.js";
 import {
@@ -42,29 +43,99 @@ export interface InstallResult {
  * needs platform-specific binaries; npm picks the right one for the user's
  * platform automatically. ~30s on a fresh runtime, no-op if already there.
  */
+/**
+ * Resolve how to invoke npm for installing the transformers runtime.
+ *
+ * Windows: spawning a .cmd/.bat (npm.cmd) with shell:false throws EINVAL
+ * after the Node CVE-2024-27980 fix (Node >= 18.20.2/20.12.2/21.7.3) —
+ * an absolute path does NOT make it safe. So we invoke npm's CLI JS
+ * directly with the bundled node.exe (a real executable, safe with
+ * shell:false, and Node quotes argv correctly for paths with spaces).
+ * Only if npm-cli.js can't be found do we fall back to npm.cmd, which
+ * then must go through a shell.
+ *
+ * POSIX: `npm` on PATH (no .cmd wrapper, spawns fine without a shell).
+ *
+ * Returns { cmd, args, useShell }. args is prepended to the npm argv
+ * (the node.exe + npm-cli.js form). useShell is true only for the
+ * .cmd fallbacks, where the caller also shell-quotes arguments.
+ */
+function resolveNpm(): { cmd: string; args: string[]; useShell: boolean } {
+  if (process.platform !== "win32") {
+    return { cmd: "npm", args: [], useShell: false };
+  }
+  // process.execPath = the node.exe running us (the extension's bundled
+  // bin/node-runtime/node.exe, or the user's global node when standalone).
+  const nodeDir = dirname(process.execPath);
+  // Standard Node distributions ship npm's CLI here, next to node.exe.
+  const npmCli = join(nodeDir, "node_modules", "npm", "bin", "npm-cli.js");
+  if (existsSync(npmCli)) {
+    return { cmd: process.execPath, args: [npmCli], useShell: false };
+  }
+  const cmdCandidate = join(nodeDir, "npm.cmd");
+  if (existsSync(cmdCandidate)) {
+    return { cmd: cmdCandidate, args: [], useShell: true };
+  }
+  // Standalone, no bundled node: npm.cmd via PATH (cmd.exe + PATHEXT).
+  return { cmd: "npm.cmd", args: [], useShell: true };
+}
+
 function installTransformers(): { ok: boolean; error?: string } {
   const dir = runtimeDir();
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 
   // npm requires a package.json in the prefix dir to install into it
   // without polluting the parent project. Create a minimal one if missing.
-  const pkgJson = `${dir}/package.json`;
+  const pkgJson = join(dir, "package.json");
   if (!existsSync(pkgJson)) {
     writeFileSync(pkgJson, JSON.stringify({ name: "axme-code-runtime", private: true, version: "0.0.0" }, null, 2) + "\n");
   }
 
   process.stderr.write(`AXME: installing semantic-search runtime into ${dir} (one-time, ~100 MB)...\n`);
-  const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm";
-  const result = spawnSync(npmCmd, [
+  const npm = resolveNpm();
+  const npmArgs = [
+    ...npm.args,
     "install",
     "--prefix", dir,
     "--no-audit",
     "--no-fund",
+    // sharp is listed as an optionalDependency of @huggingface/
+    // transformers, but transformers' code unconditionally requires
+    // it at module load time (image utils are imported even when the
+    // caller only uses text pipelines). An earlier round of fixes
+    // tried `--omit=optional` to skip sharp's troublesome postinstall
+    // — that worked at install time, but the runtime then failed with
+    // `Could not load the "sharp" module using the win32-x64 runtime`
+    // when our embedder tried to import transformers (verified on a
+    // clean Windows VM 2026-05-19). PATH augmentation below is the
+    // real fix — sharp's postinstall `cmd /c node install/check.js`
+    // finds `node` via PATH, downloads its prebuilt binary, and the
+    // runtime load succeeds.
     `@huggingface/transformers@${TRANSFORMERS_VERSION}`,
-  ], { stdio: ["ignore", "inherit", "inherit"], shell: process.platform === "win32" });
+  ];
+  // shell:true (the .cmd fallback) does NOT quote argv — Node joins on
+  // spaces and hands the string to cmd.exe — so quote whitespace args
+  // ourselves (the --prefix path may sit under a profile dir with
+  // spaces). shell:false needs no quoting: Node escapes for CreateProcess.
+  const spawnArgs = npm.useShell
+    ? npmArgs.map((a) => (/[\s"]/.test(a) ? `"${a.replace(/"/g, '\\"')}"` : a))
+    : npmArgs;
+  // Augment PATH so any subprocess npm spawns (preinstall / postinstall
+  // scripts of dependencies) can find `node` and `npm` — they shell
+  // out via cmd.exe which inherits PATH. Without this, even with
+  // --omit=optional in place a future dependency with a postinstall
+  // script would fail the same way sharp did. Belt-and-braces.
+  const nodeDir = dirname(process.execPath);
+  const sep = process.platform === "win32" ? ";" : ":";
+  const augmentedPath = `${nodeDir}${sep}${process.env.PATH ?? ""}`;
+  const result = spawnSync(npm.cmd, spawnArgs, {
+    stdio: ["ignore", "inherit", "inherit"],
+    shell: npm.useShell,
+    env: { ...process.env, PATH: augmentedPath },
+  });
 
-  if (result.error) return { ok: false, error: `npm spawn failed: ${result.error.message}` };
-  if (result.status !== 0) return { ok: false, error: `npm install exited with code ${result.status}` };
+  if (result.error) return { ok: false, error: `npm spawn failed (${npm.cmd}): ${result.error.message}` };
+  if (result.status !== 0) return { ok: false, error: `npm install exited with code ${result.status} (npm=${npm.cmd})` };
 
   // Reset the embedder cache so the next loadEmbedder() picks up the freshly
   // installed runtime instead of returning the previous null.

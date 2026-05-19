@@ -25,10 +25,12 @@
  */
 
 import * as vscode from "vscode";
+import { basename } from "node:path";
 import { detectIde, IdeKind } from "./ide-detect.js";
-import { findAxmeBinary } from "./binary-detect.js";
+import { findAxmeBinary, findBundledNode } from "./binary-detect.js";
 import { registerMcpServer } from "./mcp-register.js";
 import { installUserHooks } from "./hooks-install.js";
+import { setBundledNode } from "./spawn-binary.js";
 import { ensureAuditorAuth } from "./auditor-auth.js";
 import { isAxmeInitialized } from "./setup-controller.js";
 import { AxmeStatusBar } from "./status-bar.js";
@@ -98,7 +100,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const report = new ActivationReport();
 
   // ---- Step 2: binary detection ------------------------------------------
-  const binary = await runStep(report, "binary", (b) => b.split("/").pop() ?? "ok", async () => {
+  const binary = await runStep(report, "binary", (b) => basename(b) || "ok", async () => {
     const path = await findAxmeBinary(context);
     if (!path) {
       throw new Error(
@@ -116,17 +118,44 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     return;
   }
 
+  // Cache the bundled Node.exe path (Windows only). Used by mcp-register,
+  // hooks-install, and every spawn through spawnBinary(). On Linux/macOS
+  // this resolves to undefined and the shebang shim is executed directly.
+  // If we're on Windows and node-windows-x64.exe is missing from the
+  // .vsix, downstream spawns throw a clear "reinstall the extension"
+  // error rather than failing mysteriously with ENOENT.
+  const bundledNode = findBundledNode(context);
+  setBundledNode(bundledNode);
+  if (process.platform === "win32") {
+    log(`  Bundled Node: ${bundledNode ?? "(missing — Windows spawns will fail)"}`);
+  }
+
   // ---- Step 3: MCP registration ------------------------------------------
   // We need the workspace folder BEFORE Step 6 — pass it to mcp-register so
   // the server's --workspace flag points at the real project, not Cursor's
   // home-dir cwd. Without this, axme_context called with no project_path
   // defaults to /home/$USER and misses the workspace's .axme-code/ entirely.
+  //
+  // MCP registration is the load-bearing step: every MCP tool the user
+  // expects (axme_context, axme_save_*, axme_safety, ...) depends on it.
+  // If this fails, the sidebar / hooks / etc. can technically activate but
+  // the user will see "MCP server does not exist" on every chat tool call
+  // and have no way to recover from inside the extension. Previously the
+  // activation continued silently past an MCP failure, leaving the
+  // sidebar showing "ready" while tools were dead. Now we abort with a
+  // visible error so the user knows something needs attention.
   const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
   const workspaceRoot = workspaceFolder?.uri.fsPath;
-  await runStep(report, "mcp", () => "registered", async () => {
+  const mcpRegistered = await runStep(report, "mcp", () => "registered", async () => {
     const disposable = await registerMcpServer(binary, workspaceRoot);
     context.subscriptions.push(disposable);
+    return true;
   });
+  if (mcpRegistered === undefined) {
+    log("MCP registration failed — aborting activation. See output above for the underlying error.");
+    await report.present();
+    return;
+  }
 
   // ---- Step 4: hooks ------------------------------------------------------
   const enableHooks = vscode.workspace

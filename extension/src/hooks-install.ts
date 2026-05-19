@@ -26,6 +26,7 @@ import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { IdeKind } from "./ide-detect.js";
 import { log, logError } from "./log.js";
+import { getBundledNode } from "./spawn-binary.js";
 
 type HookKind = "preToolUse" | "postToolUse" | "sessionEnd";
 
@@ -71,36 +72,47 @@ function windowsHookWrapperPath(): string {
 
 /**
  * Write the Windows .cmd wrapper that lets Cursor's hook runner invoke
- * our shebang-shim binary without requiring `node.exe` on PATH. Returns
- * the wrapper path (caller writes it into the hook command string).
+ * our shebang-shim binary using the bundled Node.exe that ships inside
+ * the .vsix. Returns the wrapper path (caller writes it into the hook
+ * command string).
  *
- * The wrapper captures the Cursor.exe path (process.execPath in the
- * extension host) AND the absolute path to the bundled binary, so it
- * works even when the user's PATH lacks Node and even when Cursor is
- * installed in a non-standard location. ELECTRON_RUN_AS_NODE=1 tells
- * Electron to behave as a plain Node interpreter; same trick VS Code
- * uses internally for language servers.
+ * Previously this wrapper invoked Cursor.exe with ELECTRON_RUN_AS_NODE=1
+ * to use Cursor's own Electron as a Node interpreter. That approach
+ * worked in theory but proved fragile in practice — Cursor's spawn
+ * behaviour around that env var is inconsistent, and any Cursor update
+ * could change it. Now the wrapper points at the Node.exe we ship
+ * ourselves (extension/bin/node-windows-x64.exe), which is a plain
+ * Node interpreter that just works.
  */
 function writeWindowsHookWrapper(binary: string): string {
   const path = windowsHookWrapperPath();
+  const bundledNode = getBundledNode();
+  if (!bundledNode) {
+    throw new Error(
+      "AXME Code: cannot install Cursor hooks — bundled Node.exe not " +
+        "found at extension/bin/node-windows-x64.exe. The .vsix may be " +
+        "incomplete; please reinstall the extension.",
+    );
+  }
   // cmd.exe parser quirks:
   //   - `@echo off` silences the prompt echo
-  //   - `setlocal` scopes the env var to this script invocation
+  //   - `setlocal` scopes any env changes to this script invocation
   //   - `%*` forwards all caller args verbatim (with quoting preserved)
-  // The Cursor.exe path comes from process.execPath at install time —
-  // if Cursor relocates, user re-runs setup and we rewrite this file.
+  // The bundled Node and binary paths are absolute, captured at install
+  // time. If the extension is uninstalled and reinstalled to a
+  // different location, the user runs setup again and we rewrite this
+  // file with the new paths.
   const content =
     `@echo off\r\n` +
     `setlocal\r\n` +
-    `set ELECTRON_RUN_AS_NODE=1\r\n` +
-    `"${process.execPath}" "${binary}" %*\r\n`;
+    `"${bundledNode}" "${binary}" %*\r\n`;
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, content, "utf-8");
   log(`Hooks: wrote Windows wrapper at ${path}`);
   return path;
 }
 
-function buildHookCommand(binary: string, hookName: string): string {
+function buildHookCommand(binary: string, hookName: string, wrapper?: string): string {
   // No --workspace flag — handler core resolves it from stdin
   // workspace_roots[0] (PR #129 commit d267b82).
   //
@@ -108,14 +120,14 @@ function buildHookCommand(binary: string, hookName: string): string {
   // node` + CJS payload). POSIX honors the shebang and runs it directly.
   // Windows ignores shebangs and fails with ENOENT when cmd.exe / Cursor
   // tries to exec the file. We do NOT rely on Node being on PATH (most
-  // Windows chat-IDE users do not have it) — instead, the .cmd wrapper
-  // we write at install time invokes Cursor.exe with the
-  // ELECTRON_RUN_AS_NODE=1 env var, making Cursor's bundled Electron
-  // behave as a Node interpreter for our JS payload. The wrapper
-  // captures absolute Cursor.exe + binary paths at install time so
-  // the hook fires the same way regardless of the user's shell config.
+  // Windows chat-IDE users do not have it) — instead, a .cmd wrapper
+  // invokes the bundled Node.exe (shipped inside the .vsix) directly.
+  // The wrapper is written ONCE by installUserHooks() before this
+  // function is called for each hook kind; we just reference the
+  // shared wrapper path here. Callers pass it via the `wrapper` arg
+  // on Windows; non-Windows callers can omit it.
   if (process.platform === "win32") {
-    const wrapper = writeWindowsHookWrapper(binary);
+    if (!wrapper) throw new Error("buildHookCommand: wrapper path is required on Windows");
     return `${quote(wrapper)} hook ${hookName} --ide cursor`;
   }
   return `${quote(binary)} hook ${hookName} --ide cursor`;
@@ -157,13 +169,20 @@ export function installUserHooks(ide: IdeKind, binary: string): boolean {
     sessionEnd: "session-end",
   };
 
+  // Write the Windows .cmd wrapper ONCE before the per-hook loop —
+  // the file is identical for all three hook kinds (it just forwards
+  // %* to the bundled Node + binary). Earlier the wrapper was
+  // written 3× inside the loop, producing 3 redundant "Hooks: wrote
+  // Windows wrapper" log lines on activation.
+  const wrapper = process.platform === "win32" ? writeWindowsHookWrapper(binary) : undefined;
+
   for (const kind of ["preToolUse", "postToolUse", "sessionEnd"] as HookKind[]) {
     const existing = cfg.hooks[kind] ?? [];
     const preserved = existing.filter(
       (e) => !String(e.command ?? "").includes("axme-code"),
     );
     const fresh: CursorHookEntry = {
-      command: buildHookCommand(binary, cliNames[kind]),
+      command: buildHookCommand(binary, cliNames[kind], wrapper),
       type: "command",
       timeout: HOOK_TIMEOUT_MS[kind],
     };
