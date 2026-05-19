@@ -60,10 +60,37 @@ export interface InstallResult {
  * (the node.exe + npm-cli.js form). useShell is true only for the
  * .cmd fallbacks, where the caller also shell-quotes arguments.
  */
+/**
+ * Belt-and-braces: if we're being run via the bundled Node from a VS Code
+ * extension that shipped npm as `npm-bundle.tar.gz` (the lazy-extract
+ * scheme introduced in extension v0.1.3 to keep Cursor install time
+ * under 30 s), and the extension hasn't had a chance to extract the
+ * tarball yet (e.g. user invoked us directly via shell), extract it
+ * now. Idempotent — returns immediately if the canonical sentinel
+ * (npm-cli.js) is already in place. Uses Windows' built-in tar.exe,
+ * the same path the extension uses.
+ */
+function ensureBundledNpmInPlace(): void {
+  if (process.platform !== "win32") return;
+  const nodeDir = dirname(process.execPath);
+  const npmCli = join(nodeDir, "node_modules", "npm", "bin", "npm-cli.js");
+  if (existsSync(npmCli)) return;
+  const tarball = join(nodeDir, "npm-bundle.tar.gz");
+  if (!existsSync(tarball)) return;
+  try {
+    spawnSync("tar", ["-xzf", tarball, "-C", nodeDir], { stdio: "pipe", windowsHide: true });
+  } catch {
+    // Swallow — resolveNpm() below will surface the real error if the
+    // sentinel is still missing. We don't want extraction failure here
+    // to silently block resolveNpm's normal fallback path.
+  }
+}
+
 function resolveNpm(): { cmd: string; args: string[]; useShell: boolean } {
   if (process.platform !== "win32") {
     return { cmd: "npm", args: [], useShell: false };
   }
+  ensureBundledNpmInPlace();
   // process.execPath = the node.exe running us (the extension's bundled
   // bin/node-runtime/node.exe, or the user's global node when standalone).
   const nodeDir = dirname(process.execPath);
