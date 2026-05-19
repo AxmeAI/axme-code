@@ -135,12 +135,27 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // the server's --workspace flag points at the real project, not Cursor's
   // home-dir cwd. Without this, axme_context called with no project_path
   // defaults to /home/$USER and misses the workspace's .axme-code/ entirely.
+  //
+  // MCP registration is the load-bearing step: every MCP tool the user
+  // expects (axme_context, axme_save_*, axme_safety, ...) depends on it.
+  // If this fails, the sidebar / hooks / etc. can technically activate but
+  // the user will see "MCP server does not exist" on every chat tool call
+  // and have no way to recover from inside the extension. Previously the
+  // activation continued silently past an MCP failure, leaving the
+  // sidebar showing "ready" while tools were dead. Now we abort with a
+  // visible error so the user knows something needs attention.
   const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
   const workspaceRoot = workspaceFolder?.uri.fsPath;
-  await runStep(report, "mcp", () => "registered", async () => {
+  const mcpRegistered = await runStep(report, "mcp", () => "registered", async () => {
     const disposable = await registerMcpServer(binary, workspaceRoot);
     context.subscriptions.push(disposable);
+    return true;
   });
+  if (mcpRegistered === undefined) {
+    log("MCP registration failed — aborting activation. See output above for the underlying error.");
+    await report.present();
+    return;
+  }
 
   // ---- Step 4: hooks ------------------------------------------------------
   const enableHooks = vscode.workspace

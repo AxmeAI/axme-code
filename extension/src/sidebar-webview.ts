@@ -25,7 +25,7 @@ import { detectCurrentMode } from "./auditor-auth.js";
 import { hooksAreInstalled } from "./hooks-state.js";
 import { readContextMode, indexedCount, ContextMode } from "./search-mode.js";
 import { isAxmeInitialized } from "./setup-controller.js";
-import { log } from "./log.js";
+import { log, logError } from "./log.js";
 
 /**
  * Sidebar polling interval for the session block. Three seconds is the
@@ -182,8 +182,19 @@ export class AxmeSidebarProvider implements vscode.WebviewViewProvider {
 
   async refreshAuthState(): Promise<void> {
     if (!this.binary) return;
-    const mode = await detectCurrentMode(this.binary).catch(() => undefined);
-    this.push({ auditorKeyConfigured: !!mode });
+    try {
+      const mode = await detectCurrentMode(this.binary);
+      this.push({ auditorKeyConfigured: !!mode });
+    } catch (err) {
+      // The previous form `.catch(() => undefined)` swallowed real
+      // errors (binary not found, spawn timeout, parse failure) and
+      // left the sidebar showing "Configure credential…" as if no
+      // credential were saved — masking the actual problem. Log so
+      // the user can diagnose via Output → AXME Code; render as
+      // "no credential" since we don't know either way.
+      logError("refreshAuthState", err);
+      this.push({ auditorKeyConfigured: false });
+    }
   }
 
   /**

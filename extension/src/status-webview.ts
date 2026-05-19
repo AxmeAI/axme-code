@@ -251,8 +251,16 @@ async function probeMcp(binary: string): Promise<{ ok: boolean; detail: string }
   });
 }
 
+// Escape all five HTML-meta characters (including single quote). The
+// previous form skipped `'` which works in <code> / <td> contexts but
+// breaks if a value with an apostrophe lands inside an HTML attribute.
+// Match sidebar-webview.ts:escapeHtmlServer exactly so both webviews
+// have identical escape semantics — no surprises when shuffling code
+// between them.
 function escapeHtml(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  return String(s).replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c] as string,
+  );
 }
 
 function renderHtml(rows: StatusRow[]): string {
