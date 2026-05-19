@@ -204,6 +204,37 @@ jobs:
         working-directory: extension
         run: npx vsce package --target ${{ matrix.target }} --no-dependencies -o ../axme-code-${{ matrix.target }}.vsix
 
+      - name: Verify bundled Node runtime is inside the win32-x64 .vsix
+        # A .vsix is just a zip. List its contents and assert that the
+        # files search-mode needs at runtime are actually present.
+        # Without this check, an over-broad .vscodeignore pattern (e.g.
+        # the historical `**/node_modules/**`) silently drops the
+        # bundled npm package from the package, and we ship a build
+        # that boots fine on Cursor but explodes the moment a user
+        # enables semantic search. We caught this once on 2026-05-19;
+        # never again — this step fails CI if the bundle regresses.
+        if: matrix.target == 'win32-x64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          VSIX="axme-code-${{ matrix.target }}.vsix"
+          REQUIRED=(
+            "extension/bin/axme-code.exe"
+            "extension/bin/node-runtime/node.exe"
+            "extension/bin/node-runtime/npm.cmd"
+            "extension/bin/node-runtime/node_modules/npm/bin/npm-cli.js"
+            "extension/bin/node-runtime/node_modules/npm/bin/npm-prefix.js"
+          )
+          MANIFEST=$(unzip -l "$VSIX")
+          for path in "${REQUIRED[@]}"; do
+            if ! echo "$MANIFEST" | grep -qE "  ${path}\$"; then
+              echo "::error::Missing from $VSIX: $path"
+              echo "$MANIFEST" | head -40
+              exit 1
+            fi
+          done
+          echo "OK — all required bundled-Node files are inside $VSIX."
+
       - uses: actions/upload-artifact@v4
         with:
           name: axme-code-${{ matrix.target }}

@@ -9,7 +9,13 @@ out-test/**
 **/.eslintrc*
 **/.gitignore
 **/build.mjs
-**/node_modules/**
+# Only exclude extension/node_modules — the bundled Windows Node
+# runtime ships its own `bin/node-runtime/node_modules/npm/` which
+# IS required at runtime (search-mode `npm install`). The previous
+# `**/node_modules/**` pattern silently dropped the bundled npm
+# from the .vsix, so on Windows the npm-cli.js spawn failed with
+# MODULE_NOT_FOUND on every search-mode enable attempt.
+node_modules/**
 .github/**
 .git/**
 **/*.vsix
