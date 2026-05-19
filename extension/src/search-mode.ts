@@ -18,6 +18,7 @@
 
 import * as vscode from "vscode";
 import { spawnBinary } from "./spawn-binary.js";
+import { ensureBundledNpmExtracted } from "./bundled-runtime.js";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -120,16 +121,43 @@ export async function enableSearchMode(binary: string, workspaceRoot: string): P
   );
   if (choice !== "Enable") return;
 
+  // Wrap BOTH the lazy-extract step (Windows only, 5-10 s) AND the
+  // npm-install step (45-90 s) inside a single withProgress block so
+  // the user sees feedback immediately after clicking Enable. Earlier
+  // the extract ran synchronously before withProgress fired — the
+  // button appeared dead for 5-10 s on Windows and the user assumed
+  // it had broken. Reported @geobelsky 2026-05-19.
   await vscode.window.withProgress(
     {
       location: vscode.ProgressLocation.Notification,
-      title: needsRuntime
-        ? "AXME: installing semantic-search runtime + indexing knowledge base"
-        : "AXME: reindexing knowledge base",
+      title: "AXME: enabling semantic search",
       cancellable: false,
     },
-    () =>
-      new Promise<void>((resolve) => {
+    async (progress) => {
+      // Step 1 — extract bundled npm runtime tarball (Windows only).
+      // POSIX: no-op. Returns immediately if already extracted.
+      progress.report({ message: "Preparing bundled Node runtime..." });
+      try {
+        const extracted = await ensureBundledNpmExtracted();
+        if (extracted) log("search-enable: bundled npm runtime extracted from tarball");
+      } catch (err) {
+        logError("search-enable: bundled runtime extraction failed", err);
+        void vscode.window.showErrorMessage(
+          `AXME: cannot enable search mode - ${(err as Error).message}`,
+          "Show output",
+        ).then((c) => { if (c === "Show output") showOutput(); });
+        return;
+      }
+
+      // Step 2 — run the real flow: spawn the bundled binary, install
+      // @huggingface/transformers via bundled npm, reindex existing
+      // memories/decisions. ~45-90 s on a typical machine.
+      progress.report({
+        message: needsRuntime
+          ? "Installing semantic-search runtime + indexing..."
+          : "Reindexing knowledge base...",
+      });
+      await new Promise<void>((resolve) => {
         const child = spawnBinary(
           binary,
           ["config", "set", "context.mode", "search"],
@@ -150,7 +178,8 @@ export async function enableSearchMode(binary: string, workspaceRoot: string): P
           }
           resolve();
         });
-      }),
+      });
+    },
   );
 }
 

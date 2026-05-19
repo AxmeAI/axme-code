@@ -72,30 +72,36 @@ jobs:
         if: matrix.target != 'linux-arm64'
         run: npm test
 
-      - name: Download Node.exe + npm for Windows bundling
+      - name: Download Node.exe + npm bundle for Windows bundling
         # The win32-x64 .vsix ships a self-contained Node runtime inside
-        # extension/bin/node-runtime/ — node.exe (interpreter) AND
-        # npm.cmd + node_modules/npm/ (so search-mode runtime install
-        # works without the user having Node/npm installed).
+        # extension/bin/node-runtime/ — node.exe (interpreter) PLUS a
+        # tarball containing npm.cmd + node_modules/npm/ etc. The
+        # tarball gets lazy-extracted by the extension when the user
+        # first enables search mode (saves 2-3 min of Cursor install
+        # time for users who never opt into semantic search).
         #
-        # We need npm because `axme-code config set context.mode search`
-        # invokes `npm install @huggingface/transformers` to fetch the
-        # ML runtime. Without bundled npm, that step fails with
-        # "'npm.cmd' is not recognized" (reported 2026-05-19).
+        # Why we bundle the runtime at all: `axme-code config set
+        # context.mode search` invokes `npm install @huggingface/
+        # transformers` to fetch the ML runtime. Without bundled npm,
+        # that step fails on Windows machines with no system Node.
         #
-        # Layout inside extension/bin/node-runtime/:
-        #   node.exe                       Node interpreter (~30 MB)
-        #   npm.cmd, npx.cmd               npm wrappers (a few KB each)
-        #   node_modules/npm/              npm's actual code (~30 MB)
-        #   (other files like LICENSE, README — kept for legal hygiene)
-        # Total ~75 MB per win32-x64 .vsix. Open VSX accepts up to
-        # 256 MB per file.
+        # Why we ship npm as a tarball rather than expanded:
+        # The npm package is ~30 MB of THOUSANDS of small .js files.
+        # vsce zip-compresses them fine (.vsix stays ~32 MB), but
+        # Cursor's installer extracts every file via CreateFileW —
+        # which on Windows hits filter drivers (AV, OneDrive sync) on
+        # every single file. The result is a 2-3-minute install for
+        # a 32 MB .vsix on real Windows machines. By shipping npm as a
+        # single tarball, Cursor's installer writes only TWO files
+        # (node.exe and npm-bundle.tar.gz); we extract the tarball
+        # lazily at first search-mode-enable (~5-10 s, one-time).
+        #
+        # Layout inside extension/bin/node-runtime/ after this step:
+        #   node.exe                Node interpreter (~72 MB, kept expanded)
+        #   npm-bundle.tar.gz       npm + ancillary scripts (~10 MB compressed)
         #
         # Version + SHA pinned for reproducible builds. SHA256 source:
         #   curl -fsSL https://nodejs.org/dist/v20.20.2/SHASUMS256.txt
-        # Earlier attempts (PR #136) used the user's own Node or
-        # Cursor's bundled Electron via ELECTRON_RUN_AS_NODE — both
-        # fragile and inconsistent on real Windows machines.
         if: matrix.target == 'win32-x64'
         shell: bash
         run: |
@@ -105,17 +111,27 @@ jobs:
           curl -fsSL -o "$ZIP" "https://nodejs.org/dist/v${NODE_VERSION}/${ZIP}"
           echo "dc3700fdd57a63eedb8fd7e3c7baaa32e6a740a1b904167ff4204bc68ed8bf77  $ZIP" | sha256sum -c -
           # The Windows runner image already has 7z / unzip available.
-          # `unzip -q` works on the runner's Git-Bash environment.
           unzip -q "$ZIP"
+          NODE_DIR="node-v${NODE_VERSION}-win-x64"
           mkdir -p extension/bin/node-runtime
-          # Copy the entire extracted dir into a stable name. npm.cmd
-          # looks for node.exe and node_modules/npm/ RELATIVE to its
-          # own dir (via %~dp0), so all three artefacts must be co-
-          # located. Renaming the whole tree to node-runtime/ keeps
-          # the layout npm expects without divergent forks.
-          cp -r "node-v${NODE_VERSION}-win-x64/." extension/bin/node-runtime/
-          ls -la extension/bin/node-runtime/node.exe extension/bin/node-runtime/npm.cmd
-          rm -rf "$ZIP" "node-v${NODE_VERSION}-win-x64"
+
+          # Copy node.exe expanded — single big file, no filter-driver
+          # storm at install time.
+          cp "$NODE_DIR/node.exe" extension/bin/node-runtime/node.exe
+
+          # Tar everything else (npm cli scripts + node_modules/ tree
+          # + LICENSE/CHANGELOG/etc) into a single archive that we
+          # extract lazily on the user's machine. Working dir matters:
+          # paths inside the tar must be relative to node-runtime/
+          # so that `tar -xzf npm-bundle.tar.gz -C node-runtime/` puts
+          # files back in the right place.
+          tar -czf extension/bin/node-runtime/npm-bundle.tar.gz \
+            -C "$NODE_DIR" \
+            --exclude=node.exe \
+            .
+
+          ls -lh extension/bin/node-runtime/
+          rm -rf "$ZIP" "$NODE_DIR"
 
       - name: Bundle core CLI to a single platform-specific file
         shell: bash
@@ -218,12 +234,16 @@ jobs:
         run: |
           set -euo pipefail
           VSIX="axme-code-${{ matrix.target }}.vsix"
+          # We ship node.exe expanded + the rest of the Node runtime
+          # (npm.cmd, node_modules/npm/, etc) packed inside
+          # npm-bundle.tar.gz. The extension lazy-extracts that tarball
+          # on first search-mode enable. Verify both pieces are
+          # actually inside the .vsix; if either is missing, the
+          # Windows install ships broken.
           REQUIRED=(
             "extension/bin/axme-code.exe"
             "extension/bin/node-runtime/node.exe"
-            "extension/bin/node-runtime/npm.cmd"
-            "extension/bin/node-runtime/node_modules/npm/bin/npm-cli.js"
-            "extension/bin/node-runtime/node_modules/npm/bin/npm-prefix.js"
+            "extension/bin/node-runtime/npm-bundle.tar.gz"
           )
           # Earlier attempts grepped `unzip -l` output. That kept producing
           # false negatives on Windows Git Bash — even when the files were

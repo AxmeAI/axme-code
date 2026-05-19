@@ -31,6 +31,7 @@ import { findAxmeBinary, findBundledNode } from "./binary-detect.js";
 import { registerMcpServer } from "./mcp-register.js";
 import { installUserHooks } from "./hooks-install.js";
 import { setBundledNode } from "./spawn-binary.js";
+import { setExtensionPath as setBundledRuntimePath } from "./bundled-runtime.js";
 import { ensureAuditorAuth } from "./auditor-auth.js";
 import { isAxmeInitialized } from "./setup-controller.js";
 import { AxmeStatusBar } from "./status-bar.js";
@@ -126,6 +127,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // error rather than failing mysteriously with ENOENT.
   const bundledNode = findBundledNode(context);
   setBundledNode(bundledNode);
+  setBundledRuntimePath(context.extensionPath);
   if (process.platform === "win32") {
     log(`  Bundled Node: ${bundledNode ?? "(missing — Windows spawns will fail)"}`);
   }
