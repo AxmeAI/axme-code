@@ -425,6 +425,7 @@ async function main() {
       let setupOutcome: "success" | "fallback" | "failed" = "failed";
       let setupMethod: "llm" | "deterministic" = "deterministic";
       let setupPhaseFailed: string | null = null;
+      let setupErrorClass: import("./telemetry.js").ErrorClass | null = null;
       let setupPresetsApplied = 0;
       let setupScannersRun = 0;
       let setupScannersFailed = 0;
@@ -441,6 +442,7 @@ async function main() {
             scanners_run: setupScannersRun,
             scanners_failed: setupScannersFailed,
             phase_failed: setupPhaseFailed,
+            error_class: setupErrorClass,
             presets_applied: setupPresetsApplied,
             is_workspace: isWorkspace,
             child_repos: childRepos,
@@ -463,6 +465,7 @@ async function main() {
         console.error(`  export ANTHROPIC_API_KEY=sk-ant-...  (API key)\n`);
         setupOutcome = "failed";
         setupPhaseFailed = "auth_check";
+        setupErrorClass = "oauth_missing";
         await sendSetupTelemetry();
         process.exit(1);
       }
@@ -517,7 +520,8 @@ async function main() {
         setupOutcome = "failed";
         setupPhaseFailed = "init_scan";
         const { classifyError, reportError } = await import("./telemetry.js");
-        try { reportError("setup", classifyError(err), true); } catch { /* swallow */ }
+        setupErrorClass = classifyError(err);
+        try { reportError("setup", setupErrorClass, true); } catch { /* swallow */ }
         await sendSetupTelemetry();
         throw err;
       }
