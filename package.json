@@ -1,6 +1,6 @@
 {
   "name": "@axme/code",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Persistent memory, decisions, and safety guardrails for Claude Code",
   "type": "module",
   "main": "./dist/server.js",
