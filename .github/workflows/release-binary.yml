@@ -57,10 +57,20 @@ jobs:
       - name: Create standalone bundle
         run: |
           mkdir -p release
-          # Bundle everything into a single file with node shebang
+          # Bundle everything into a single file with node shebang.
+          # @cursor/sdk is marked external because its TypeScript declarations
+          # re-export internal workspace paths (`@anysphere/cursor-sdk-local-runtime/*`,
+          # `./messages.js`, `./platform.js`, etc.) that esbuild cannot resolve
+          # in this second-pass bundle step. The SDK is in optionalDependencies
+          # and the AgentSdk factory falls back to the Claude wrapper via a
+          # MODULE_NOT_FOUND-tolerant dynamic import — standalone-binary users
+          # are not on Cursor (Cursor users get the .vsix), so the runtime
+          # fallback is correct. build.mjs's plugin variant already marks the
+          # same package external for the same reason (see build.mjs:74).
           npx esbuild dist/cli.mjs --bundle --platform=node --target=node20 \
             --outfile=release/axme-code-${{ matrix.target }} \
-            --banner:js='#!/usr/bin/env node'
+            --banner:js='#!/usr/bin/env node' \
+            --external:@cursor/sdk
           chmod +x release/axme-code-${{ matrix.target }}
 
       - name: Upload artifact
