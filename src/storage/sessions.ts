@@ -18,6 +18,7 @@
 
 import { join, resolve } from "node:path";
 import { readdirSync, readFileSync, rmSync, openSync, closeSync, unlinkSync, statSync } from "node:fs";
+import { execSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { ensureDir, writeJson, readJson, pathExists, atomicWrite, removeFile, readSafe } from "./engine.js";
 import { logSessionStart } from "./worklog.js";
@@ -129,7 +130,6 @@ function readParentPidLinux(pid: number): number | null {
 /** Parent PID of `pid` via `ps` (macOS and other POSIX without /proc). */
 function readParentPidPosix(pid: number): number | null {
   try {
-    const { execSync } = require("node:child_process") as typeof import("node:child_process");
     const out = execSync(`ps -o ppid= -p ${pid}`, { encoding: "utf-8", timeout: 2_000, stdio: ["ignore", "pipe", "ignore"] }).trim();
     const parent = parseInt(out, 10);
     if (Number.isFinite(parent) && parent > 1) return parent;
@@ -182,7 +182,6 @@ export function getOwnAncestorPids(maxDepth = 4): number[] {
 /** Windows ancestor chain in ONE PowerShell call (CIM walk). */
 function getOwnAncestorPidsWindows(maxDepth: number): number[] {
   try {
-    const { execSync } = require("node:child_process") as typeof import("node:child_process");
     const script =
       `$p=${process.ppid};$out=@();for($i=0;$i -lt ${maxDepth} -and $p -gt 1;$i++){` +
       `$out+=$p;$p=(Get-CimInstance Win32_Process -Filter \\"ProcessId=$p\\" -ErrorAction SilentlyContinue).ParentProcessId};` +
