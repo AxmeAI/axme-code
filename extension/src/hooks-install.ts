@@ -60,6 +60,22 @@ function quote(s: string): string {
 }
 
 /**
+ * True when a hooks.json entry was written by us. Matches BOTH command
+ * shapes we have ever emitted:
+ *   - POSIX:   "<ext-dir>/bin/axme-code" hook <name> --ide cursor
+ *   - Windows: "%USERPROFILE%\.cursor\axme-hook.cmd" hook <name> --ide cursor
+ * The old filter matched only "axme-code" — the Windows wrapper path does
+ * not contain that substring, so every activation APPENDED three fresh
+ * entries instead of replacing them (N restarts → N× hook fan-out), and
+ * uninstall could never remove them (after uninstall they pointed at a
+ * deleted axme-hook.cmd, failing forever).
+ */
+function isAxmeHookEntry(command: unknown): boolean {
+  const c = String(command ?? "");
+  return c.includes("axme-code") || c.includes("axme-hook.cmd");
+}
+
+/**
  * Path to the Windows wrapper script. Lives next to hooks.json so a
  * single uninstall sweep deletes both. The wrapper is a one-liner .cmd
  * that sets ELECTRON_RUN_AS_NODE=1 and invokes Cursor.exe as a Node
@@ -81,7 +97,7 @@ function windowsHookWrapperPath(): string {
  * worked in theory but proved fragile in practice — Cursor's spawn
  * behaviour around that env var is inconsistent, and any Cursor update
  * could change it. Now the wrapper points at the Node.exe we ship
- * ourselves (extension/bin/node-windows-x64.exe), which is a plain
+ * ourselves (extension/bin/node-runtime/node.exe), which is a plain
  * Node interpreter that just works.
  */
 function writeWindowsHookWrapper(binary: string): string {
@@ -90,7 +106,7 @@ function writeWindowsHookWrapper(binary: string): string {
   if (!bundledNode) {
     throw new Error(
       "AXME Code: cannot install Cursor hooks — bundled Node.exe not " +
-        "found at extension/bin/node-windows-x64.exe. The .vsix may be " +
+        "found at extension/bin/node-runtime/node.exe. The .vsix may be " +
         "incomplete; please reinstall the extension.",
     );
   }
@@ -151,13 +167,21 @@ export function installUserHooks(ide: IdeKind, binary: string): boolean {
   const path = userCursorHooksPath();
   let cfg: CursorHooksFile = { version: 1, hooks: {} };
   if (existsSync(path)) {
-    try {
-      const raw = readFileSync(path, "utf-8");
-      const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed === "object") cfg = parsed as CursorHooksFile;
-    } catch (err) {
-      logError(`Hooks: existing ${path} is malformed; will overwrite`, err);
-      cfg = { version: 1, hooks: {} };
+    const raw = readFileSync(path, "utf-8");
+    if (raw.trim()) {
+      try {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === "object") cfg = parsed as CursorHooksFile;
+      } catch (err) {
+        // Refuse-don't-clobber: this file can contain the user's OWN hooks.
+        // Overwriting on a parse error (the old behavior) silently destroyed
+        // them. Throw instead — runStep() surfaces the message as a visible
+        // warning with recovery instructions.
+        throw new Error(
+          `existing ${path} is not valid JSON (${(err as Error).message}). ` +
+            `Refusing to overwrite it — fix or remove the file, then reload the window to install AXME hooks.`,
+        );
+      }
     }
   }
   if (!cfg.version) cfg.version = 1;
@@ -178,9 +202,7 @@ export function installUserHooks(ide: IdeKind, binary: string): boolean {
 
   for (const kind of ["preToolUse", "postToolUse", "sessionEnd"] as HookKind[]) {
     const existing = cfg.hooks[kind] ?? [];
-    const preserved = existing.filter(
-      (e) => !String(e.command ?? "").includes("axme-code"),
-    );
+    const preserved = existing.filter((e) => !isAxmeHookEntry(e.command));
     const fresh: CursorHookEntry = {
       command: buildHookCommand(binary, cliNames[kind], wrapper),
       type: "command",
@@ -209,7 +231,7 @@ export function uninstallUserHooks(): void {
     for (const kind of ["preToolUse", "postToolUse", "sessionEnd"] as HookKind[]) {
       const arr = cfg.hooks[kind];
       if (!arr) continue;
-      const preserved = arr.filter((e) => !String(e.command ?? "").includes("axme-code"));
+      const preserved = arr.filter((e) => !isAxmeHookEntry(e.command));
       if (preserved.length !== arr.length) {
         cfg.hooks[kind] = preserved;
         touched = true;

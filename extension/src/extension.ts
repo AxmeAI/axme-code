@@ -26,6 +26,7 @@
 
 import * as vscode from "vscode";
 import { basename } from "node:path";
+import { execFile } from "node:child_process";
 import { detectIde, IdeKind } from "./ide-detect.js";
 import { findAxmeBinary, findBundledNode } from "./binary-detect.js";
 import { registerMcpServer } from "./mcp-register.js";
@@ -75,6 +76,40 @@ async function runStep<T>(
       .then((c) => { if (c === "Show output") showOutput(); });
     return undefined;
   }
+}
+
+/**
+ * POSIX-only preflight: the bundled CLI is a `#!/usr/bin/env node` shim and
+ * the MCP server / hooks are spawned by Cursor OUTSIDE the extension host —
+ * both need a system Node 20+ on PATH (Windows ships its own node.exe in
+ * the .vsix; macOS/Linux do not). Without this check, a Node-less user gets
+ * the completely undebuggable "MCP server does not exist" in chat plus
+ * silently failing hooks. Returns null when OK, otherwise an actionable
+ * problem description. Never throws; a broken `node -v` IS the finding.
+ */
+function checkSystemNode(): Promise<string | null> {
+  if (process.platform === "win32") return Promise.resolve(null);
+  return new Promise((resolveCheck) => {
+    execFile("node", ["-v"], { timeout: 3000 }, (err, stdout) => {
+      if (err) {
+        resolveCheck(
+          "Node.js 20+ was not found on PATH. The AXME MCP server and safety hooks " +
+            "cannot start without it. Install Node (https://nodejs.org, or `brew install node` / " +
+            "your package manager), then reload the window.",
+        );
+        return;
+      }
+      const major = parseInt(String(stdout).trim().replace(/^v/, "").split(".")[0] ?? "", 10);
+      if (Number.isFinite(major) && major < 20) {
+        resolveCheck(
+          `Node.js ${String(stdout).trim()} found, but axme-code targets Node 20+. ` +
+            "The MCP server may fail to start — please upgrade Node and reload the window.",
+        );
+        return;
+      }
+      resolveCheck(null);
+    });
+  });
 }
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
@@ -130,6 +165,27 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   setBundledRuntimePath(context.extensionPath);
   if (process.platform === "win32") {
     log(`  Bundled Node: ${bundledNode ?? "(missing — Windows spawns will fail)"}`);
+  }
+
+  // ---- Step 2b: system Node preflight (POSIX only) -------------------------
+  // Soft-fail: we record + surface the problem but continue activation —
+  // the extension host's PATH is a close proxy for the env Cursor uses to
+  // spawn the MCP server, not a perfect one, and a false negative must not
+  // brick an otherwise-working install. When Node IS genuinely absent the
+  // user now gets an actionable message instead of a dead "MCP server does
+  // not exist" chat error with no explanation.
+  const nodeProblem = await checkSystemNode();
+  if (nodeProblem) {
+    report.record("node", false, nodeProblem.slice(0, 80));
+    logError("System Node preflight", new Error(nodeProblem));
+    void vscode.window
+      .showErrorMessage(`AXME Code: ${nodeProblem}`, "Open nodejs.org", "Show output")
+      .then((c) => {
+        if (c === "Open nodejs.org") void vscode.env.openExternal(vscode.Uri.parse("https://nodejs.org"));
+        if (c === "Show output") showOutput();
+      });
+  } else {
+    report.record("node", true, process.platform === "win32" ? "bundled" : "system");
   }
 
   // ---- Step 3: MCP registration ------------------------------------------

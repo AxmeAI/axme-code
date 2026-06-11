@@ -111,7 +111,13 @@ export async function runSetup(binary: string, ide: IdeKind): Promise<void> {
       const exitCode = await new Promise<number>((resolve) => {
         const child = spawnBinary(binary, args, {
           cwd: root,
-          env: { ...process.env, AXME_TELEMETRY_DISABLED: "1" },
+          // AXME_SETUP_FROM_EXTENSION tells the CLI's cursor-writers to skip
+          // project-level .cursor/{mcp,hooks}.json: the extension registers
+          // the MCP server via the cursor API on every activation and owns
+          // user-level hooks. The project files setup used to write embedded
+          // this version-numbered extension dir's absolute paths — stale
+          // after every extension update — and double-fired hooks.
+          env: { ...process.env, AXME_TELEMETRY_DISABLED: "1", AXME_SETUP_FROM_EXTENSION: "1" },
         });
         child.stdout!.on("data", (chunk) => log(`setup stdout: ${String(chunk).trimEnd()}`));
         child.stderr!.on("data", (chunk) => log(`setup stderr: ${String(chunk).trimEnd()}`));

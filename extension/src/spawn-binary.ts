@@ -69,7 +69,7 @@ export function spawnBinary(
     if (!_bundledNode) {
       throw new Error(
         "AXME Code: bundled Node.exe not found. " +
-          "This usually means extension/bin/node-windows-x64.exe is missing " +
+          "This usually means extension/bin/node-runtime/node.exe is missing " +
           "from the .vsix you installed. Try reinstalling the extension; " +
           "if the problem persists open an issue at https://github.com/AxmeAI/axme-code/issues.",
       );
