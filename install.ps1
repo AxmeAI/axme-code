@@ -26,10 +26,20 @@ function Get-Arch {
 }
 
 function Get-LatestTag {
-    $url = "https://api.github.com/repos/$Repo/releases/latest"
+    # We publish two parallel release tracks under the same repo:
+    #   v*           — CLI binary releases (this script installs these).
+    #   extension-v* — VS Code / Cursor extension .vsix releases.
+    # /releases/latest returns whichever was published most recently overall and
+    # can flip to an extension release any time we publish an extension after a
+    # CLI release — that yields the `extension-v*` tag and a 404 when this
+    # script tries to download `axme-code-$platform` from it. Fetch the list
+    # endpoint instead and filter to the first `v[0-9]…` tag.
+    $url = "https://api.github.com/repos/$Repo/releases?per_page=30"
     try {
-        $release = Invoke-RestMethod -Uri $url -Headers @{ 'User-Agent' = 'axme-code-installer' }
-        return $release.tag_name
+        $releases = Invoke-RestMethod -Uri $url -Headers @{ 'User-Agent' = 'axme-code-installer' }
+        $cliRelease = $releases | Where-Object { $_.tag_name -match '^v[0-9]' } | Select-Object -First 1
+        if (-not $cliRelease) { throw "No CLI release (tag matching ^v[0-9]) found in the 30 most recent releases." }
+        return $cliRelease.tag_name
     } catch {
         throw "Failed to fetch latest release from $url : $($_.Exception.Message)"
     }

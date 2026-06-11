@@ -27,11 +27,19 @@ detect_platform() {
 
 # Get latest release tag from GitHub API
 get_latest_version() {
-  local url="https://api.github.com/repos/${REPO}/releases/latest"
+  # We publish two parallel release tracks under the same repo:
+  #   - `v*`              — CLI binary releases (this script installs these).
+  #   - `extension-v*`    — VS Code / Cursor extension .vsix releases.
+  # `/releases/latest` returns the most recently published release overall and
+  # can flip to an extension release any time we publish an extension after a
+  # CLI release. That returns the `extension-v*` tag, and the binary download
+  # URL `axme-code-${platform}` 404s because the extension release only ships
+  # `.vsix` files. Fetch the recent list and filter to the first `v[0-9]…` tag.
+  local url="https://api.github.com/repos/${REPO}/releases?per_page=30"
   if command -v curl &>/dev/null; then
-    curl -fsSL "$url" | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"//;s/".*//'
+    curl -fsSL "$url" | grep '"tag_name"' | sed 's/.*"tag_name": *"//;s/".*//' | grep -E '^v[0-9]' | head -1
   elif command -v wget &>/dev/null; then
-    wget -qO- "$url" | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"//;s/".*//'
+    wget -qO- "$url" | grep '"tag_name"' | sed 's/.*"tag_name": *"//;s/".*//' | grep -E '^v[0-9]' | head -1
   else
     echo "Neither curl nor wget found" >&2; exit 1
   fi
