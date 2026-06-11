@@ -14,7 +14,18 @@
 #   3. Open release PR (release/vX.Y.Z), commit "release: bump version to X.Y.Z"
 #   4. Wait for user to merge the PR (script pauses)
 #   5. After merge: tag, push, watch chained workflow (build → release → npm → plugin sync)
-#   6. Postflight verify: npm version, GitHub release, plugin repo plugin.json
+#   6. Postflight verify: npm version, GitHub release, plugin repo plugin.json,
+#      AND the community-marketplace SHA pin (see below)
+#
+# IMPORTANT — the Claude Code marketplace pins us by SHA:
+#   `claude plugin install axme-code@claude-community` reads
+#   anthropics/claude-plugins-community/.claude-plugin/marketplace.json,
+#   which pins our plugin to a COMMIT SHA of AxmeAI/axme-code-plugin. Our
+#   sync job updates the plugin repo, but new users keep getting the pinned
+#   SHA until someone opens a PR to claude-plugins-community bumping it.
+#   (Discovered 2026-06-11: the pin still pointed at v0.2.9 from April —
+#   every release since had been invisible to plugin installers.) The
+#   postflight check below fails loudly until the marketplace PR lands.
 #
 # Why this exists:
 #   The v0.2.7 release took ~5 retries because of drift between manual steps:
@@ -420,6 +431,24 @@ if [ "$plugin_version" = "$new_version" ]; then
 else
   err "$PLUGIN_REPO shows $plugin_version, expected $new_version"
   err "  Check the workflow run logs for sync-plugin-repo job"
+fi
+
+# 4. Community marketplace SHA pin — the part of the chain we do NOT own.
+# `claude plugin install axme-code@claude-community` installs the commit
+# pinned in anthropics/claude-plugins-community, NOT our plugin repo HEAD.
+# Without a marketplace PR every release is invisible to new plugin users.
+echo "  checking anthropics/claude-plugins-community SHA pin..."
+plugin_head="$(gh api "repos/${PLUGIN_REPO}/commits/main" --jq '.sha' 2>/dev/null || echo "FETCH_FAILED")"
+pinned_sha="$(curl -fsSL "https://raw.githubusercontent.com/anthropics/claude-plugins-community/main/.claude-plugin/marketplace.json" 2>/dev/null \
+  | jq -r '.plugins[] | select(.name == "axme-code") | .source.sha' 2>/dev/null || echo "FETCH_FAILED")"
+if [ "$pinned_sha" = "$plugin_head" ] && [ "$pinned_sha" != "FETCH_FAILED" ]; then
+  ok "marketplace pin is current ($pinned_sha)"
+else
+  err "marketplace pins $pinned_sha but $PLUGIN_REPO main is $plugin_head"
+  err "  New plugin installs will keep getting the OLD version until this lands:"
+  err "  1. Fork anthropics/claude-plugins-community"
+  err "  2. In .claude-plugin/marketplace.json set axme-code .source.sha = $plugin_head"
+  err "  3. Open a PR (their CI + maintainers review it)"
 fi
 
 # --- Done ---

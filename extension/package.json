@@ -2,7 +2,7 @@
   "name": "axme-code",
   "displayName": "AXME Code",
   "description": "Persistent memory, decisions, and safety guardrails for Cursor, GitHub Copilot, Cline, Continue, Roo Code, Windsurf, and VS Code chat agents",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "publisher": "AxmeAI",
   "repository": {
     "type": "git",

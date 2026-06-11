@@ -42,6 +42,24 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Guard against tag/manifest drift. June 2026 postmortem: the v0.6.0
+      # tag was pushed before the release PR merged (binaries said 0.6.0,
+      # package.json said 0.5.0), and .claude-plugin/plugin.json was not
+      # bumped at all for two releases — Claude Code keys plugin update
+      # detection on that version, so plugin users were stuck. Fail the
+      # whole release BEFORE building anything if the three disagree.
+      - name: Verify tag matches version manifests
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tag="${GITHUB_REF#refs/tags/v}"
+          pkg="$(jq -r .version package.json)"
+          plugin="$(jq -r .version .claude-plugin/plugin.json)"
+          if [ "$tag" != "$pkg" ] || [ "$tag" != "$plugin" ]; then
+            echo "::error::Version drift: tag v${tag} vs package.json ${pkg} vs .claude-plugin/plugin.json ${plugin}. Merge the release PR (which bumps all manifests in lockstep) BEFORE pushing the tag, then re-tag on the merged commit."
+            exit 1
+          fi
+          echo "Version manifests consistent: v${tag}"
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
