@@ -40,6 +40,7 @@ import {
 } from "./storage/sessions.js";
 import { logEvent } from "./storage/worklog.js";
 import { spawnDetachedAuditWorker } from "./audit-spawner.js";
+import { AXME_CODE_VERSION } from "./types.js";
 
 // --- Server state (detected at startup from --workspace flag or cwd) ---
 //
@@ -250,7 +251,8 @@ function buildInstructions(): string {
         "in their language: \"AXME is not set up for this project. Want " +
         "me to do it now? I'll scan the repo and save architecture " +
         "decisions, patterns and safety rules into .axme-code/ — runs " +
-        "inline on your Cursor subscription, no extra cost.\" If the user " +
+        "inline on the subscription you already use for this chat, no " +
+        "extra API key or cost.\" If the user " +
         "agrees (any affirmative in any language), EXECUTE setup. " +
         "Important — setup is a sequence of MCP TOOL CALLS, not a plan " +
         "to describe. Bullet-listing what you would save in prose is a " +
@@ -316,7 +318,10 @@ function buildInstructions(): string {
 }
 
 const server = new McpServer(
-  { name: "axme", version: "0.1.0" },
+  // Report the real release version: serverInfo previously hardcoded
+  // "0.1.0", which made "which version is my IDE actually running?"
+  // undebuggable from the client side.
+  { name: "axme", version: AXME_CODE_VERSION },
   { instructions: buildInstructions() },
 );
 

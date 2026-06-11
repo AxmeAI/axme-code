@@ -6,7 +6,7 @@
  */
 
 import { join, basename } from "node:path";
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { ensureDir, pathExists } from "../storage/engine.js";
 import { writeOracleFiles, initOracleDeterministic, oracleExists } from "../storage/oracle.js";
 import { initDecisionStore, saveDecisions, listDecisions } from "../storage/decisions.js";
@@ -39,6 +39,13 @@ export interface InitResult {
   scannersRun: number;
   /** Number of LLM scanners that failed (rejected or returned an error). Used for telemetry. */
   scannersFailed: number;
+  /**
+   * True when init was skipped because another setup currently holds a
+   * fresh setup.lock. Callers must surface this honestly — it used to be
+   * indistinguishable from "already initialized", which printed a
+   * misleading success message after interrupted setups.
+   */
+  lockSkipped?: boolean;
 }
 
 /**
@@ -73,21 +80,61 @@ export async function initProjectWithLLM(projectPath: string, opts?: {
 
   ensureDir(axmeDir);
 
-  // Setup lock — prevent concurrent setup runs (plugin may trigger multiple)
+  // Setup lock — prevent concurrent setup runs (plugin may trigger multiple).
+  // The lock self-expires after 15 minutes: a setup killed mid-scan (Ctrl+C
+  // during the 1-2 min LLM phase is the most likely first-run interrupt)
+  // used to leave it behind forever, permanently bricking setup. --force
+  // bypasses it outright — the user explicitly asked to re-run.
   const lockPath = join(axmeDir, "setup.lock");
-  if (pathExists(lockPath)) {
-    return {
-      projectPath, created: false,
-      oracle: { files: 0, llm: false },
-      decisions: { count: 0, fromScan: 0, fromPresets: 0 },
-      memories: { count: 0, fromPresets: 0 },
-      safety: { created: false, llm: false, summary: "setup already running" },
-      config: false, cost: zeroCost(), durationMs: 0, errors: ["Setup already in progress"],
-      scannersRun: 0, scannersFailed: 0,
-    };
+  const LOCK_STALE_MS = 15 * 60 * 1000;
+  if (pathExists(lockPath) && !opts?.force) {
+    let stale = true;
+    try {
+      stale = Date.now() - statSync(lockPath).mtimeMs >= LOCK_STALE_MS;
+    } catch {
+      stale = true; // unreadable lock — treat as crashed leftover
+    }
+    if (!stale) {
+      return {
+        projectPath, created: false, lockSkipped: true,
+        oracle: { files: 0, llm: false },
+        decisions: { count: 0, fromScan: 0, fromPresets: 0 },
+        memories: { count: 0, fromPresets: 0 },
+        safety: { created: false, llm: false, summary: "setup already running" },
+        config: false, cost: zeroCost(), durationMs: 0, errors: ["Setup already in progress"],
+        scannersRun: 0, scannersFailed: 0,
+      };
+    }
+    // Stale lock from a crashed/killed setup — ignore it and proceed.
   }
   atomicWrite(lockPath, new Date().toISOString());
 
+  // Hold the lock for the entire scan and ALWAYS release it — including on
+  // throw or early return. Previously removal happened inline just before
+  // the success return, so any LLM-scanner exception (or process kill that
+  // Node still gets to unwind) left the lock behind permanently.
+  try {
+    return await runInitScanLocked(projectPath, opts, startTime, alreadyExists);
+  } finally {
+    try { removeFile(lockPath); } catch { /* best-effort */ }
+  }
+}
+
+/**
+ * Body of initProjectWithLLM, extracted so the caller can hold setup.lock
+ * in a try/finally around the whole scan.
+ */
+async function runInitScanLocked(
+  projectPath: string,
+  opts: {
+    presets?: string[];
+    workspaceMode?: boolean;
+    force?: boolean;
+    onProgress?: (msg: string) => void;
+  } | undefined,
+  startTime: number,
+  alreadyExists: boolean,
+): Promise<InitResult> {
   const presets = opts?.presets ?? DEFAULT_PROJECT_CONFIG.presets;
   let totalCost = zeroCost();
   const errors: string[] = [];
@@ -271,9 +318,6 @@ export async function initProjectWithLLM(projectPath: string, opts?: {
   } else if (oracleExists(projectPath) && !oracleLlm) {
     oracleFiles = 4;
   }
-
-  // Remove setup lock
-  try { removeFile(lockPath); } catch {}
 
   return {
     projectPath,

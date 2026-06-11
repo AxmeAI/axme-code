@@ -55,11 +55,41 @@ download() {
   fi
 }
 
+# The released "binaries" are single-file Node bundles with a
+# `#!/usr/bin/env node` shebang — they need Node.js 20+ at runtime. Check
+# up-front so a Node-less user doesn't get a "successful" install followed
+# by `env: 'node': No such file or directory` on first run.
+# AXME_SKIP_NODE_CHECK=1 bypasses (e.g. node comes from a version manager
+# that is not loaded in this non-interactive shell).
+check_node() {
+  if [ -n "${AXME_SKIP_NODE_CHECK:-}" ]; then
+    return 0
+  fi
+  if ! command -v node >/dev/null 2>&1; then
+    echo "Error: Node.js 20+ is required to run axme-code, but 'node' was not found on PATH." >&2
+    echo "Install Node.js first (https://nodejs.org or your package manager), then re-run this script." >&2
+    echo "If Node IS installed but not on PATH in this shell, re-run with AXME_SKIP_NODE_CHECK=1." >&2
+    exit 1
+  fi
+  local node_major
+  node_major="$(node -v 2>/dev/null | sed 's/^v//' | cut -d. -f1)"
+  case "$node_major" in
+    ''|*[!0-9]*) ;; # unparseable version — don't block the install
+    *)
+      if [ "$node_major" -lt 20 ]; then
+        echo "Warning: Node.js $(node -v) detected; axme-code targets Node 20+. It may fail to run — please upgrade." >&2
+      fi
+      ;;
+  esac
+}
+
 main() {
   local platform version download_url tmp
 
   platform="$(detect_platform)"
   echo "Detected platform: ${platform}"
+
+  check_node
 
   if [ -n "${1:-}" ]; then
     version="$1"
@@ -69,7 +99,7 @@ main() {
   fi
 
   if [ -z "$version" ]; then
-    echo "Could not determine latest version. Specify version: ./install.sh v0.1.0" >&2
+    echo "Could not determine latest version. Specify version: ./install.sh v0.6.0" >&2
     exit 1
   fi
 

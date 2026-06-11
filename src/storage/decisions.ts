@@ -28,7 +28,29 @@ export function saveDecisions(projectPath: string, decisions: Decision[]): void 
   const existing = listDecisions(projectPath);
   const deduped = deduplicateDecisions(decisions, existing);
 
+  // Renumber any incoming decision whose pre-assigned id is already taken.
+  // Both the preset bundles and the init-scan parser number their batches
+  // from D-001 independently, so a first-run setup used to write D-001..D-009
+  // twice (slug-suffixed filenames mean no EEXIST protection) — making every
+  // later get/supersede/remove by id ambiguous. Allocation considers ALL
+  // stored decisions (including superseded) so retired ids are never reused.
+  const all = listDecisions(projectPath, { includeAll: true });
+  const used = new Set(all.map(d => d.id));
+  const nums = all
+    .map(d => parseInt(d.id.replace("D-", ""), 10))
+    .filter(n => Number.isFinite(n));
+  let nextNum = nums.length > 0 ? Math.max(...nums) + 1 : 1;
+
   for (const d of deduped) {
+    if (used.has(d.id)) {
+      // Advance past ids occupied by stored decisions AND by not-yet-written
+      // members of this same batch (a batch can carry a higher pre-assigned
+      // id than the current allocation cursor).
+      let candidate = `D-${String(nextNum++).padStart(3, "0")}`;
+      while (used.has(candidate)) candidate = `D-${String(nextNum++).padStart(3, "0")}`;
+      d.id = candidate;
+    }
+    used.add(d.id);
     atomicWrite(join(dir, `${d.id}-${d.slug}.md`), formatDecisionFile(d));
   }
   rebuildIndex(projectPath);

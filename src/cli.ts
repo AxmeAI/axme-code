@@ -255,10 +255,23 @@ function configureHooks(projectPath: string): void {
   const claudeDir = join(projectPath, ".claude");
   const settingsPath = join(claudeDir, "settings.json");
 
-  // Read existing settings
+  // Read existing settings. If the file exists but is NOT valid JSON
+  // (hand-edited with comments / trailing commas), refuse to touch it:
+  // the old `catch { settings = {} }` fallback silently replaced the whole
+  // file — destroying the user's permissions, env, and their own hooks.
   let settings: Record<string, any> = {};
   if (existsSync(settingsPath)) {
-    try { settings = JSON.parse(readFileSync(settingsPath, "utf-8")); } catch { settings = {}; }
+    const raw = readFileSync(settingsPath, "utf-8");
+    if (raw.trim()) {
+      try {
+        settings = JSON.parse(raw);
+      } catch (err) {
+        console.error(`  .claude/settings.json: SKIPPED — existing file is not valid JSON (${(err as Error).message}).`);
+        console.error(`  Refusing to overwrite it (that would destroy your permissions/env/hooks).`);
+        console.error(`  Fix or remove ${settingsPath}, then re-run setup to install AXME hooks.`);
+        return;
+      }
+    }
   }
 
   // Remove old hooks (without --workspace) and re-create with correct path
@@ -307,7 +320,7 @@ function configureHooks(projectPath: string): void {
   // Write settings
   mkdirSync(claudeDir, { recursive: true });
   writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n", "utf-8");
-  console.log("  .claude/settings.json: hooks configured (PostToolUse + SessionEnd)");
+  console.log("  .claude/settings.json: hooks configured (PreToolUse + PostToolUse + SessionEnd)");
 }
 
 /**
@@ -406,15 +419,35 @@ async function main() {
         process.exit(1);
       }
       // Strip --force, --plugin, --ide and its value from positional args.
+      // Reject anything else that looks like a flag: `axme-code setup --help`
+      // (or any typo'd flag) used to fall through to the positional-path slot
+      // and kick off a full paid LLM scan into a literal `--help/` directory.
       const setupArgs: string[] = [];
-      for (let i = 0; i < args.length; i++) {
+      for (let i = 1; i < args.length; i++) {
         const a = args[i];
         if (a === "--force" || a === "--plugin") continue;
         if (a === "--ide") { i++; continue; } // also skip the value
         if (a.startsWith("--ide=")) continue;
+        if (a === "--help" || a === "-h") { usage(); process.exit(0); }
+        if (a.startsWith("-")) {
+          console.error(`Error: unknown flag for setup: ${a}`);
+          console.error("Usage: axme-code setup [path] [--force] [--plugin] [--ide=<claude-code|cursor>]");
+          process.exit(2);
+        }
         setupArgs.push(a);
       }
-      const projectPath = resolve(setupArgs[1] || ".");
+      if (setupArgs.length > 1) {
+        console.error(`Error: setup takes at most one path argument, got: ${setupArgs.join(" ")}`);
+        process.exit(2);
+      }
+      const projectPath = resolve(setupArgs[0] || ".");
+      // A typo'd path used to be silently created and scanned ($0.50+ of LLM
+      // calls against an empty dir). Setup scans an *existing* project.
+      if (setupArgs[0] && !existsSync(projectPath)) {
+        console.error(`Error: path does not exist: ${projectPath}`);
+        console.error("setup scans an existing project — check the path for typos.");
+        process.exit(2);
+      }
       const hasGitDir = existsSync(join(projectPath, ".git"));
       const ws = detectWorkspace(projectPath);
       const isWorkspace = hasGitDir ? false : ws.type !== "single";
@@ -499,6 +532,18 @@ async function main() {
           setupScannersFailed = workspaceResult.scannersFailed + projectResults.reduce((s, r) => s + r.scannersFailed, 0);
         } else {
           const result = await initProjectWithLLM(projectPath, { onProgress: console.log, force: forceSetup });
+          if (result.lockSkipped) {
+            // A fresh setup.lock is held by another process. This used to be
+            // reported as "Already initialized ... Done!" (exit 0) — wrong on
+            // every count after an interrupted setup.
+            console.error(`  Setup is already running in another process (fresh setup.lock found).`);
+            console.error(`  Wait for it to finish, or — if nothing is actually running — re-run with --force`);
+            console.error(`  (the lock also self-expires 15 minutes after the crashed setup wrote it).`);
+            setupOutcome = "failed";
+            setupPhaseFailed = "setup_lock";
+            await sendSetupTelemetry();
+            process.exit(1);
+          }
           if (!result.created && result.durationMs === 0) {
             console.log(`  Already initialized (skipped LLM scan). Use --force to re-scan.`);
             console.log(`  Decisions: ${result.decisions.count}, Memories: ${result.memories.count}`);
@@ -542,17 +587,29 @@ async function main() {
             mcpPaths.push(join(projectPath, p.path));
           }
         }
+        let mcpWritten = 0;
         for (const dir of mcpPaths) {
           const mcpPath = join(dir, ".mcp.json");
           let mcpConfig: Record<string, any> = {};
           if (existsSync(mcpPath)) {
-            try { mcpConfig = JSON.parse(readFileSync(mcpPath, "utf-8")); } catch { mcpConfig = {}; }
+            const raw = readFileSync(mcpPath, "utf-8");
+            if (raw.trim()) {
+              try {
+                mcpConfig = JSON.parse(raw);
+              } catch (err) {
+                // Same refuse-don't-clobber rule as .claude/settings.json:
+                // the old fallback dropped every other MCP server the user had.
+                console.error(`  ${mcpPath}: SKIPPED — not valid JSON (${(err as Error).message}). Fix or remove the file, then re-run setup.`);
+                continue;
+              }
+            }
           }
           if (!mcpConfig.mcpServers) mcpConfig.mcpServers = {};
           mcpConfig.mcpServers.axme = mcpEntry;
           writeFileSync(mcpPath, JSON.stringify(mcpConfig, null, 2) + "\n", "utf-8");
+          mcpWritten++;
         }
-        console.log(`  .mcp.json: updated (${mcpPaths.length} locations)`);
+        console.log(`  .mcp.json: updated (${mcpWritten}/${mcpPaths.length} locations)`);
       } else {
         console.log(`  .mcp.json: skipped (plugin provides MCP server)`);
       }
@@ -719,11 +776,21 @@ async function main() {
 
       const checkPath = resolve(args[1] || ".");
       const claudeMdPath = join(checkPath, "CLAUDE.md");
+      // Keep this aligned with the not-initialized flow in context.ts and the
+      // PROJECT SETUP REQUIRED block in server.ts. The previous text said
+      // "run `axme-code setup --plugin` via Bash tool immediately" — but for
+      // plugin installs the binary is NOT on PATH (and CLAUDE_PLUGIN_ROOT is
+      // not exported to the Bash tool), so the agent burned a failed command
+      // and the three surfaces contradicted each other.
       const axmeSection = `## AXME Code
 
 ### Session Start (MANDATORY)
 Call axme_context at the start of every session.
-If it returns "not initialized", run \`axme-code setup --plugin\` via Bash tool immediately.
+If it returns "not initialized": offer the user AXME setup, and on consent
+EXECUTE the inline setup flow from axme_context / the server instructions
+(a sequence of axme_save_decision / axme_save_memory / axme_update_safety /
+axme_save_oracle tool calls). Do NOT try to run \`axme-code\` via the Bash
+tool — on plugin installs it is not on PATH.
 Do NOT skip — without context you will miss critical project rules.
 `;
       // Ensure CLAUDE.md has AXME section
@@ -740,7 +807,7 @@ Do NOT skip — without context you will miss critical project rules.
       if (configExists(checkPath)) {
         console.log(`[AXME Code] Knowledge base ready. Call axme_context now.`);
       } else {
-        console.log(`[AXME Code] Project not initialized. Run: axme-code setup --plugin`);
+        console.log(`[AXME Code] Project not initialized. Call axme_context and follow its inline setup flow (offer the user setup first).`);
       }
       break;
     }

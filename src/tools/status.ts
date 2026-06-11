@@ -14,7 +14,11 @@ import { AXME_CODE_DIR } from "../types.js";
 
 export function statusTool(projectPath: string): string {
   const initialized = pathExists(join(projectPath, AXME_CODE_DIR));
-  if (!initialized) return "Project not initialized. Run axme_init first.";
+  if (!initialized) {
+    // NB: keep aligned with the not-initialized flow in context.ts — there
+    // is no `axme_init` tool (removed long ago); the user runs setup.
+    return "Project not initialized. Run `axme-code setup` in a terminal (or `AXME: Setup` from the Cursor Command Palette), or follow the inline setup flow from axme_context.";
+  }
 
   const oracle = oracleExists(projectPath) ? "initialized" : "not initialized";
   const decisions = listDecisions(projectPath);

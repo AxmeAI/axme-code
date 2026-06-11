@@ -26,13 +26,41 @@
  */
 
 import { spawn } from "node:child_process";
-import { openSync, closeSync } from "node:fs";
-import { join } from "node:path";
+import { openSync, closeSync, existsSync } from "node:fs";
+import { join, basename, dirname } from "node:path";
 import { ensureDir } from "./storage/engine.js";
 import { AXME_CODE_DIR } from "./types.js";
 import type { IdeKind } from "./types.js";
 
 const AUDIT_WORKER_LOGS_DIR = "audit-worker-logs";
+
+/**
+ * Resolve the CLI entry to spawn for `audit-session`.
+ *
+ * process.argv[1] is correct for CLI/binary installs (`axme-code`,
+ * `dist/cli.mjs`, `dist/axme-code.js`) — the running entry already
+ * dispatches subcommands. But when this spawner runs inside the plugin/npm
+ * MCP *server* entry (`server.mjs` / `server.js`, launched via
+ * `node server.mjs` from the plugin's .mcp.json), argv[1] has no CLI
+ * dispatch at all: spawning it just boots a second MCP server that ignores
+ * the `audit-session` argv and exits on stdin-end — silently killing the
+ * entire audit pipeline for plugin installs (sessions stay pending forever
+ * and orphan recovery re-queues them on every server start). In those
+ * layouts the real CLI always sits next to the server entry
+ * (plugin: cli.mjs, npm dist: cli.mjs beside server.js), so prefer the
+ * sibling CLI when argv[1] looks like a server entry.
+ */
+function resolveCliEntry(): string {
+  const arg1 = process.argv[1];
+  if (!arg1) throw new Error("audit-spawner: cannot determine CLI path from process.argv[1]");
+  if (/^server\.(mjs|cjs|js)$/.test(basename(arg1))) {
+    for (const candidate of ["cli.mjs", "cli.cjs", "cli.js"]) {
+      const sibling = join(dirname(arg1), candidate);
+      if (existsSync(sibling)) return sibling;
+    }
+  }
+  return arg1;
+}
 
 /**
  * Spawn a detached audit worker for the given session. Returns immediately
@@ -68,8 +96,7 @@ export function spawnDetachedAuditWorker(
   const fd = openSync(logPath, "a");
 
   try {
-    const cliPath = process.argv[1];
-    if (!cliPath) throw new Error("audit-spawner: cannot determine CLI path from process.argv[1]");
+    const cliPath = resolveCliEntry();
     const argv: string[] = [cliPath, "audit-session", "--workspace", workspacePath, "--session", sessionId];
     if (ide) argv.push("--ide", ide);
     const child = spawn(
