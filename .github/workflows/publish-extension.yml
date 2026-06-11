@@ -52,6 +52,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Guard against tag/manifest drift (same class as the v0.6.0 incident:
+      # extension-v0.1.5 was first tagged before the version-bump PR merged,
+      # so the workflow built a 0.1.4-manifest .vsix and Open VSX rejected it
+      # as already published). Fail before building.
+      - name: Verify tag matches extension manifest
+        if: startsWith(github.ref, 'refs/tags/extension-v')
+        shell: bash
+        run: |
+          tag="${GITHUB_REF#refs/tags/extension-v}"
+          ver="$(jq -r .version extension/package.json)"
+          if [ "$tag" != "$ver" ]; then
+            echo "::error::Version drift: tag extension-v${tag} vs extension/package.json ${ver}. Merge the release PR before pushing the tag, then re-tag on the merged commit."
+            exit 1
+          fi
+          echo "Extension manifest consistent: extension-v${tag}"
+
       - uses: actions/setup-node@v4
         with:
           node-version: 20
