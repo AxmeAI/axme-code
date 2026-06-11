@@ -82,7 +82,7 @@ export async function registerMcpServer(
     const bundledNode = getBundledNode();
     if (!bundledNode) {
       throw new Error(
-        "AXME Code: bundled Node.exe not found at extension/bin/node-windows-x64.exe. " +
+        "AXME Code: bundled Node.exe not found at extension/bin/node-runtime/node.exe. " +
           "MCP server cannot start. This usually means the .vsix is incomplete — please reinstall.",
       );
     }

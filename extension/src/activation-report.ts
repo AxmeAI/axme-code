@@ -20,7 +20,7 @@
 import * as vscode from "vscode";
 import { show as showOutput } from "./log.js";
 
-export type StepKind = "mcp" | "hooks" | "auth" | "setup" | "binary";
+export type StepKind = "mcp" | "hooks" | "auth" | "setup" | "binary" | "node";
 
 interface Step {
   kind: StepKind;
@@ -30,6 +30,7 @@ interface Step {
 
 const LABELS: Record<StepKind, string> = {
   binary: "Binary",
+  node: "Node",
   mcp: "MCP",
   hooks: "Hooks",
   auth: "Auth",
