@@ -104,20 +104,98 @@ export function isRetryableError(errMsg: string): boolean {
  * via ensureAxmeSessionForClaude).
  */
 export function getClaudeCodePid(): number {
+  const parent = readParentPidLinux(process.ppid);
+  if (parent != null) return parent;
+  // /proc missing (macOS, Windows), or parent died before we could read
+  // its stat file.
+  return process.ppid;
+}
+
+/** Parse the parent PID of `pid` from /proc (Linux only). Null elsewhere/on failure. */
+function readParentPidLinux(pid: number): number | null {
   try {
-    const stat = readFileSync(`/proc/${process.ppid}/stat`, "utf-8");
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf-8");
     const closeParen = stat.lastIndexOf(")");
     if (closeParen > 0) {
       // Fields after "(comm) " are space-separated: state ppid pgrp ...
       const parts = stat.slice(closeParen + 2).split(" ");
-      const grandparent = parseInt(parts[1], 10);
-      if (Number.isFinite(grandparent) && grandparent > 1) return grandparent;
+      const parent = parseInt(parts[1], 10);
+      if (Number.isFinite(parent) && parent > 1) return parent;
     }
-  } catch {
-    // /proc missing (macOS, Windows), or parent died before we could read
-    // its stat file. Fall through to fallback.
+  } catch { /* /proc missing or pid gone */ }
+  return null;
+}
+
+/** Parent PID of `pid` via `ps` (macOS and other POSIX without /proc). */
+function readParentPidPosix(pid: number): number | null {
+  try {
+    const { execSync } = require("node:child_process") as typeof import("node:child_process");
+    const out = execSync(`ps -o ppid= -p ${pid}`, { encoding: "utf-8", timeout: 2_000, stdio: ["ignore", "pipe", "ignore"] }).trim();
+    const parent = parseInt(out, 10);
+    if (Number.isFinite(parent) && parent > 1) return parent;
+  } catch { /* ps unavailable or pid gone */ }
+  return null;
+}
+
+/**
+ * Walk this process's ancestor chain — parent, grandparent, … — up to
+ * `maxDepth` levels. The first element is always `process.ppid`.
+ *
+ * Why this exists: hooks record `ownerPpid` via getClaudeCodePid() (their
+ * grandparent — one step above the sh wrapper). Under Claude Code that PID
+ * equals the MCP server's PARENT, because the same claude process spawns
+ * both — so a strict `ownerPpid === process.ppid` equality worked. Cursor
+ * adds a layer: hooks are spawned by the cursor-server main process while
+ * the MCP server is a child of the EXTENSION HOST, so the hook-recorded
+ * owner is the server's GRANDparent and strict equality never matches.
+ * (QA 2026-06-11: `axme_begin_close` returned "No active AXME session
+ * found" on every Cursor extension install — session close, audit spawn
+ * and worklog were all dead.) Ownership checks must match against the
+ * ancestor chain, not a single ppid.
+ *
+ * Platform strategy: Linux walks /proc (microseconds); macOS walks `ps`
+ * (one small exec per level); Windows resolves the whole chain in a single
+ * PowerShell invocation (spawning powershell per level would cost seconds).
+ * Any failure stops the walk — the chain always contains at least
+ * `process.ppid`, so behavior degrades to the old strict equality.
+ */
+export function getOwnAncestorPids(maxDepth = 4): number[] {
+  const chain: number[] = [];
+  const seen = new Set<number>();
+  let current = process.ppid;
+  if (process.platform === "win32") {
+    return getOwnAncestorPidsWindows(maxDepth);
   }
-  return process.ppid;
+  for (let depth = 0; depth < maxDepth; depth++) {
+    if (!Number.isFinite(current) || current <= 1 || seen.has(current)) break;
+    chain.push(current);
+    seen.add(current);
+    const parent = process.platform === "linux"
+      ? readParentPidLinux(current)
+      : readParentPidPosix(current);
+    if (parent == null) break;
+    current = parent;
+  }
+  return chain.length > 0 ? chain : [process.ppid];
+}
+
+/** Windows ancestor chain in ONE PowerShell call (CIM walk). */
+function getOwnAncestorPidsWindows(maxDepth: number): number[] {
+  try {
+    const { execSync } = require("node:child_process") as typeof import("node:child_process");
+    const script =
+      `$p=${process.ppid};$out=@();for($i=0;$i -lt ${maxDepth} -and $p -gt 1;$i++){` +
+      `$out+=$p;$p=(Get-CimInstance Win32_Process -Filter \\"ProcessId=$p\\" -ErrorAction SilentlyContinue).ParentProcessId};` +
+      `$out -join ','`;
+    const out = execSync(`powershell -NoProfile -NonInteractive -Command "${script}"`, {
+      encoding: "utf-8",
+      timeout: 10_000,
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    const chain = out.split(",").map(s => parseInt(s.trim(), 10)).filter(n => Number.isFinite(n) && n > 1);
+    if (chain.length > 0) return chain;
+  } catch { /* powershell unavailable — fall back to parent only */ }
+  return [process.ppid];
 }
 
 function sessionsRoot(projectPath: string): string {

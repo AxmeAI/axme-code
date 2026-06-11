@@ -37,6 +37,7 @@ import {
   isPidAlive,
   loadSession,
   closeSession,
+  getOwnAncestorPids,
 } from "./storage/sessions.js";
 import { logEvent } from "./storage/worklog.js";
 import { spawnDetachedAuditWorker } from "./audit-spawner.js";
@@ -78,10 +79,21 @@ const defaultWorkspacePath = isWorkspace ? serverCwd : null;
 // the Claude session_id, which is the key for multi-window isolation.
 //
 // Instead of a single "currentSession", the server owns all AXME sessions
-// created by hooks whose parent process id equals our own parent process
-// id (i.e., the same Claude Code instance that spawned us). At disconnect,
-// we close all of them.
+// created by hooks of the same IDE instance that spawned us. Hooks record
+// ownerPpid via getClaudeCodePid() (their grandparent above the sh wrapper).
+// Under Claude Code that equals our PARENT — claude spawns hooks and the
+// MCP server alike. Cursor adds a layer: hooks hang off the cursor-server
+// main process while we are a child of the extension host, so the recorded
+// owner is our GRANDparent and strict ppid equality never matched — every
+// Cursor extension install had session close / audit / worklog silently
+// dead ("No active AXME session found", QA 2026-06-11). Match against our
+// ancestor chain instead; chain[0] is process.ppid, so the Claude Code
+// behavior is unchanged.
 const OWN_PPID = process.ppid;
+const OWN_ANCESTOR_PIDS = new Set<number>(getOwnAncestorPids(4));
+function isOwnedMapping(ownerPpid: number | undefined): boolean {
+  return ownerPpid != null && OWN_ANCESTOR_PIDS.has(ownerPpid);
+}
 
 // Track which context paths have been delivered in this MCP session.
 // Used by axme_oracle/decisions/memories to avoid duplicating workspace
@@ -121,7 +133,7 @@ void sendStartupEvents();
  */
 function getOwnedSessionIdForLogging(): string | undefined {
   const all = listClaudeSessionMappings(defaultProjectPath);
-  const owned = all.filter(m => m.ownerPpid === OWN_PPID);
+  const owned = all.filter(m => isOwnedMapping(m.ownerPpid));
   if (owned.length > 0) return owned[0].axmeSessionId;
 
   // No mapping for our PID — check for stale mappings from dead Claude Code
@@ -173,7 +185,7 @@ async function cleanupAndExit(reason: string): Promise<void> {
   // detached audit worker for each, clear the mapping, and exit. No awaiting.
   try {
     const mappings = listClaudeSessionMappings(defaultProjectPath);
-    const owned = mappings.filter(m => m.ownerPpid === OWN_PPID);
+    const owned = mappings.filter(m => isOwnedMapping(m.ownerPpid));
 
     // Deduplicate: group AXME sessions by Claude session ID.
     // Multiple AXME sessions can share the same Claude session (race condition
@@ -1197,7 +1209,7 @@ async function auditOrphansInBackground(): Promise<void> {
     // currently owned by this MCP server via an active mapping file.
     const ownedAxmeIds = new Set(
       listClaudeSessionMappings(defaultProjectPath)
-        .filter(m => m.ownerPpid === OWN_PPID)
+        .filter(m => isOwnedMapping(m.ownerPpid))
         .map(m => m.axmeSessionId),
     );
 
