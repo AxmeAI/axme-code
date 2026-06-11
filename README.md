@@ -120,7 +120,7 @@ Install the CLI system-wide (useful if you want to run `axme-code` outside Claud
 ```bash
 curl -fsSL https://raw.githubusercontent.com/AxmeAI/axme-code/main/install.sh | bash
 ```
-Installs to `~/.local/bin/axme-code`. Supports x64 and ARM64.
+Installs to `~/.local/bin/axme-code`. Requires Node.js 20+ on PATH (the binary is a single-file Node bundle; the installer checks for it). Supports x64 and ARM64.
 
 **Windows (native):**
 ```powershell

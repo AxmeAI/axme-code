@@ -49,12 +49,21 @@ interface CursorMcpFile {
   [key: string]: unknown;
 }
 
-function readJsonOr<T extends object>(path: string, fallback: T): T {
+/**
+ * Read a JSON file, returning `fallback` when it doesn't exist (or is empty)
+ * and `null` when it exists but cannot be parsed. Callers MUST treat `null`
+ * as "refuse to write": the previous behavior (fall back to `{}` on parse
+ * error) silently replaced the user's hand-edited .cursor/mcp.json or
+ * hooks.json — destroying their other MCP servers and their own hooks.
+ */
+function readJsonOr<T extends object>(path: string, fallback: T): T | null {
   if (!existsSync(path)) return fallback;
   try {
-    return JSON.parse(readFileSync(path, "utf-8")) as T;
+    const raw = readFileSync(path, "utf-8");
+    if (!raw.trim()) return fallback;
+    return JSON.parse(raw) as T;
   } catch {
-    return fallback;
+    return null;
   }
 }
 
@@ -70,8 +79,19 @@ function writeJsonAtomic(path: string, value: unknown): void {
  * if the user later removes `.mcp.json`.
  */
 export function writeCursorMcpJson(projectPath: string): void {
+  // When setup is spawned by the Cursor extension, the extension already
+  // registers the MCP server via the cursor.mcp API on every activation.
+  // Writing a project-level entry on top of that creates a same-name
+  // duplicate whose command is either PATH-dependent (`axme-code` is not on
+  // PATH for extension-only users) or pinned to a version-numbered extension
+  // dir that goes stale on the next update. Skip the file entirely there.
+  if (process.env.AXME_SETUP_FROM_EXTENSION) return;
   const path = join(projectPath, ".cursor", "mcp.json");
   const cfg = readJsonOr<CursorMcpFile>(path, {});
+  if (cfg === null) {
+    console.error(`  ${path}: SKIPPED — existing file is not valid JSON. Fix or remove it, then re-run setup; refusing to overwrite user config.`);
+    return;
+  }
   if (!cfg.mcpServers) cfg.mcpServers = {};
   cfg.mcpServers.axme = { command: "axme-code", args: ["serve"] };
   writeJsonAtomic(path, cfg);
@@ -89,8 +109,17 @@ export function writeCursorHooksJson(
   projectPath: string,
   buildHookCommand: (hookName: string, projectPath: string) => string,
 ): void {
+  // Extension installs user-level hooks (~/.cursor/hooks.json) itself and
+  // rewrites them on every activation. A project-level copy written here
+  // would (a) double-fire every hook and (b) embed the setup-time absolute
+  // path of a version-numbered extension dir that nothing ever rewrites.
+  if (process.env.AXME_SETUP_FROM_EXTENSION) return;
   const path = join(projectPath, ".cursor", "hooks.json");
   const cfg = readJsonOr<CursorHooksFile>(path, { version: 1 });
+  if (cfg === null) {
+    console.error(`  ${path}: SKIPPED — existing file is not valid JSON. Fix or remove it, then re-run setup; refusing to overwrite user config.`);
+    return;
+  }
   if (!cfg.version) cfg.version = 1;
   if (!cfg.hooks) cfg.hooks = {};
 

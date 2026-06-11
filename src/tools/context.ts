@@ -76,9 +76,15 @@ export function getFullContextSections(projectPath: string, workspacePath?: stri
     // Check if setup is already running
     const setupLock = join(projectPath, AXME_CODE_DIR, "setup.lock");
     if (pathExists(setupLock)) {
-      return [parts[0] + "\n\nSetup is already running. Wait for it to finish, then call axme_context again."];
+      return [parts[0] + "\n\nSetup is already running (`.axme-code/setup.lock` is present). Wait for it to finish, then call axme_context again. If the user says no setup is running, the lock is a leftover from an interrupted setup — it self-expires 15 minutes after it was written, or the user can re-run setup with `--force`."];
     }
-    return [parts[0] + "\n\nProject not initialized — `.axme-code/` is missing in this workspace. **Do NOT run `axme-code setup` yourself.** Initialization is the user's job (Cursor: run `AXME: Setup` from Command Palette; Claude Code: run `axme-code setup` in terminal). Tell the user this and stop; once they finish setup, call `axme_context` again and the knowledge base will load."];
+    // Canonical not-initialized flow — keep in sync with the PROJECT SETUP
+    // REQUIRED block in server.ts instructions and the CLAUDE.md section
+    // written by `check-init` (cli.ts). One story everywhere: offer the user
+    // setup, on consent EXECUTE the inline MCP-tool-call sequence. Never
+    // tell the agent to run `axme-code` via Bash — for plugin installs the
+    // binary is not on PATH and the call just fails.
+    return [parts[0] + "\n\nProject not initialized — `.axme-code/` storage is missing (or has no config). Offer the user AXME setup; on consent, EXECUTE the inline setup flow from the server instructions (the \"PROJECT SETUP REQUIRED\" block: a sequence of axme_save_decision / axme_save_memory / axme_update_safety / axme_save_oracle tool calls — the first save call auto-bootstraps `.axme-code/`). Do NOT run `axme-code setup` via the Bash tool — on plugin installs the binary is not on PATH. The user can alternatively run the deeper LLM scan themselves: `AXME: Setup` from the Command Palette (Cursor extension) or `axme-code setup` in a terminal (CLI installs)."];
   }
 
   // Safety rules (small, always inline)

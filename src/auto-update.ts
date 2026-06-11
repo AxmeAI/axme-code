@@ -100,7 +100,15 @@ async function fetchLatestRelease(): Promise<{ tag: string; version: string } | 
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
-    const resp = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`, {
+    // We publish two release tracks in one repo: `v*` (CLI binaries — what
+    // this updater installs) and `extension-v*` (.vsix only). The
+    // `/releases/latest` endpoint returns the most recently published
+    // release overall, which flips to `extension-v*` whenever an extension
+    // ships after a CLI release — semverGreater() then compares against NaN
+    // and auto-update silently stops; if an extension version ever compared
+    // greater, the download URL would 404. Same bug class as install.sh
+    // (fixed in edc4724): fetch the list and pick the first `v[0-9]…` tag.
+    const resp = await fetch(`https://api.github.com/repos/${REPO}/releases?per_page=30`, {
       headers: {
         Accept: "application/vnd.github+json",
         "User-Agent": `axme-code/${AXME_CODE_VERSION}`,
@@ -109,8 +117,9 @@ async function fetchLatestRelease(): Promise<{ tag: string; version: string } | 
     });
     clearTimeout(timeout);
     if (!resp.ok) return null;
-    const data = (await resp.json()) as { tag_name: string };
-    const tag = data.tag_name;
+    const data = (await resp.json()) as Array<{ tag_name: string }>;
+    const tag = data.map(r => r.tag_name).find(t => /^v[0-9]/.test(t));
+    if (!tag) return null;
     return { tag, version: tag.replace(/^v/, "") };
   } catch {
     return null;
