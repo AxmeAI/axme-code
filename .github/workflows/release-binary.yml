@@ -196,3 +196,86 @@ jobs:
           git add -A
           git commit -m "sync: ${GITHUB_REF_NAME} from axme-code" || echo "No changes to commit"
           git push
+
+  open-marketplace-pr:
+    # Final mile of the Claude Code plugin channel. `claude plugin install
+    # axme-code@claude-community` installs the commit SHA pinned in
+    # anthropics/claude-plugins-community — NOT our plugin repo HEAD. Through
+    # April–June 2026 that pin silently stayed at v0.2.9 because bumping it
+    # was a manual PR that no process owned. This job opens (or updates) the
+    # bump PR automatically after every successful sync. Anthropic
+    # maintainers still review and merge it — that part is their
+    # supply-chain gate and cannot (and should not) be automated away.
+    #
+    # Idempotency: a single standing branch `bump-axme-code` on the AxmeAI
+    # fork is force-pushed each release. If a bump PR is already open, the
+    # push updates it in place; otherwise a new PR is created. Consecutive
+    # releases before a merge therefore never stack duplicate PRs.
+    #
+    # Token: needs push access to the AxmeAI/claude-plugins-community fork
+    # AND permission to open PRs on the public upstream — a classic PAT
+    # with `public_repo`/`repo` scope (fine-grained PATs cannot create PRs
+    # on repos outside their owner). Falls back to PLUGIN_REPO_TOKEN; if
+    # that one is fine-grained to axme-code-plugin only, add a
+    # MARKETPLACE_PR_TOKEN secret.
+    needs: sync-plugin-repo
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Open or update marketplace bump PR
+        env:
+          GH_TOKEN: ${{ secrets.MARKETPLACE_PR_TOKEN || secrets.PLUGIN_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          new_sha="$(gh api repos/AxmeAI/axme-code-plugin/commits/main --jq .sha)"
+
+          old_sha="$(curl -fsSL https://raw.githubusercontent.com/anthropics/claude-plugins-community/main/.claude-plugin/marketplace.json \
+            | jq -r '.plugins[] | select(.name == "axme-code") | .source.sha')"
+          if [ -z "$old_sha" ] || [ "$old_sha" = "null" ]; then
+            echo "::error::Could not read the current axme-code pin from upstream marketplace.json"
+            exit 1
+          fi
+          if [ "$old_sha" = "$new_sha" ]; then
+            echo "Marketplace pin already current ($new_sha) — nothing to do."
+            exit 0
+          fi
+
+          # Branch off upstream main so the PR diff is exactly one line,
+          # regardless of how stale our fork's main is.
+          git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/AxmeAI/claude-plugins-community.git" fork
+          cd fork
+          git fetch --depth 1 https://github.com/anthropics/claude-plugins-community.git main
+          git checkout -B bump-axme-code FETCH_HEAD
+
+          python3 - "$old_sha" "$new_sha" <<'PY'
+          import json, sys
+          old, new = sys.argv[1], sys.argv[2]
+          path = ".claude-plugin/marketplace.json"
+          raw = open(path).read()
+          count = raw.count(old)
+          assert count == 1, f"expected pinned SHA exactly once in marketplace.json, found {count}"
+          updated = raw.replace(old, new)
+          entry = [p for p in json.loads(updated)["plugins"] if p["name"] == "axme-code"][0]
+          assert entry["source"]["sha"] == new, "axme-code entry not updated correctly"
+          open(path, "w").write(updated)
+          print(f"pin {old[:7]} -> {new[:7]} OK")
+          PY
+
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add .claude-plugin/marketplace.json
+          git commit -m "Update axme-code to v${version}"
+          git push -f origin bump-axme-code
+
+          open_prs="$(gh pr list --repo anthropics/claude-plugins-community \
+            --head AxmeAI:bump-axme-code --state open --json number --jq 'length')"
+          if [ "$open_prs" -gt 0 ]; then
+            echo "Existing bump PR updated in place via force-push."
+          else
+            gh pr create --repo anthropics/claude-plugins-community \
+              --base main --head AxmeAI:bump-axme-code \
+              --title "Update axme-code to v${version}" \
+              --body "$(printf 'Bumps the pinned SHA for **axme-code** to the v%s sync commit ([`%s`](https://github.com/AxmeAI/axme-code-plugin/commit/%s)) of AxmeAI/axme-code-plugin.\n\nOne-line diff — only the existing entry'"'"'s `source.sha` changes. Opened automatically by the axme-code release workflow; maintained by the AxmeAI org (plugin author).' "$version" "${new_sha:0:7}" "$new_sha")"
+          fi
