@@ -1,0 +1,106 @@
+name: channel-health
+
+# End-to-end distribution-channel verification, from the USER's side.
+#
+# June 2026 postmortem: every internal pipeline was green while three
+# channels were silently degraded for weeks — the community-marketplace
+# pin served April's v0.2.9 to new plugin installs, auto-update was dead
+# for existing binary users, and nobody noticed because nothing checked
+# what a fresh user actually receives. This workflow is that check.
+#
+# Channels verified against the newest git release tags:
+#   1. npm latest               == newest v* release
+#   2. Open VSX latest          == newest extension-v* release
+#   3. plugin-repo plugin.json  == newest v* release
+#   4. community-marketplace SHA pin == plugin-repo HEAD
+#      (the pin is bumped by ANTHROPIC's pipeline on our plugin-repo
+#       pushes and the public catalog syncs nightly — so a 48h grace
+#       period applies before we alert; direct PRs to that repo are
+#       auto-closed, it is a read-only mirror)
+#
+# On any drift: opens (or comments on) a tracking issue and fails the run.
+
+on:
+  schedule:
+    - cron: "0 9 * * 1,4" # Mon + Thu 09:00 UTC
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Verify every channel against the newest release tags
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          problems=()
+
+          tags="$(gh api 'repos/AxmeAI/axme-code/releases?per_page=30' --jq '.[].tag_name')"
+          cli_tag="$(echo "$tags" | grep -E '^v[0-9]' | head -1 || true)"
+          ext_tag="$(echo "$tags" | grep -E '^extension-v[0-9]' | head -1 || true)"
+          if [ -z "$cli_tag" ]; then
+            problems+=("no \`v*\` tag in the releases list — install.sh and auto-update cannot resolve a version")
+          fi
+          cli_ver="${cli_tag#v}"
+          ext_ver="${ext_tag#extension-v}"
+          echo "Newest releases: CLI ${cli_tag:-NONE}, extension ${ext_tag:-NONE}"
+
+          # 1. npm
+          npm_ver="$(npm view @axme/code version 2>/dev/null || echo FETCH_FAILED)"
+          if [ -n "$cli_tag" ] && [ "$npm_ver" != "$cli_ver" ]; then
+            problems+=("npm latest is \`$npm_ver\`, newest CLI release is \`$cli_ver\`")
+          fi
+
+          # 2. Open VSX
+          ovsx_ver="$(curl -fsSL https://open-vsx.org/api/AxmeAI/axme-code 2>/dev/null | jq -r '.version // "FETCH_FAILED"' || echo FETCH_FAILED)"
+          if [ -n "$ext_tag" ] && [ "$ovsx_ver" != "$ext_ver" ]; then
+            problems+=("Open VSX latest is \`$ovsx_ver\`, newest extension release is \`$ext_ver\`")
+          fi
+
+          # 3. Plugin repo sync
+          plugin_ver="$(gh api repos/AxmeAI/axme-code-plugin/contents/.claude-plugin/plugin.json --jq '.content' 2>/dev/null | base64 -d | jq -r '.version' || echo FETCH_FAILED)"
+          if [ -n "$cli_tag" ] && [ "$plugin_ver" != "$cli_ver" ]; then
+            problems+=("plugin-repo plugin.json is \`$plugin_ver\`, newest CLI release is \`$cli_ver\`")
+          fi
+
+          # 4. Community marketplace pin (48h grace for Anthropic's pipeline)
+          pin="$(curl -fsSL https://raw.githubusercontent.com/anthropics/claude-plugins-community/main/.claude-plugin/marketplace.json 2>/dev/null \
+            | jq -r '.plugins[] | select(.name == "axme-code") | .source.sha' || echo FETCH_FAILED)"
+          head_json="$(gh api repos/AxmeAI/axme-code-plugin/commits/main 2>/dev/null || echo '{}')"
+          head_sha="$(echo "$head_json" | jq -r '.sha // "FETCH_FAILED"')"
+          if [ "$pin" != "$head_sha" ]; then
+            head_date="$(echo "$head_json" | jq -r '.commit.committer.date // empty')"
+            head_age_h=999
+            if [ -n "$head_date" ]; then
+              head_age_h=$(( ( $(date +%s) - $(date -d "$head_date" +%s) ) / 3600 ))
+            fi
+            if [ "$head_age_h" -ge 48 ]; then
+              problems+=("community-marketplace pin \`${pin:0:7}\` ≠ plugin-repo HEAD \`${head_sha:0:7}\` and HEAD is ${head_age_h}h old — Anthropic's auto-bump / nightly sync has not picked it up. Direct PRs are auto-closed (read-only mirror); escalate via https://clau.de/plugin-directory-submission")
+            else
+              echo "marketplace pin behind HEAD, but HEAD is only ${head_age_h}h old — inside the nightly-sync grace period"
+            fi
+          else
+            echo "marketplace pin current: ${pin:0:7}"
+          fi
+
+          # --- Report ---
+          if [ "${#problems[@]}" -gt 0 ]; then
+            body="$(printf -- '- %s\n' "${problems[@]}")"
+            echo "::error::Channel drift detected"
+            echo "$body"
+            title="Channel health: distribution drift detected"
+            existing="$(gh issue list --repo AxmeAI/axme-code --state open --search "in:title \"$title\"" --json number --jq '.[0].number // empty')"
+            if [ -n "$existing" ]; then
+              gh issue comment "$existing" --repo AxmeAI/axme-code --body "$(printf 'Still failing as of %s:\n\n%s' "$(date -u +%F)" "$body")"
+            else
+              gh issue create --repo AxmeAI/axme-code \
+                --title "$title" \
+                --body "$(printf 'Automated channel-health check (%s) found drift between what CI released and what users actually receive:\n\n%s\n\nRunbook: see the header comments of scripts/release.sh and .github/workflows/channel-health.yml.' "$(date -u +%F)" "$body")"
+            fi
+            exit 1
+          fi
+          echo "All channels healthy: CLI ${cli_tag:-n/a} (npm ✓, plugin repo ✓), extension ${ext_tag:-n/a} (Open VSX ✓), marketplace pin current or in grace."

@@ -20,12 +20,17 @@
 # IMPORTANT — the Claude Code marketplace pins us by SHA:
 #   `claude plugin install axme-code@claude-community` reads
 #   anthropics/claude-plugins-community/.claude-plugin/marketplace.json,
-#   which pins our plugin to a COMMIT SHA of AxmeAI/axme-code-plugin. Our
-#   sync job updates the plugin repo, but new users keep getting the pinned
-#   SHA until someone opens a PR to claude-plugins-community bumping it.
+#   which pins our plugin to a COMMIT SHA of AxmeAI/axme-code-plugin.
+#   That repo is a READ-ONLY MIRROR — direct PRs are closed by a bot
+#   (verified 2026-06-11, PR #63). Per the official docs
+#   (code.claude.com/docs/en/plugins), ANTHROPIC's pipeline bumps the pin
+#   automatically when we push new commits to the plugin repo, and the
+#   public catalog syncs nightly — so allow 24-48h after a release.
 #   (Discovered 2026-06-11: the pin still pointed at v0.2.9 from April —
-#   every release since had been invisible to plugin installers.) The
-#   postflight check below fails loudly until the marketplace PR lands.
+#   either their auto-bump postdates April or it is silently rejecting
+#   our updates.) If the pin is still stale 48h after a release, escalate
+#   via https://clau.de/plugin-directory-submission. The scheduled
+#   channel-health workflow checks this twice a week and opens an issue.
 #
 # Why this exists:
 #   The v0.2.7 release took ~5 retries because of drift between manual steps:
@@ -444,11 +449,14 @@ pinned_sha="$(curl -fsSL "https://raw.githubusercontent.com/anthropics/claude-pl
 if [ "$pinned_sha" = "$plugin_head" ] && [ "$pinned_sha" != "FETCH_FAILED" ]; then
   ok "marketplace pin is current ($pinned_sha)"
 else
-  err "marketplace pins $pinned_sha but $PLUGIN_REPO main is $plugin_head"
-  err "  New plugin installs will keep getting the OLD version until this lands:"
-  err "  1. Fork anthropics/claude-plugins-community"
-  err "  2. In .claude-plugin/marketplace.json set axme-code .source.sha = $plugin_head"
-  err "  3. Open a PR (their CI + maintainers review it)"
+  warn "marketplace pins $pinned_sha but $PLUGIN_REPO main is $plugin_head"
+  warn "  New plugin installs keep getting the OLD version until the pin updates."
+  warn "  The pin is bumped by ANTHROPIC's pipeline (triggered by our plugin-repo"
+  warn "  pushes); the public catalog then syncs nightly — allow 24-48h."
+  warn "  Do NOT open a PR to anthropics/claude-plugins-community: it is a"
+  warn "  read-only mirror and a bot auto-closes PRs (verified 2026-06-11, #63)."
+  warn "  Still stale after 48h? Escalate: https://clau.de/plugin-directory-submission"
+  warn "  (channel-health.yml re-checks twice a week and opens an issue on drift)"
 fi
 
 # --- Done ---
