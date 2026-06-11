@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-06-11
+
+Hotfix release on top of v0.6.1, driven by the full functional QA pass of extension 0.1.6 on Cursor/Linux (23 of 25 executable checks passed; this release fixes the one real bug found).
+
+### Fixed
+
+- **Cursor extension: session close / audit pipeline / worklog were completely dead.** `axme_begin_close` (and `axme_finalize_close`) returned "No active AXME session found" on every Cursor extension install. Hooks record `ownerPpid` as their grandparent (one step above the `sh` wrapper) — under Claude Code that equals the MCP server's parent, so the strict `ownerPpid === process.ppid` ownership check worked; Cursor adds a process layer (hooks hang off the cursor-server main process, the MCP server is a child of the extension host), so strict equality never matched and the stale-adoption fallback never fired (the owner process is alive). Ownership checks now match against the server's ancestor PID chain (`getOwnAncestorPids`, depth 4): Linux walks `/proc`, macOS walks `ps`, Windows resolves the whole chain in a single PowerShell CIM call. `chain[0]` is `process.ppid`, so Claude Code behavior is unchanged. Verified E2E against the built server with an interposed process layer reproducing the Cursor topology, plus a selectivity control (alive unrelated owner PID still correctly reports no session) and a stale-adoption control (dead owner PID is still adopted — VS Code reload recovery preserved).
+
+### Added
+
+- **`channel-health.yml` scheduled workflow** (Mon+Thu + manual dispatch): verifies, from a fresh user's perspective, that npm latest / Open VSX latest / plugin-repo manifest match the newest release tags and that the community-marketplace SHA pin tracks the plugin repo HEAD (with a 48h grace window for Anthropic's auto-bump + nightly catalog sync). Opens a tracking issue on drift. The June postmortem gap — three channels drifted for weeks while every internal pipeline was green — is now a two-day detection window.
+- `scripts/release.sh` header + postflight now document the real community-marketplace pin process: the catalog repo is a read-only mirror (direct PRs are auto-closed by a bot); Anthropic's pipeline bumps approved plugins' pins on plugin-repo pushes with a nightly sync; escalate via the plugin-directory submission channel if the pin is stale more than 48h after a release.
+
 ## [0.6.1] - 2026-06-11
 
 Launch-readiness release. A four-agent audit of every distribution channel (standalone binary, npm, Claude Code plugin, Cursor extension) — with findings reproduced against the released v0.6.0 / extension-v0.1.5 artifacts — surfaced a set of first-run and channel-health bugs. This release fixes all of them and adds release-process guards so the channel breakages cannot silently recur.
