@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-06-25
+
+Reliability release for the `axme_save_memory` / `axme_save_decision` write tools, driven by two independent agent sessions that hit the same failure mode in production.
+
+### Fixed
+
+- **`axme_save_memory` (and `axme_save_decision`) repeatedly failed with `"expected string, received undefined"` on every required field** (#155). Two agent sessions independently hit this; the args object arrived empty (`{}`). Controlled testing confirmed it is **not** a server/handler/schema defect — every call whose arguments actually reached the server persisted correctly, and `axme_save_decision` worked in the same session with the same client. Root cause is a client-side generative slip: the agent emits the tool-call shell while deferring the heavy free-text fields, and the fill never happens. `axme_save_memory` is uniquely prone because it combines the heaviest required surface among the axme tools (enum `type` + two large free-text fields) with an over-generalized "batch axme calls in parallel" habit inherited from the read-tool instructions. The MCP SDK validates against the zod schema **before** the handler runs, so an empty payload never reaches our code and echoing the received keys would require loosening the advertised schema (which would worsen the root cause by hiding the required fields from the model). Three text-only mitigations instead, no schema loosening and no behavior change for valid calls:
+  - Custom zod v4 `{ error }` messages on the required fields of `axme_save_memory` (`type`/`title`/`description`) and `axme_save_decision` (`title`/`decision`/`reasoning`). Instead of a bland "received undefined" (which the first agent misread as "the server lost my arguments" and retried 9× before filing a server-bug report), each field now states it is REQUIRED, must be composed in the same call, and that an empty/deferred emission is the usual cause.
+  - Hardened tool descriptions: explicit "call standalone, not in a parallel batch; include all required fields in the same call" plus a worked example arguments object for `axme_save_memory`.
+  - Clarified server instructions: parallelism is for the READ tools (`axme_oracle`/`axme_decisions`/`axme_memories`) only; a new SAVE-TOOL RULE states `axme_save_memory`/`axme_save_decision`/`axme_update_safety` are called one at a time with all required fields composed in that same call.
+
 ## [0.6.2] - 2026-06-11
 
 Hotfix release on top of v0.6.1, driven by the full functional QA pass of extension 0.1.6 on Cursor/Linux (23 of 25 executable checks passed; this release fixes the one real bug found).
