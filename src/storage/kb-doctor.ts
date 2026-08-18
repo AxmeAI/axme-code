@@ -30,7 +30,7 @@ import { readConfig } from "./config.js";
 import { listMemories } from "./memory.js";
 import { listDecisions } from "./decisions.js";
 import { makeSlug, isDegenerateSlug } from "../utils/slug.js";
-import { hasLeakedMarkup, stripLeakedMarkup } from "../utils/sanitize.js";
+import { hasLeakedMarkup, stripLeakedMarkupFromRecord } from "../utils/sanitize.js";
 import { AXME_CODE_DIR } from "../types.js";
 
 export type DefectKind =
@@ -283,13 +283,17 @@ export function loadedLayer(raw: string, stopHeading: string): string {
   return t.trim();
 }
 
-/** Strip a leaked tool-call frame from the body of a stored file. */
+/**
+ * Strip a leaked tool-call frame from a stored file, preserving everything
+ * after it — notably the `## Details` / `## Reasoning` section, which in the
+ * records observed in the wild sits directly below the leak.
+ */
 function stripLeakedMarkupFromFile(raw: string): string {
   const fenceEnd = raw.startsWith("---\n") ? raw.indexOf("\n---\n", 4) : -1;
-  if (fenceEnd < 0) return stripLeakedMarkup(raw).text + "\n";
+  if (fenceEnd < 0) return stripLeakedMarkupFromRecord(raw).text;
   const head = raw.slice(0, fenceEnd + 5);
   const body = raw.slice(fenceEnd + 5);
-  return head + stripLeakedMarkup(body).text + "\n";
+  return head + stripLeakedMarkupFromRecord(body).text;
 }
 
 function normalizeTitle(title: string): string {

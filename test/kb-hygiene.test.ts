@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { makeSlug, transliterate, isDegenerateSlug } from "../src/utils/slug.js";
-import { stripLeakedMarkup, hasLeakedMarkup, sanitizeFields } from "../src/utils/sanitize.js";
+import { stripLeakedMarkup, stripLeakedMarkupFromRecord, hasLeakedMarkup, sanitizeFields } from "../src/utils/sanitize.js";
 import { paginateSections } from "../src/utils/pagination.js";
 import { runKbDoctor, loadedLayer, setFrontmatterValue, frontmatterValue } from "../src/storage/kb-doctor.js";
 import { archiveMemory, archiveDecision } from "../src/storage/archive.js";
@@ -88,6 +88,21 @@ describe("leaked tool-call markup", () => {
   it("detects without mutating", () => {
     assert.equal(hasLeakedMarkup(LEAKED), true);
     assert.equal(hasLeakedMarkup("plain text"), false);
+  });
+
+  it("record-level stripping keeps content after the frame", () => {
+    const record = 'Rule text.</description>\n<parameter name="keywords">["a"]</parameter>\n</invoke>\n\n## Details\n\nkept';
+    const r = stripLeakedMarkupFromRecord(record);
+    assert.equal(r.changed, true);
+    assert.ok(r.text.includes("Rule text."));
+    assert.ok(r.text.includes("## Details"));
+    assert.ok(r.text.includes("kept"));
+    assert.ok(!r.text.includes("<parameter"));
+  });
+
+  it("field-level stripping still cuts to the end (a field has no legitimate tail)", () => {
+    const r = stripLeakedMarkup('Rule text.</description>\n<parameter name="keywords">["a"]');
+    assert.equal(r.text, "Rule text.");
   });
 
   it("reports which fields it cleaned", () => {
@@ -305,6 +320,26 @@ describe("kb-doctor", () => {
     assert.ok(!after.includes("</description>"));
     assert.ok(!after.includes("<parameter"));
     assert.ok(after.includes("Watchdog flaps."));
+  });
+
+  it("preserves the deferred section below a leaked frame", () => {
+    // The shape found in the wild: the leak sits at the END of the
+    // description, with "## Details" directly under it. A cut-to-end repair
+    // would delete the very layer this release exists to protect.
+    const p = writeMemoryFile("leaky-with-details.md",
+      "slug: leaky-with-details\ntype: pattern\ntitle: Leaky\nsource: session\ndate: 2026-01-01\nkeywords: \nsessionId: ",
+      '# Leaky\n\nRun npm whoami before npm publish.</description>\n<parameter name="keywords">["release", "npm"]</parameter>\n</invoke>\n\n## Details\n\nv0.2.7 took 5 retries; npm auth was missing.');
+
+    runKbDoctor(ROOT, { fix: true });
+    const after = readFileSync(p, "utf-8");
+
+    assert.ok(!after.includes("</description>"), after);
+    assert.ok(!after.includes("<parameter"), after);
+    assert.ok(!after.includes("</invoke>"), after);
+    assert.ok(after.includes("Run npm whoami before npm publish."), after);
+    // The whole point: the deferred layer survives.
+    assert.ok(after.includes("## Details"), after);
+    assert.ok(after.includes("v0.2.7 took 5 retries"), after);
   });
 
   it("flags a description that overruns the catalog budget, but does not rewrite it", () => {

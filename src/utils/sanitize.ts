@@ -46,6 +46,41 @@ export function hasLeakedMarkup(text: string): boolean {
   return !!text && LEAK_START.test(text);
 }
 
+/** A line that is nothing but tool-call frame syntax, safe to drop whole. */
+const FRAME_LINE = /^\s*<\/?(?:antml:)?(?:parameter|invoke|function_calls|description|body|decision|reasoning|title)\b[^\n]*$/i;
+
+/**
+ * Remove a leaked frame from a STORED RECORD, keeping the content after it.
+ *
+ * This is deliberately not `stripLeakedMarkup`. That one cuts to the end of
+ * the string, which is right for a single field value — everything past the
+ * frame belongs to a different argument. Applied to a whole file it would be
+ * catastrophic: in the records observed in the wild the leak sits at the end
+ * of the description and is followed by the `## Details` section, so a
+ * cut-to-end repair would delete the deferred layer it was meant to protect.
+ *
+ * So: truncate the offending line at the tag, drop the frame-only lines that
+ * follow it, and keep everything from the first real line onward.
+ */
+export function stripLeakedMarkupFromRecord(text: string): SanitizeResult {
+  const lines = text.split("\n");
+  const start = lines.findIndex(l => LEAK_START.test(l));
+  if (start < 0) return { text, changed: false };
+
+  const m = LEAK_START.exec(lines[start])!;
+  const head = lines[start].slice(0, m.index).replace(/\s+$/, "");
+
+  // Consume the frame lines that trail the leak, and stop at the first line
+  // that carries real content — a heading, a paragraph, or a blank line
+  // separating sections.
+  let end = start + 1;
+  while (end < lines.length && FRAME_LINE.test(lines[end])) end++;
+
+  const kept = [...lines.slice(0, start)];
+  if (head) kept.push(head);
+  return { text: [...kept, ...lines.slice(end)].join("\n"), changed: true };
+}
+
 /**
  * Sanitize every text field of a record, reporting which fields were cut.
  * Field order in the result is the caller's; only present fields are visited.
