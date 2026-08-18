@@ -10,6 +10,8 @@ import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join, resolve, basename } from "node:path";
 import { atomicWrite, ensureDir, pathExists } from "./engine.js";
 import { logDecisionSaved, logDecisionSuperseded } from "./worklog.js";
+import { makeSlug } from "../utils/slug.js";
+import { sanitizeFields } from "../utils/sanitize.js";
 import type { Decision } from "../types.js";
 import { AXME_CODE_DIR } from "../types.js";
 
@@ -80,6 +82,12 @@ export function saveDecisions(projectPath: string, decisions: Decision[]): void 
 export function addDecision(projectPath: string, input: Omit<Decision, "id">): Decision {
   const dir = decisionsDir(projectPath);
   ensureDir(dir);
+
+  // (0) Refuse to persist a leaked tool-call frame. A malformed emission
+  // upstream glued `</description><parameter name="keywords">...` onto the
+  // end of a field in three observed records; storage is the last place
+  // that can still drop it.
+  input = sanitizeFields(input, ["title", "decision", "reasoning"]).record;
 
   // (1) Title-based dedup. If an existing decision has an equivalent title,
   // return it as-is. saveScopedDecisions callers treat this as success.
@@ -308,8 +316,14 @@ export function getDecisionSections(projectPath: string): string[] {
   });
 }
 
+/**
+ * Decision slug from a title. Decision filenames are `D-NNN-<slug>.md`, so a
+ * degenerate slug never caused overwrites the way memory slugs did — but an
+ * empty one still produced `D-042-.md` and made the file unsearchable by
+ * name. Same repaired generator, same guarantees.
+ */
 export function toSlug(text: string): string {
-  return text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 50);
+  return makeSlug(text, 50, "decision");
 }
 
 // --- Internal ---
@@ -407,6 +421,15 @@ function parseDecisionFile(filePath: string): Decision | null {
 // Node process serialize their index rebuilds to avoid last-writer-wins on
 // index.md. Cross-process is already OK (O_EXCL on content files).
 let _rebuildQueue = Promise.resolve();
+
+/**
+ * Rebuild `decisions/index.md`. Exported because archival removes a file
+ * out-of-band from addDecision/supersedeDecision; without a rebuild the
+ * index keeps advertising an id whose file is gone.
+ */
+export function rebuildDecisionIndex(projectPath: string): void {
+  _rebuildIndexSync(projectPath);
+}
 
 function rebuildIndex(projectPath: string): void {
   _rebuildQueue = _rebuildQueue.then(() => _rebuildIndexSync(projectPath)).catch(() => {});

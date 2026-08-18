@@ -144,12 +144,12 @@ describe("search-mode catalog rendering", () => {
     assert.ok(out.includes("No memories recorded."));
   });
 
-  it("getFullContextSections in search mode emits Active KB usage block with triggers", () => {
+  it("getFullContextSections in search mode emits fetch-trigger block", () => {
     setupSearchMode();
     const sections = getFullContextSections(PROJECT);
     const joined = sections.join("\n");
     assert.ok(joined.includes("Search mode active"));
-    assert.ok(joined.includes("Active KB usage"));
+    assert.ok(joined.includes("When to fetch"));
     // Concrete trigger predicates we promised to surface
     assert.ok(joined.includes("how did we"));
     assert.ok(joined.includes("axme_search_kb"));

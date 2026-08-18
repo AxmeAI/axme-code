@@ -91,6 +91,51 @@ iterations take effect immediately; only changes to the MCP server itself
 (tool definitions, cleanupAndExit, startup) require a window reload.
 `;
 
+
+const SAVE_GUIDANCE = `
+### What to save (and what NOT to)
+
+Before EVERY \`axme_save_memory\`, answer one question: **would this help an agent a month
+from now who was not part of this investigation?** If the value is in the numbers rather
+than in a rule, it belongs in a document, not in memory.
+
+**Save**: a rule or ruling from the owner · vendor/feed/API semantics that will not be
+re-derived (sign convention, error codes, limits, cadence) · a tool or language trap that
+will recur · a closed direction, so nobody reopens it · a live production contract.
+
+**Do NOT save**: measurement results and verdict numbers (put those in a doc; a memory may
+carry at most one line pointing to it) · session state and handoffs (\`axme_finalize_close\`
+already stores those) · a one-off incident whose fix is already in the code and that yields
+no transferable rule · anything an existing entry already covers — extend that entry instead
+of adding a second one.
+
+The negative list is the operative half. Without it "successful approach discovered" reads as
+"save every positive result", and a month of that buries the real rules under research diaries.
+
+### How to save — the two-level format
+
+Every memory and decision has a layer that is loaded into EVERY future session and a layer
+that is not:
+
+| field | rendered as | loaded at session start | fetched by |
+|---|---|---|---|
+| \`description\` (memory) / \`decision\` (decision) | the body paragraph | **YES, every session** | always present |
+| \`body\` (memory) / \`reasoning\` (decision) | \`## Details\` / \`## Reasoning\` | **NO** | \`axme_get_memory\` / \`axme_get_decision\` |
+
+So: **description = the rule plus one concrete fact, <=200 characters.** Measurements, file
+paths, line numbers, thresholds, command output and history go into \`body\` — nothing is lost,
+it simply stops being paid for by every session that never needed it.
+
+Why 200: that is the catalog excerpt width (\`catalog.excerpt_chars\` in
+\`.axme-code/config.yaml\` — check it if you want the exact number for this project). An entry
+within budget is rendered COMPLETE in the catalog, so nothing is hidden from future sessions.
+An entry over budget is cut, and its tail is invisible unless someone explicitly fetches it.
+
+Do NOT split one entry into several single-fact entries to meet the length. Per-entry overhead
+(slug, title, catalog markup) is 60-100 characters and multiplies by count. Cut DOWN into the
+deferred layer, not ACROSS into more records.
+`;
+
 const SINGLE_REPO_CLAUDE_MD = `## AXME Code
 
 ### Session Start (MANDATORY)
@@ -99,10 +144,19 @@ This loads: oracle, decisions, safety rules, memories, test plan, active plans.
 Do NOT skip - without context you will miss critical project rules.
 ${PENDING_AUDITS_GUIDANCE}${STORAGE_PATH_GUIDANCE}
 ### During Work
-- Error pattern or successful approach discovered -> call axme_save_memory immediately
+- Error pattern or transferable rule discovered -> call axme_save_memory immediately
 - Architectural decision made or discovered -> call axme_save_decision immediately
 - New safety constraint found -> call axme_update_safety immediately
-Do not defer - save when discovered.
+Do not defer - save when discovered. But apply the filter below first: saving everything is
+what turns a knowledge base into a session-start tax.
+${SAVE_GUIDANCE}
+### Housekeeping
+- \`axme-code kb-doctor .\` - fast, no LLM: finds broken slugs, leaked tool markup, entries
+  that overrun the catalog budget. \`--fix\` repairs the mechanical ones.
+- \`axme-code audit-kb . --dry-run\` - preview a compaction pass (compact / merge / archive).
+  Drop \`--dry-run\` to apply; it takes a backup first.
+- Retiring an entry is \`axme_archive_memory\` / \`axme_archive_decision\` - never delete files
+  by hand, and never leave a stale entry in place because there was no tool for it.
 
 ### Available AXME Tools
 axme_context, axme_oracle, axme_decisions, axme_memories, axme_save_memory, axme_save_decision,
@@ -123,6 +177,12 @@ ${PENDING_AUDITS_GUIDANCE}${STORAGE_PATH_GUIDANCE}
 ### During Work
 - Save memories/decisions/safety rules immediately when discovered
 - For cross-project findings: include scope parameter (e.g. scope: ["all"])
+${SAVE_GUIDANCE}
+### Housekeeping
+- \`axme-code kb-doctor <repo>\` - fast defect scan (broken slugs, leaked markup, overlong
+  entries); \`--fix\` repairs the mechanical ones. Each repo has its own storage - run per repo.
+- \`axme-code audit-kb <repo> --dry-run\` - preview a compaction pass; drop the flag to apply.
+- Retiring an entry is \`axme_archive_memory\` / \`axme_archive_decision\`, never a manual delete.
 
 ### Available AXME Tools
 axme_context, axme_oracle, axme_decisions, axme_memories, axme_save_memory, axme_save_decision,
@@ -384,7 +444,9 @@ Usage:
                                                 Set auth mode non-interactively
   axme-code cleanup legacy-artifacts [--dry-run]   Remove pre-PR#7 sessions/logs
   axme-code cleanup decisions-normalize [--dry-run]   Add status:active to decisions
-  axme-code audit-kb [path] [--all-repos]       KB audit: dedup, conflicts, compaction
+  axme-code audit-kb [path] [--all-repos] [--dry-run]
+                                                KB compaction: compact, merge, archive (LLM)
+  axme-code kb-doctor [path] [--fix]           KB defect scan: slugs, leaked markup, overlong
   axme-code stats [path]                        Worklog statistics (sessions, costs, safety blocks)
   axme-code help                                Show this help
 
@@ -400,7 +462,7 @@ async function main() {
   // its own startup event from server.ts after MCP server is up.
   // We AWAIT this so events flush before heavy work begins — under event
   // loop pressure (LLM scanners), fire-and-forget setImmediate may stall.
-  const startupCommands = new Set(["setup", "status", "stats", "audit-kb", "cleanup", "help"]);
+  const startupCommands = new Set(["setup", "status", "stats", "audit-kb", "kb-doctor", "cleanup", "help"]);
   if (command && startupCommands.has(command)) {
     const { sendStartupEvents } = await import("./telemetry.js");
     await sendStartupEvents();
@@ -906,17 +968,79 @@ Do NOT skip — without context you will miss critical project rules.
         }
       }
       const allRepos = args.includes("--all-repos");
+      const dryRun = args.includes("--dry-run");
 
-      console.log(`KB Audit: ${targetPath}${allRepos ? " (all repos)" : ""}`);
-      console.log(`Agent will read decisions + memories, check code, and update storage directly.\n`);
+      console.log(`KB Audit: ${targetPath}${allRepos ? " (all repos)" : ""}${dryRun ? " [DRY RUN]" : ""}`);
+      if (dryRun) {
+        console.log("Preview only — the agent will read and classify but write nothing.\n");
+      } else {
+        console.log("Agent will compact, merge and archive entries, writing to storage directly.");
+        console.log("A backup is taken first; nothing is deleted (archived entries go to .axme-code/archive/).\n");
+      }
 
-      const { runKbAudit } = await import("./agents/kb-auditor.js");
-      const result = await runKbAudit({ targetPath, allRepos });
+      const { runKbAudit, formatKbAuditReport } = await import("./agents/kb-auditor.js");
+      let result;
+      try {
+        result = await runKbAudit({ targetPath, allRepos, dryRun });
+      } catch (err: any) {
+        // The dominant failure here is the backup step — a store with no
+        // version history must not be rewritten without one.
+        console.error(`\nKB audit aborted: ${err?.message ?? err}`);
+        process.exit(1);
+      }
 
-      console.log(`\nDone: $${result.costUsd.toFixed(2)}, ${(result.durationMs / 1000).toFixed(0)}s`);
+      if (!dryRun && result.removed + result.compacted + result.added > 0) {
+        // Compaction rewrote the text the index was built from, and archival
+        // removed entries it still points at — a stale index answers searches
+        // with content that no longer exists.
+        try {
+          const { reindexAll } = await import("./tools/search-install.js");
+          const r = await reindexAll(targetPath);
+          if (r.ok) console.log(`Reindexed ${r.indexed} entries.`);
+          else console.error(`Reindex skipped (${r.error}) — run: axme-code reindex ${targetPath}`);
+        } catch (err: any) {
+          console.error(`Reindex failed (search results may be stale): ${err?.message ?? err}`);
+          console.error(`Fix with: axme-code reindex ${targetPath}`);
+        }
+      }
 
-      const { resetKbAuditCounter } = await import("./storage/kb-audit.js");
-      resetKbAuditCounter(targetPath);
+      console.log(formatKbAuditReport(result));
+      console.log(`Cost: $${result.costUsd.toFixed(2)}, ${(result.durationMs / 1000).toFixed(0)}s`);
+
+      if (!dryRun) {
+        const { resetKbAuditCounter } = await import("./storage/kb-audit.js");
+        resetKbAuditCounter(targetPath);
+      }
+      // A pass that wrote nothing is not a success — exit non-zero so CI and
+      // shell chains can tell the difference the old "exit 0" concealed.
+      if (!dryRun && result.compacted + result.removed + result.added === 0) process.exit(2);
+      break;
+    }
+
+    case "kb-doctor": {
+      // Deterministic storage-defect scan. No LLM, no network, milliseconds —
+      // the counterpart to audit-kb, which costs money and minutes and is for
+      // the defects that need judgment.
+      const docPathArg = args.slice(1).find(a => !a.startsWith("--"));
+      const docPath = resolve(docPathArg || ".");
+      const fix = args.includes("--fix");
+
+      const { runKbDoctor, formatDoctorReport } = await import("./storage/kb-doctor.js");
+      const report = runKbDoctor(docPath, { fix });
+      console.log(`KB Doctor: ${docPath}${fix ? " [--fix]" : ""}\n`);
+      console.log(formatDoctorReport(report, fix));
+
+      if (fix && report.fixed.length > 0) {
+        try {
+          const { reindexAll } = await import("./tools/search-install.js");
+          const r = await reindexAll(docPath);
+          if (r.ok) console.log(`\nReindexed ${r.indexed} entries.`);
+        } catch {
+          // Search-mode-only concern; a full-mode project has no index to stale.
+        }
+      }
+      // Exit 1 on outstanding defects so this is usable as a CI gate.
+      if (report.defects.length > 0) process.exit(1);
       break;
     }
 
@@ -1041,6 +1165,8 @@ Do NOT skip — without context you will miss critical project rules.
         else if (key === "model") console.log(cfg.model);
         else if (key === "auditor_model") console.log(cfg.auditorModel);
         else if (key === "review_enabled") console.log(String(cfg.reviewEnabled));
+        else if (key === "catalog.excerpt_chars") console.log(String(cfg.catalogExcerptChars));
+        else if (key === "catalog.size_warn") console.log(String(cfg.kbSizeWarnThreshold));
         else { console.error(`Unknown config key: ${key}`); process.exit(1); }
         break;
       }
@@ -1050,8 +1176,28 @@ Do NOT skip — without context you will miss critical project rules.
           console.error("usage: axme-code config set <key> <value>");
           process.exit(1);
         }
+        // Numeric KB-format keys: plain writes, no runtime side effects.
+        if (key === "catalog.excerpt_chars" || key === "catalog.size_warn") {
+          const n = Number(value);
+          if (!Number.isFinite(n)) {
+            console.error(`${key} must be a number. Got: ${value}`);
+            process.exit(1);
+          }
+          const { clampConfigNumber } = await import("./storage/config.js");
+          const cfg = rc(projectPath);
+          // Clamp before writing so config.yaml records the value that is
+          // actually in effect, rather than one the reader silently corrects.
+          const field = key === "catalog.excerpt_chars" ? "catalogExcerptChars" : "kbSizeWarnThreshold";
+          const effective = clampConfigNumber(field, n);
+          wc(projectPath, { ...cfg, [field]: effective });
+          console.log(`Saved: ${key} = ${effective}`);
+          if (effective !== Math.round(n)) {
+            console.log(`(clamped from ${Math.round(n)} to the supported range)`);
+          }
+          break;
+        }
         if (key !== "context.mode") {
-          console.error(`Set is currently supported only for context.mode. Got: ${key}`);
+          console.error(`Set is supported for: context.mode, catalog.excerpt_chars, catalog.size_warn. Got: ${key}`);
           process.exit(1);
         }
         if (value !== "full" && value !== "search") {

@@ -57,7 +57,46 @@ function formatConfig(config: ProjectConfig): string {
     "context:",
     `  mode: ${config.contextMode}`,
     "",
+    "# Knowledge-base format contract.",
+    "#   excerpt_chars — how many characters of a memory description (or decision body)",
+    "#                   the search-mode catalog renders per entry. An entry that fits",
+    "#                   inside this budget is shown COMPLETE at session start; a longer",
+    "#                   one is cut and its tail is only reachable via axme_get_memory.",
+    "#                   Write entries to this number and search mode loses nothing.",
+    "#   size_warn      — warn at session start once memories+decisions exceed this count.",
+    "catalog:",
+    `  excerpt_chars: ${config.catalogExcerptChars}`,
+    `  size_warn: ${config.kbSizeWarnThreshold}`,
+    "",
   ].join("\n");
+}
+
+/** Coerce a config number, falling back when absent, non-numeric, or out of range. */
+function readNumber(raw: unknown, fallback: number, min: number, max: number): number {
+  const n = typeof raw === "number" ? raw : Number(raw);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, Math.round(n)));
+}
+
+/** Supported range for each numeric KB-format key. */
+const NUMERIC_RANGES = {
+  catalogExcerptChars: { min: 80, max: 2000 },
+  kbSizeWarnThreshold: { min: 10, max: 100000 },
+} as const;
+
+/**
+ * Clamp a numeric config value to its supported range.
+ *
+ * Callers clamp BEFORE writing so config.yaml holds the value that is
+ * actually in effect. Clamping only on read would leave the file saying
+ * `excerpt_chars: 5` while the catalog rendered 80 — and the file is what
+ * a human inspects when they want to know the setting.
+ */
+export function clampConfigNumber(
+  key: keyof typeof NUMERIC_RANGES, value: number,
+): number {
+  const { min, max } = NUMERIC_RANGES[key];
+  return Math.min(max, Math.max(min, Math.round(value)));
 }
 
 function parseConfig(content: string): ProjectConfig {
@@ -70,7 +109,21 @@ function parseConfig(content: string): ProjectConfig {
     contextMode = ctxRaw.mode;
   }
 
+  // Clamped rather than trusted: a typo'd excerpt_chars of 2 would silently
+  // blank the whole catalog, and one of 100000 would defeat the point of
+  // search mode. Both failure modes are invisible until a session start
+  // costs 10x what it should.
+  const catRaw = doc.catalog;
+  const catalogExcerptChars = catRaw && typeof catRaw === "object"
+    ? readNumber(catRaw.excerpt_chars, DEFAULT_PROJECT_CONFIG.catalogExcerptChars, 80, 2000)
+    : DEFAULT_PROJECT_CONFIG.catalogExcerptChars;
+  const kbSizeWarnThreshold = catRaw && typeof catRaw === "object"
+    ? readNumber(catRaw.size_warn, DEFAULT_PROJECT_CONFIG.kbSizeWarnThreshold, 10, 100000)
+    : DEFAULT_PROJECT_CONFIG.kbSizeWarnThreshold;
+
   return {
+    catalogExcerptChars,
+    kbSizeWarnThreshold,
     model: String(doc.model ?? DEFAULT_PROJECT_CONFIG.model),
     auditorModel: String(doc.auditor_model ?? DEFAULT_PROJECT_CONFIG.auditorModel),
     reviewEnabled: doc.review_enabled !== false,

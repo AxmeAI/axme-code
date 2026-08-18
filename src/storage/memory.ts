@@ -9,6 +9,8 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join, resolve, basename } from "node:path";
 import { atomicWrite, ensureDir, pathExists, removeFile } from "./engine.js";
+import { makeSlug, isDegenerateSlug, shortHash } from "../utils/slug.js";
+import { sanitizeFields } from "../utils/sanitize.js";
 import type { Memory, MemoryType } from "../types.js";
 import { AXME_CODE_DIR } from "../types.js";
 
@@ -23,11 +25,87 @@ export function initMemoryStore(projectPath: string): void {
   ensureDir(join(memoryDir(projectPath), PATTERNS_DIR));
 }
 
-export function saveMemory(projectPath: string, memory: Memory): void {
+export interface SaveMemoryOutcome {
+  /** Slug actually written — may differ from memory.slug on collision. */
+  slug: string;
+  /** Field names whose leaked tool-call markup was stripped before writing. */
+  cleanedFields: string[];
+  /**
+   * Set when a DIFFERENT memory already owned this slug and the new one was
+   * written under a suffixed name instead of overwriting it.
+   */
+  collisionWith?: string;
+}
+
+/**
+ * Persist one memory.
+ *
+ * Two protections that did not exist before, both prompted by real data
+ * loss on a Cyrillic-language project:
+ *
+ *  - the slug is repaired (never empty, never digits-only) so a file can
+ *    never be written as bare `.md`, which is a dotfile invisible to the
+ *    `memory/<type>/*.md` globs this module reads back;
+ *  - if the target file exists but belongs to a memory with a DIFFERENT
+ *    title, the incoming memory is written under a suffixed slug instead of
+ *    silently replacing it. Same title still overwrites — that is an update,
+ *    which is the intended way to revise an entry.
+ */
+export function saveMemory(projectPath: string, memory: Memory): SaveMemoryOutcome {
   const subdir = memory.type === "feedback" ? FEEDBACK_DIR : PATTERNS_DIR;
   const dir = join(memoryDir(projectPath), subdir);
   ensureDir(dir);
-  atomicWrite(join(dir, `${memory.slug}.md`), formatMemoryFile(memory));
+
+  const { record: clean, cleaned } = sanitizeFields(memory, ["title", "description", "body"]);
+  const safeSlug = repairMemorySlug(clean.slug, clean.title);
+  const { slug, collisionWith } = resolveSlugCollision(dir, safeSlug, clean.title);
+
+  const toWrite: Memory = { ...clean, slug };
+  atomicWrite(join(dir, `${slug}.md`), formatMemoryFile(toWrite));
+  return { slug, cleanedFields: cleaned, ...(collisionWith ? { collisionWith } : {}) };
+}
+
+/** Rebuild a slug that an older axme-code version (or a caller) left unusable. */
+function repairMemorySlug(slug: string, title: string): string {
+  if (slug && !isDegenerateSlug(slug)) return slug;
+  return toMemorySlug(title);
+}
+
+/**
+ * Return a slug that does not clobber an unrelated entry.
+ *
+ * Reads the existing file's `title:` frontmatter rather than comparing
+ * slugs: identical title means "the agent is revising this memory", which
+ * must overwrite; a different title under the same slug means two distinct
+ * memories collapsed onto one filename, which must not.
+ */
+function resolveSlugCollision(
+  dir: string, slug: string, title: string,
+): { slug: string; collisionWith?: string } {
+  const existingTitle = readTitleOf(join(dir, `${slug}.md`));
+  if (existingTitle === null || existingTitle === title) return { slug };
+
+  for (let n = 2; n <= 99; n++) {
+    const candidate = `${slug}-${n}`;
+    const t = readTitleOf(join(dir, `${candidate}.md`));
+    if (t === null || t === title) return { slug: candidate, collisionWith: existingTitle };
+  }
+  // 98 distinct memories share one slug — vanishingly unlikely, but fall
+  // back to a content hash rather than overwriting anything.
+  return { slug: `${slug}-${shortHash(title)}`, collisionWith: existingTitle };
+}
+
+/** Title from a memory file's frontmatter, or null when the file is absent. */
+function readTitleOf(path: string): string | null {
+  if (!pathExists(path)) return null;
+  try {
+    // [^\S\n]* not \s*: \s matches newlines, so an empty `title:` would
+    // capture the following frontmatter line as the title.
+    const m = /^title:[^\S\n]*(.*)$/m.exec(readFileSync(path, "utf-8"));
+    return m ? m[1].trim() : "";
+  } catch {
+    return null;
+  }
 }
 
 export function saveMemories(projectPath: string, memories: Memory[]): void {
@@ -216,8 +294,13 @@ export function showMemories(projectPath: string, type?: MemoryType): string {
   }).join("\n\n---\n\n");
 }
 
+/**
+ * Memory slug from a title. Non-Latin titles transliterate rather than
+ * collapsing to the empty string — see src/utils/slug.ts for why that
+ * mattered enough to fix.
+ */
 export function toMemorySlug(text: string): string {
-  return text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60);
+  return makeSlug(text, 60, "memory");
 }
 
 // --- File format ---

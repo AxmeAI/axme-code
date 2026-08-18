@@ -4,6 +4,8 @@
 
 import { saveMemory, searchMemories, listMemories, toMemorySlug, showMemories } from "../storage/memory.js";
 import { logMemorySaved } from "../storage/worklog.js";
+import { readConfig } from "../storage/config.js";
+import { checkOverrun, findDuplicateCandidates, formatDuplicateNote } from "../storage/save-feedback.js";
 import type { Memory, MemoryType } from "../types.js";
 
 export interface SaveMemoryInput {
@@ -15,13 +17,26 @@ export interface SaveMemoryInput {
   scope?: string[];
 }
 
+export interface SaveMemoryResult {
+  slug: string;
+  saved: boolean;
+  /** Advisory lines appended to the tool result — format and dedup guidance. */
+  notes: string[];
+}
+
 export function saveMemoryTool(
   projectPath: string,
   input: SaveMemoryInput,
   sessionId?: string,
-): { slug: string; saved: boolean } {
+): SaveMemoryResult {
   const slug = toMemorySlug(input.title);
   const today = new Date().toISOString().slice(0, 10);
+  const config = readConfig(projectPath);
+
+  // Look for near-duplicates BEFORE the write, so an exact-title update
+  // (which overwrites in place) does not report itself as its own duplicate.
+  const candidates = findDuplicateCandidates(projectPath, "memory", input.title)
+    .filter(c => c.ref !== slug);
 
   const memory: Memory = {
     slug,
@@ -36,13 +51,37 @@ export function saveMemoryTool(
     ...(input.scope ? { scope: input.scope } : {}),
   };
 
-  saveMemory(projectPath, memory);
+  const outcome = saveMemory(projectPath, memory);
 
   if (sessionId) {
-    logMemorySaved(projectPath, sessionId, slug, input.type);
+    logMemorySaved(projectPath, sessionId, outcome.slug, input.type);
   }
 
-  return { slug, saved: true };
+  const notes: string[] = [];
+  if (outcome.cleanedFields.length > 0) {
+    // Surfaced rather than swallowed: a stripped field means the client
+    // serialized the call malformed, and the agent should verify the saved
+    // text rather than assume what it composed is what landed.
+    notes.push(
+      `WARNING: leaked tool-call markup was stripped from: ${outcome.cleanedFields.join(", ")}. ` +
+      `Re-read the entry with axme_get_memory("${outcome.slug}") and re-save if content was lost.`,
+    );
+  }
+  if (outcome.collisionWith) {
+    notes.push(
+      `WARNING: slug "${slug}" was already held by a different memory ("${outcome.collisionWith}"). ` +
+      `Saved as "${outcome.slug}" instead of overwriting it.`,
+    );
+  }
+  notes.push(...checkOverrun({
+    kind: "memory",
+    loadedText: input.description,
+    hasBody: !!input.body?.trim(),
+    excerptChars: config.catalogExcerptChars,
+  }));
+  notes.push(...formatDuplicateNote("memory", candidates));
+
+  return { slug: outcome.slug, saved: true, notes };
 }
 
 export function searchMemoryTool(
