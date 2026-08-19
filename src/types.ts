@@ -283,7 +283,32 @@ export interface ProjectConfig {
   presets: string[];
   /** Context-loading strategy. Defaults to "full". See ContextMode docstring. */
   contextMode: ContextMode;
+  /**
+   * How many characters of a memory `description` / decision `decision` the
+   * search-mode catalog renders per entry.
+   *
+   * This is the single most consequential number in the KB format contract:
+   * an entry whose description fits inside it is rendered COMPLETE in the
+   * catalog, so search mode loses nothing versus full mode. An entry that
+   * overruns is cut, and the agent only ever sees the head of it unless it
+   * calls axme_get_memory. Exposed in config (rather than the former
+   * hardcoded 200) so projects can author entries against a value they
+   * control, instead of an undocumented constant that moves under them on
+   * the next upgrade.
+   */
+  catalogExcerptChars: number;
+  /** Warn at session start once memories+decisions exceed this count. */
+  kbSizeWarnThreshold: number;
 }
+
+/**
+ * Default catalog excerpt width. Also the recommended ceiling for a memory
+ * description — write to it and the catalog stays complete.
+ */
+export const DEFAULT_CATALOG_EXCERPT_CHARS = 200;
+
+/** Default KB-size warning threshold (memories + decisions). */
+export const DEFAULT_KB_SIZE_WARN_THRESHOLD = 150;
 
 export const DEFAULT_PROJECT_CONFIG: ProjectConfig = {
   model: DEFAULT_MODEL,
@@ -291,6 +316,8 @@ export const DEFAULT_PROJECT_CONFIG: ProjectConfig = {
   reviewEnabled: true,
   presets: ["essential-safety", "ai-agent-guardrails"],
   contextMode: "full",
+  catalogExcerptChars: DEFAULT_CATALOG_EXCERPT_CHARS,
+  kbSizeWarnThreshold: DEFAULT_KB_SIZE_WARN_THRESHOLD,
 };
 
 // --- Plans ---

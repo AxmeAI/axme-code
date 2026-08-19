@@ -40,12 +40,19 @@ export function paginateSections(
     return { text: sections.join("\n\n"), page: 1, totalPages: 1 };
   }
 
+  // Sections larger than a whole page are split first. Without this a
+  // caller like axme_memories — which passes ["## Project Memories", <one
+  // 60KB block>] — produced a page 1 holding nothing but the heading, with
+  // all content pushed to page 2. The reader sees "Page 1/3" and an empty
+  // body, which reads as a bug in the data rather than in the packing.
+  const units = sections.flatMap(s => (s.length > charLimit ? splitSection(s, charLimit) : [s]));
+
   // Build pages by packing sections until limit
   const pages: string[][] = [[]];
   let currentSize = 0;
   let idx = 0;
 
-  for (const section of sections) {
+  for (const section of units) {
     // Start new page if adding this section exceeds limit AND page isn't empty
     if (currentSize + section.length > charLimit && pages[idx].length > 0) {
       idx++;
@@ -74,4 +81,33 @@ export function paginateSections(
   }
 
   return { text: content + footer, page: safePage, totalPages };
+}
+
+/**
+ * Split one oversized section into page-sized chunks along line boundaries.
+ *
+ * Line-aligned so a catalog entry, a table row, or a markdown heading is
+ * never cut mid-token. A single line longer than the limit (a pathological
+ * one-line blob) is emitted as its own chunk rather than being truncated —
+ * pagination must never lose content, only distribute it.
+ */
+function splitSection(section: string, charLimit: number): string[] {
+  const lines = section.split("\n");
+  const chunks: string[] = [];
+  let buf: string[] = [];
+  let size = 0;
+
+  for (const line of lines) {
+    // +1 for the newline that rejoining will add back.
+    const cost = line.length + 1;
+    if (size + cost > charLimit && buf.length > 0) {
+      chunks.push(buf.join("\n"));
+      buf = [];
+      size = 0;
+    }
+    buf.push(line);
+    size += cost;
+  }
+  if (buf.length > 0) chunks.push(buf.join("\n"));
+  return chunks.length > 0 ? chunks : [section];
 }

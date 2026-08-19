@@ -20,7 +20,7 @@
  * infrastructure that should work on a fresh install with zero state.
  */
 
-import { mkdtempSync, rmSync, existsSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, writeFileSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
@@ -57,6 +57,48 @@ async function checkStorageWrite(): Promise<void> {
     record("storage write", true, `${target}`);
   } catch (err) {
     record("storage write", false, (err as Error).message);
+  } finally {
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Round-trip a non-Latin title through the save path.
+ *
+ * Regression guard for the defect that made this whole check worth having:
+ * a Cyrillic-only title used to reduce to an empty slug, land as bare
+ * `.md`, and be overwritten by the next such title. The check asserts both
+ * halves — that the file has a real name, and that two different non-Latin
+ * titles do not collapse onto one.
+ */
+async function checkNonLatinSlug(): Promise<void> {
+  const tmpDir = mkdtempSync(join(tmpdir(), "axme-selftest-slug-"));
+  try {
+    const { saveMemory, toMemorySlug, listMemories } = await import("./storage/memory.js");
+    const titles = ["Перекат даты в bf_live", "Ловушка watchdog при рестарте"];
+    for (const title of titles) {
+      saveMemory(tmpDir, {
+        slug: toMemorySlug(title), type: "pattern", title,
+        description: "selftest", body: "", keywords: [],
+        source: "manual", sessionId: null, date: "2026-01-01",
+      });
+    }
+
+    const dir = join(tmpDir, ".axme-code", "memory", "patterns");
+    const files = readdirSync(dir);
+    const empty = files.filter(f => f === ".md");
+    if (empty.length > 0) {
+      record("non-latin slug", false, "memory written as bare '.md' — dotfile, and the next such title overwrites it");
+      return;
+    }
+    const stored = listMemories(tmpDir);
+    if (stored.length !== titles.length) {
+      record("non-latin slug", false, `${titles.length} distinct titles saved but ${stored.length} readable back — entries are colliding`);
+      return;
+    }
+    record("non-latin slug", true, files.sort().join(", "));
+  } catch (err) {
+    record("non-latin slug", false, (err as Error).message);
   } finally {
     rmSync(tmpDir, { recursive: true, force: true });
   }
@@ -184,6 +226,7 @@ export async function runSelfTest(): Promise<number> {
   process.stdout.write("====================\n\n");
 
   await checkStorageWrite();
+  await checkNonLatinSlug();
   await checkHookParseAndDeny();
 
   // For the MCP boot, we need a path to our own binary. process.argv[1]

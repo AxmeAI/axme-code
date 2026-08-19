@@ -162,6 +162,22 @@ Your agent starts every session with full context: stack, decisions, patterns, g
 | **Handoff** | Where work stopped, blockers, next steps | "PR #17 open, waiting on review. Next: fix flaky test." |
 | **Worklog** | Session history and events | Timeline of all sessions and what was done |
 
+### Knowledge Base Hygiene
+
+A knowledge base that only grows becomes a tax on every session. Two levers keep it honest.
+
+**Write to the loaded layer, defer the rest.** Every memory and decision has a layer loaded into *every* future session (`description` / `decision`) and one that is not (`body` / `reasoning`, rendered as `## Details` / `## Reasoning`, returned in full by `axme_get_memory` / `axme_get_decision`). Keep the loaded layer to the rule plus one concrete fact, within `catalog.excerpt_chars` (default 200), and put measurements, paths, thresholds and line numbers below. Nothing is lost — it just stops being paid for by the sessions that never needed it. An entry within budget renders **complete** in the search-mode catalog, which is what makes search mode and full mode carry the same content.
+
+**Clean up with tools, not by hand.**
+
+| Command | Cost | What it does |
+|---|---|---|
+| `axme-code kb-doctor .` | free, instant | Finds broken slugs, leaked tool markup, entries over the catalog budget, duplicate titles. `--fix` repairs the mechanical ones. Exits 1 on findings — usable as a CI gate. |
+| `axme-code audit-kb . --dry-run` | one LLM run | Previews a compaction pass: what would be compacted, merged, archived. |
+| `axme-code audit-kb .` | one LLM run | Applies it. Takes a backup first, reindexes after, and reports the **measured** before/after — a pass that wrote nothing says so and exits non-zero. |
+
+Agents retire entries with `axme_archive_memory` / `axme_archive_decision`: files move to `.axme-code/archive/` with the reason stamped in, decisions are marked `superseded`/`revoked` before the move, and nothing is ever deleted.
+
 ### Safety Guardrails (100% Reliable)
 Hooks intercept tool calls **before execution** — not prompts. Even if the agent hallucinates a reason to run `rm -rf /`, the hook blocks it. This is hard enforcement at the Claude Code harness level, not a suggestion in a system prompt.
 
@@ -373,7 +389,8 @@ axme-code setup [path]       # Initialize project/workspace with LLM scan
 axme-code serve              # Start MCP server (called by Claude Code automatically)
 axme-code status [path]      # Show project status
 axme-code stats [path]       # Worklog statistics (sessions, costs, safety blocks)
-axme-code audit-kb [path]    # KB audit: dedup, conflicts, compaction
+axme-code kb-doctor [path]   # KB defect scan (no LLM, instant); --fix repairs mechanical ones
+axme-code audit-kb [path]    # KB compaction: compact, merge, archive (LLM); --dry-run to preview
 axme-code hook pre-tool-use  # PreToolUse hook handler (called by Claude Code)
 axme-code hook post-tool-use # PostToolUse hook handler
 axme-code hook session-end   # SessionEnd hook handler

@@ -9,6 +9,8 @@ import { oracleContext, showOracle, oracleExists, loadOracleFiles } from "../sto
 import { decisionsContext, showDecisions, enforceableDecisionsContext, listDecisions } from "../storage/decisions.js";
 import { pathExists, readSafe } from "../storage/engine.js";
 import { configExists, readConfig } from "../storage/config.js";
+import { runKbDoctor, countOverlong } from "../storage/kb-doctor.js";
+import { readKbAuditCounter } from "../storage/kb-audit.js";
 import { isRuntimeInstalled } from "../storage/embeddings.js";
 import { join } from "node:path";
 import { existsSync } from "node:fs";
@@ -172,11 +174,22 @@ export function getFullContextSections(projectPath: string, workspacePath?: stri
     parts.push(lines.join("\n"));
   }
 
+  // Storage self-repair. Runs before the catalog is rendered so a session
+  // never reads a base that still has files it cannot see. Only mechanical,
+  // reversible repairs happen here (rename a file to a valid slug, drop a
+  // leaked XML frame) — nothing is deleted, nothing is rewritten for style.
+  const repair = repairStorageOnStart(projectPath);
+  if (repair) parts.push(repair);
+
   // Context-loading branch: full mode (load everything) vs search mode
   // (catalog only + on-demand fetch via axme_get_*/axme_search_kb).
   const config = readConfig(projectPath);
-  const totalKbSize = listMemoriesMerged(projectPath, workspacePath).length
-    + listDecisionsMerged(projectPath, workspacePath).length;
+  const memCount = listMemoriesMerged(projectPath, workspacePath).length;
+  const decCount = listDecisionsMerged(projectPath, workspacePath).length;
+  const totalKbSize = memCount + decCount;
+
+  const hygiene = buildHygieneLine(projectPath, memCount, decCount, config);
+  if (hygiene) parts.push(hygiene);
 
   if (config.contextMode === "search") {
     parts.push(buildSearchModeCatalog(projectPath, workspacePath));
@@ -241,6 +254,141 @@ export function getFullContextSections(projectPath: string, workspacePath?: stri
   return parts;
 }
 
+/**
+ * Repair mechanical storage defects at session start, returning a one-line
+ * report when anything was touched (null when the base was clean).
+ *
+ * Runs on every axme_context call because the defects it fixes are actively
+ * destructive: a memory saved under an empty slug lands as bare `.md`, and
+ * the NEXT such memory overwrites it. Waiting for the user to run a repair
+ * command means the second write has already destroyed the first. The pass
+ * is idempotent and costs a directory walk, so paying it every session is
+ * cheaper than losing one entry.
+ *
+ * Deliberately silent about clean bases: a "nothing was wrong" line every
+ * session is noise the agent learns to skip, which would also make it skip
+ * the line that matters.
+ */
+function repairStorageOnStart(projectPath: string): string | null {
+  let report;
+  try {
+    report = runKbDoctor(projectPath, { fix: true });
+  } catch {
+    // Never let a repair failure block context loading — a session with an
+    // unrepaired base still works; a session with no context does not.
+    return null;
+  }
+  if (report.fixed.length === 0) return null;
+
+  const byKind = new Map<string, number>();
+  for (const d of report.fixed) byKind.set(d.kind, (byKind.get(d.kind) ?? 0) + 1);
+  const summary = [...byKind.entries()].map(([k, n]) => `${k}: ${n}`).join(", ");
+
+  const lines = [
+    "## Storage repaired at session start",
+    "",
+    `${report.fixed.length} mechanical defect(s) fixed automatically (${summary}).`,
+    "",
+    ...report.fixed.slice(0, 5).map(d => `- ${d.file}\n  ${d.detail}`),
+  ];
+  if (report.fixed.length > 5) lines.push(`- … and ${report.fixed.length - 5} more`);
+  lines.push(
+    "",
+    "Nothing was deleted — files were renamed to valid slugs and/or leaked tool-call markup was",
+    "stripped. Mention this to the user in your first response: entries that previously shared a",
+    "filename may have been overwriting each other before this repair.",
+  );
+  return lines.join("\n");
+}
+
+/**
+ * One block about knowledge-base size and format, emitted only when the base
+ * has actually crossed a threshold worth acting on.
+ *
+ * Two distinct problems get reported here, and they have different fixes:
+ *
+ *  - too many entries  → compaction (audit-kb), because the cost is the count;
+ *  - overlong entries  → reformatting, because the cost is that each entry
+ *    pays for detail nobody reads at session start while ALSO being cut off
+ *    in the catalog. That combination is the worst of both modes: full mode
+ *    pays for everything, search mode shows less than half of it.
+ */
+function buildHygieneLine(
+  projectPath: string, memCount: number, decCount: number,
+  config: { catalogExcerptChars: number; kbSizeWarnThreshold: number; contextMode: string },
+): string | null {
+  const total = memCount + decCount;
+  let overlong;
+  try {
+    overlong = countOverlong(projectPath);
+  } catch {
+    overlong = { memories: 0, decisions: 0, total: 0, excerptChars: config.catalogExcerptChars };
+  }
+
+  // The audit counter is bumped after every session audit, but its
+  // recommendation was only ever written to the stderr of a DETACHED
+  // background worker — a stream nobody reads. Surfacing it here is the
+  // difference between the counter existing and the counter working.
+  let sessionsSinceAudit = 0;
+  try {
+    const counter = readKbAuditCounter(projectPath);
+    if (counter && counter.count >= 20) sessionsSinceAudit = counter.count;
+  } catch {}
+
+  const sizeProblem = total >= config.kbSizeWarnThreshold;
+  // A tenth of the base overrunning is where the catalog stops being a
+  // faithful summary; below that it is a rounding error not worth a warning.
+  const formatProblem = overlong.total > 0 && overlong.total >= Math.max(5, Math.round(total * 0.1));
+  if (!sizeProblem && !formatProblem && !sessionsSinceAudit) return null;
+
+  const lines = ["## Knowledge base hygiene", ""];
+
+  if (sessionsSinceAudit) {
+    lines.push(
+      `**${sessionsSinceAudit} sessions** have been audited since the last knowledge-base compaction.`,
+      "",
+    );
+  }
+
+  if (sizeProblem) {
+    lines.push(
+      `This base holds **${memCount} memories + ${decCount} decisions = ${total} entries** ` +
+      `(warn threshold ${config.kbSizeWarnThreshold}, set via \`catalog.size_warn\`).`,
+      "",
+      "Tell the user once, in your first response, that a compaction pass is due:",
+      "",
+      "> ```bash",
+      "> axme-code audit-kb .  --dry-run   # preview: what would be compacted, merged, archived",
+      "> axme-code audit-kb .              # apply (takes a backup first)",
+      "> ```",
+      "",
+    );
+  }
+
+  if (formatProblem) {
+    lines.push(
+      `**${overlong.total} entries** (${overlong.memories} memories, ${overlong.decisions} decisions) have a ` +
+      `loaded layer longer than the ${overlong.excerptChars}-char catalog budget.`,
+      "",
+      "These entries are paying twice: their full text is loaded in `full` mode, and in `search` mode the",
+      "catalog shows only the first part of them. Entries written to the budget cost the same in both modes",
+      "and lose nothing — which is what makes the two modes interchangeable.",
+      "",
+      "`axme-code kb-doctor .` lists them; `axme-code audit-kb .` rewrites them (rule in the description,",
+      "numbers and paths moved into the deferred body).",
+      "",
+    );
+  }
+
+  lines.push(
+    "**When YOU save entries this session**: description (memory) / decision (decision) must be the rule",
+    `plus one concrete fact, at most ${overlong.excerptChars} chars — that field is loaded into EVERY future`,
+    "session. Put measurements, file paths, line numbers and command output in `body` / `reasoning`, which",
+    "cost nothing at session start and are returned in full by axme_get_memory / axme_get_decision.",
+  );
+  return lines.join("\n");
+}
+
 /** Memories merged across workspace+project for KB-size accounting. */
 function listMemoriesMerged(projectPath: string, workspacePath?: string) {
   return workspacePath && workspacePath !== projectPath
@@ -265,40 +413,91 @@ function listDecisionsMerged(projectPath: string, workspacePath?: string) {
 function buildSearchModeCatalog(projectPath: string, workspacePath?: string): string {
   const memories = listMemoriesMerged(projectPath, workspacePath);
   const decisions = listDecisionsMerged(projectPath, workspacePath);
+  const limit = readConfig(projectPath).catalogExcerptChars;
+
+  const decisionLines = decisions.map(d => renderDecisionCatalogLine(d, limit));
+  const memoryLines = memories.map(m => renderMemoryCatalogLine(m, limit));
+  const truncated = [...decisionLines, ...memoryLines].filter(isTruncatedLine).length;
+  const total = decisions.length + memories.length;
+
   const lines: string[] = [
     "## Knowledge Base Catalog (search mode)",
     "",
     `${decisions.length} decision(s), ${memories.length} memory(ies). Bodies are NOT loaded.`,
     "",
+    ...catalogLegend(limit, truncated, total),
   ];
-  if (decisions.length > 0) {
-    lines.push("### Decisions");
-    lines.push("");
-    for (const d of decisions) {
-      lines.push(renderDecisionCatalogLine(d));
-    }
-    lines.push("");
+  if (decisionLines.length > 0) {
+    lines.push("### Decisions", "", ...decisionLines, "");
   }
-  if (memories.length > 0) {
-    lines.push("### Memories");
-    lines.push("");
-    for (const m of memories) {
-      lines.push(renderMemoryCatalogLine(m));
-    }
-    lines.push("");
+  if (memoryLines.length > 0) {
+    lines.push("### Memories", "", ...memoryLines, "");
   }
   return lines.join("\n");
 }
 
-function renderDecisionCatalogLine(d: { id: string; title: string; enforce?: string | null; decision?: string }): string {
-  const enforce = d.enforce ?? "info";
-  const desc = d.decision ? d.decision.replace(/\s+/g, " ").slice(0, 200) : "";
-  return `- [${enforce}] **${d.id}** — ${d.title}${desc ? ` — ${desc}` : ""}`;
+/** A rendered catalog line whose excerpt was cut. */
+function isTruncatedLine(line: string): boolean {
+  return line.endsWith("…[TRUNCATED]");
 }
 
-function renderMemoryCatalogLine(m: { slug: string; title: string; type: string; description?: string }): string {
-  const desc = m.description ? m.description.replace(/\s+/g, " ").slice(0, 200) : "";
-  return `- [${m.type}] **${m.slug}** — ${m.title}${desc ? ` — ${desc}` : ""}`;
+/**
+ * Trim one description to the catalog budget, marking the cut.
+ *
+ * The marker is the point. A silently truncated line is indistinguishable
+ * from a complete one, so an agent reading the catalog cannot tell which
+ * entries it already understands and which it is only seeing the head of —
+ * and in practice it fetches neither. With the marker, "ends in …" is a
+ * mechanical signal to call axme_get_*, and its absence is a guarantee
+ * that the entry is complete as shown.
+ */
+function excerpt(text: string | undefined, limit: number): { text: string; truncated: boolean } {
+  const flat = (text ?? "").replace(/\s+/g, " ").trim();
+  if (flat.length <= limit) return { text: flat, truncated: false };
+  // Cut on a word boundary when one is close, so the tail is readable.
+  const hard = flat.slice(0, limit);
+  const lastSpace = hard.lastIndexOf(" ");
+  const cut = lastSpace > limit - 20 ? hard.slice(0, lastSpace) : hard;
+  return { text: cut, truncated: true };
+}
+
+function renderDecisionCatalogLine(
+  d: { id: string; title: string; enforce?: string | null; decision?: string }, limit: number,
+): string {
+  const enforce = d.enforce ?? "info";
+  const { text, truncated } = excerpt(d.decision, limit);
+  const tail = text ? ` — ${text}${truncated ? " …[TRUNCATED]" : ""}` : "";
+  return `- [${enforce}] **${d.id}** — ${d.title}${tail}`;
+}
+
+function renderMemoryCatalogLine(
+  m: { slug: string; title: string; type: string; description?: string }, limit: number,
+): string {
+  const { text, truncated } = excerpt(m.description, limit);
+  const tail = text ? ` — ${text}${truncated ? " …[TRUNCATED]" : ""}` : "";
+  return `- [${m.type}] **${m.slug}** — ${m.title}${tail}`;
+}
+
+/**
+ * Header explaining the [TRUNCATED] marker and what the agent owes each kind
+ * of line. Rendered above every catalog so the contract travels with the
+ * data instead of living only in the mode instructions further down.
+ */
+function catalogLegend(limit: number, truncatedCount: number, total: number): string[] {
+  if (total === 0) return [];
+  if (truncatedCount === 0) {
+    return [
+      `Every entry below is COMPLETE as shown (all fit the ${limit}-char catalog budget).`,
+      "No axme_get_memory / axme_get_decision call is needed to understand any of them.",
+      "",
+    ];
+  }
+  return [
+    `Entries are cut at ${limit} chars. **${truncatedCount} of ${total}** end in \`…[TRUNCATED]\` —`,
+    "for those you are seeing only the beginning, and you MUST call `axme_get_memory(slug)` /",
+    "`axme_get_decision(id)` before acting on them. Lines without the marker are complete as shown.",
+    "",
+  ];
 }
 
 /**
@@ -311,17 +510,20 @@ function renderMemoryCatalogLine(m: { slug: string; title: string; type: string;
  */
 export function buildDecisionsCatalogString(projectPath: string, workspacePath?: string): string {
   const decisions = listDecisionsMerged(projectPath, workspacePath);
+  const limit = readConfig(projectPath).catalogExcerptChars;
+  const rendered = decisions.map(d => renderDecisionCatalogLine(d, limit));
   const lines: string[] = [
     "## Decisions Catalog (search mode)",
     "",
     `${decisions.length} decision(s). Bodies NOT loaded — fetch via axme_get_decision(id_or_slug) or axme_search_kb(query).`,
     "",
+    ...catalogLegend(limit, rendered.filter(isTruncatedLine).length, decisions.length),
   ];
   if (decisions.length === 0) {
     lines.push("No decisions recorded.");
     return lines.join("\n");
   }
-  for (const d of decisions) lines.push(renderDecisionCatalogLine(d));
+  lines.push(...rendered);
   return lines.join("\n");
 }
 
@@ -331,17 +533,20 @@ export function buildDecisionsCatalogString(projectPath: string, workspacePath?:
  */
 export function buildMemoriesCatalogString(projectPath: string, workspacePath?: string): string {
   const memories = listMemoriesMerged(projectPath, workspacePath);
+  const limit = readConfig(projectPath).catalogExcerptChars;
+  const rendered = memories.map(m => renderMemoryCatalogLine(m, limit));
   const lines: string[] = [
     "## Memories Catalog (search mode)",
     "",
     `${memories.length} memory(ies). Bodies NOT loaded — fetch via axme_get_memory(slug) or axme_search_kb(query).`,
     "",
+    ...catalogLegend(limit, rendered.filter(isTruncatedLine).length, memories.length),
   ];
   if (memories.length === 0) {
     lines.push("No memories recorded.");
     return lines.join("\n");
   }
-  for (const m of memories) lines.push(renderMemoryCatalogLine(m));
+  lines.push(...rendered);
   return lines.join("\n");
 }
 
@@ -360,33 +565,42 @@ function buildSearchModeInstructions(runtimeInstalled: boolean): string {
     ? "- `axme_search_kb(query, type?, k?)` — semantic search across both"
     : "- `axme_search_kb(query, ...)` — currently UNAVAILABLE (transformers runtime not installed; falls back to a hint message)";
   const lines = [
-    "## Search mode active — bodies fetched on demand",
+    "## Search mode active",
     "",
-    "You have a catalog of every memory and decision above (titles + descriptions only).",
-    "Bodies are NOT loaded. Token cost at session start is ~10x lower than full mode.",
+    "The catalog above is the knowledge base, not an index of it. Every entry that fits the catalog",
+    "budget is shown COMPLETE — for those there is nothing further to fetch, and re-fetching them",
+    "wastes a tool call. Entries marked `…[TRUNCATED]` are the exception: you have seen only their",
+    "opening, and the rest is one call away.",
     "",
-    "**MUST**: scan the catalog before generating code. If a title is relevant to your task,",
-    "fetch the full body **before** writing.",
-    "",
-    "- `axme_get_memory(slug)` — full body of one memory",
-    "- `axme_get_decision(id_or_slug)` — full body of one decision",
+    "- `axme_get_memory(slug)` — full record of one memory (description + the deferred `## Details`)",
+    "- `axme_get_decision(id_or_slug)` — full record of one decision (body + `## Reasoning`)",
     searchAvailable,
     "",
-    "## Active KB usage (when to call search/get)",
+    "## When to fetch",
     "",
-    "**MUST** call `axme_search_kb` (or `axme_get_*` when slug is known) when ANY of these triggers fire:",
+    "**MUST** fetch before acting when any of these holds:",
     "",
-    "- User asks \"how did we…\", \"why did we…\", \"что мы решили про…\", \"why is X this way?\" → search the topic.",
-    "- About to write or modify code that touches: git, safety hooks, storage, agent SDK, build, release, telemetry, auth, MCP tools → search the area first.",
-    "- About to suggest a fix for a bug → search similar past failures (memory type=feedback) before proposing.",
-    "- User mentions a library, platform, tool, or error message by name → search that name.",
-    "- A catalog title looks partially relevant but its 1-line description is too short to decide → fetch the body.",
-    "- Before any architectural recommendation or new pattern → search decisions for that subsystem to avoid contradiction or duplication.",
-    "- Before saving a new decision/memory → search to check if a similar one already exists (avoids dupes).",
+    "- The catalog line is marked `…[TRUNCATED]` and its topic touches your task. The visible part is",
+    "  the rule; the hidden part is usually the numbers, paths and edge cases you need to apply it.",
+    "- You are about to write or change code touching a subsystem some entry names.",
+    "- You are about to propose a fix for a bug — check `feedback` entries for the same failure first.",
+    "- You are about to save a new memory or decision — check whether one already covers it, and extend",
+    "  that one instead of adding a near-duplicate.",
     "",
-    "Skipping search has caused real regressions in this project (force-pushing main, missing #!axme gate suffix,",
-    "duplicating an existing decision). The catalog scan is free; semantic search is sub-second and uses zero",
-    "API tokens (runs locally on CPU). When in doubt, search.",
+    "**MUST** call `axme_search_kb` (not just scan the catalog) when:",
+    "",
+    "- The user asks \"how did we…\", \"why did we…\", \"что мы решили про…\", \"why is X this way?\"",
+    "- The user names a library, platform, tool, or error message.",
+    "- You are about to make an architectural recommendation — search the subsystem for prior decisions",
+    "  so you neither contradict nor duplicate one.",
+    "",
+    "**Do NOT** fetch an entry whose catalog line is already complete just to be thorough. The catalog",
+    "line and the record's loaded layer are the same text; the extra call returns the deferred body,",
+    "which matters only when you need the specifics it holds.",
+    "",
+    "Skipping this has caused real regressions here (force-pushing main, missing the #!axme gate suffix,",
+    "duplicating an existing decision). Catalog scanning is free; semantic search is sub-second and runs",
+    "locally on CPU at zero token cost.",
   ];
   lines.push("");
   lines.push(runtimeInstalled

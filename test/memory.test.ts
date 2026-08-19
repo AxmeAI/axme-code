@@ -161,16 +161,57 @@ describe("memory store", () => {
     assert.equal(b.title, "Title B");
   });
 
-  it("same slug overwrites", () => {
-    saveMemory(ROOT, mem("overwrite", "feedback", "Original"));
-    saveMemory(ROOT, { ...mem("overwrite", "feedback", "Updated"), description: "New description" });
+  it("same title + same slug overwrites in place (this is how an entry is revised)", () => {
+    saveMemory(ROOT, { ...mem("overwrite", "feedback", "Same title"), description: "Original description" });
+    saveMemory(ROOT, { ...mem("overwrite", "feedback", "Same title"), description: "New description" });
     const loaded = getMemory(ROOT, "overwrite");
     assert.ok(loaded);
-    assert.equal(loaded.title, "Updated");
     assert.equal(loaded.description, "New description");
-    // Should still be only one memory with this slug
-    const all = listMemories(ROOT, "feedback");
-    const matches = all.filter(m => m.slug === "overwrite");
+    const matches = listMemories(ROOT, "feedback").filter(m => m.slug === "overwrite");
     assert.equal(matches.length, 1);
+  });
+
+  it("different title on an occupied slug is suffixed, not silently overwritten", () => {
+    // The defect this guards: two distinct memories collapsing onto one
+    // filename destroyed the first one with no signal to anybody.
+    saveMemory(ROOT, { ...mem("collide", "feedback", "First rule"), description: "First description" });
+    const outcome = saveMemory(ROOT, { ...mem("collide", "feedback", "Second rule"), description: "Second description" });
+
+    assert.notEqual(outcome.slug, "collide");
+    assert.equal(outcome.collisionWith, "First rule");
+
+    // Both survive and are readable back.
+    const first = getMemory(ROOT, "collide");
+    assert.ok(first);
+    assert.equal(first.title, "First rule");
+    const second = getMemory(ROOT, outcome.slug);
+    assert.ok(second);
+    assert.equal(second.title, "Second rule");
+  });
+
+  it("non-latin titles get distinct transliterated slugs, never a bare .md", () => {
+    // Regression: a Cyrillic-only title reduced to the empty slug, landed as
+    // the dotfile ".md", and the next such title overwrote it.
+    const a = saveMemory(ROOT, { ...mem(toMemorySlug("Перекат даты"), "pattern", "Перекат даты"), description: "one" });
+    const b = saveMemory(ROOT, { ...mem(toMemorySlug("Ловушка watchdog"), "pattern", "Ловушка watchdog"), description: "two" });
+
+    assert.equal(a.slug, "perekat-daty");
+    assert.equal(b.slug, "lovushka-watchdog");
+    assert.notEqual(a.slug, b.slug);
+
+    const patterns = listMemories(ROOT, "pattern").map(m => m.slug);
+    assert.ok(patterns.includes("perekat-daty"));
+    assert.ok(patterns.includes("lovushka-watchdog"));
+  });
+
+  it("strips a leaked tool-call frame instead of persisting it", () => {
+    const outcome = saveMemory(ROOT, {
+      ...mem("leaky", "feedback", "Leaky record"),
+      description: 'Watchdog flaps on date rollover.</description>\n<parameter name="keywords">["bf_live"]',
+    });
+    assert.ok(outcome.cleanedFields.includes("description"));
+    const loaded = getMemory(ROOT, outcome.slug);
+    assert.ok(loaded);
+    assert.equal(loaded.description, "Watchdog flaps on date rollover.");
   });
 });

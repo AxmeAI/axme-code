@@ -313,7 +313,10 @@ function buildInstructions(): string {
     );
   }
   parts.push("TRUNCATED OUTPUT RULE: if ANY MCP tool output is truncated or saved to a file (you see 'Output too large' or 'saved to file'), you MUST use the Read tool to read the full file content into your context. Do not proceed with partial data.");
-  parts.push("Save memories, decisions, and safety rules immediately when discovered during work.");
+  parts.push("Save memories, decisions, and safety rules immediately when discovered during work — but filter first.");
+  parts.push("WHAT TO SAVE: before every axme_save_memory ask \"would this help an agent a month from now who was not part of this investigation?\" SAVE an owner's rule or ruling; vendor/feed/API semantics (sign convention, error codes, limits, cadence); a tool or language trap that will recur; a closed direction so nobody reopens it; a live production contract. DO NOT SAVE measurement results and verdict numbers (those belong in a doc, with at most a one-line pointer in memory); session state and handoffs (axme_finalize_close stores those); a one-off incident already fixed in code that yields no transferable rule; anything an existing entry covers — extend that entry instead of adding a second. The negative list is the operative half: without it \"save what you learned\" reads as \"save everything\", and a month of that buries the real rules under research diaries.");
+  parts.push("TWO-LEVEL FORMAT: a memory's `description` and a decision's `decision` are loaded into EVERY future session — keep each to the rule plus one concrete fact, within `catalog.excerpt_chars` (default 200, see .axme-code/config.yaml). A memory's `body` and a decision's `reasoning` render as '## Details' / '## Reasoning', are NOT loaded at session start, and are returned in full by axme_get_memory / axme_get_decision — put every number, path, threshold, line reference and measurement there. Nothing is lost by moving detail down; it stops being paid for by sessions that never needed it. Do NOT split one entry into several single-fact entries to meet the length: per-entry overhead multiplies by count. Cut DOWN into the deferred layer, never ACROSS into more records.");
+  parts.push("RETIRING ENTRIES: use axme_archive_memory / axme_archive_decision — never delete storage files by hand, and never leave a stale entry in place because you could not find a tool for it. Archival is reversible (files move to .axme-code/archive/) and marked (status/supersededBy or revokedAt/revokedReason). Never save a decision whose content is 'D-020 absorbed by D-036' — that is an edit to other decisions, so make the edit via axme_archive_decision's superseded_by argument instead of recording a meta-decision.");
   parts.push("SAVE-TOOL RULE: call axme_save_memory / axme_save_decision / axme_update_safety ONE AT A TIME, each as a standalone call with ALL required fields composed in that same call. Do NOT place a save call in a parallel batch with other tool calls (parallelism is for the read tools only) and never emit a save call with empty/deferred arguments — that produces an 'expected string, received undefined' validation error for every required field.");
   parts.push("GIT COMMIT/PUSH GATE: every git commit and git push command MUST end with `#!axme pr=<NUMBER|none> repo=<OWNER/REPO>`. Example: `git commit -m \"fix bug\" #!axme pr=42 repo=AxmeAI/axme-code`. Use pr=none if no PR exists yet. Without this suffix the command will be blocked.");
   parts.push("RELEASE/TAG PROHIBITION: agent must NEVER run git tag, npm publish, twine upload, dotnet nuget push, mvn deploy, gh release create, or gh workflow run deploy-prod. These are blocked by safety hooks. To release: prepare version bump + CHANGELOG + PR, then provide ready-to-run tag/publish commands to the user.");
@@ -549,14 +552,29 @@ server.tool(
 server.tool(
   "axme_save_memory",
   "Save a feedback or pattern memory. Use 'feedback' for learned mistakes, 'pattern' for successful approaches. " +
-    "Call this tool ON ITS OWN (do NOT batch it in a parallel block with other tool calls), and include type, title, and description in THIS SAME call. " +
-    "Worked example: { \"type\": \"pattern\", \"title\": \"Retry npm publish via automation token\", \"description\": \"CI npm publish 404s when NPM_TOKEN is a non-automation granular token; regenerate as a Classic Automation token to bypass 2FA at publish.\" }",
+    "Call this tool ON ITS OWN (do NOT batch it in a parallel block with other tool calls), and include type, title, and description in THIS SAME call.\n\n" +
+    "WHAT TO SAVE — ask first: would this help an agent a month from now who was not part of this investigation? " +
+    "Save: an owner's rule or ruling; vendor/feed/API semantics (sign convention, error codes, limits, cadence); " +
+    "a tool or language trap that will recur; a closed direction so nobody reopens it; a live production contract. " +
+    "Do NOT save: measurement results and verdict numbers (those belong in a doc); session state or handoffs " +
+    "(axme_finalize_close stores those); a one-off incident already fixed in code that yields no transferable rule; " +
+    "anything an existing memory already covers — extend that one instead.\n\n" +
+    "TWO-LEVEL FORMAT — this is the difference between a knowledge base and a session-start tax. " +
+    "`description` is loaded into EVERY future session: keep it to the rule plus one concrete fact, " +
+    "at most `catalog.excerpt_chars` characters (default 200; read .axme-code/config.yaml for this project's value). " +
+    "`body` renders as '## Details', is NOT loaded at session start, and is returned in full by axme_get_memory — " +
+    "put every number, path, threshold, line reference and measurement there. Nothing is lost by moving it down; " +
+    "it just stops being paid for by sessions that never needed it. Do NOT split one memory into several " +
+    "single-fact memories to meet the length — per-entry overhead multiplies by count. Cut DOWN, not ACROSS.\n\n" +
+    "Worked example: { \"type\": \"pattern\", \"title\": \"Retry npm publish via automation token\", " +
+    "\"description\": \"CI npm publish 404s when NPM_TOKEN is a granular token; regenerate as a Classic Automation token to bypass 2FA.\", " +
+    "\"body\": \"Observed 2026-05-02 on release-binary.yml line 88. Granular tokens return 404 (not 403) on publish when 2FA-on-publish is enabled for the org.\" }",
   {
     project_path: z.string().optional().describe("Absolute path to the project root (defaults to server cwd)"),
     type: z.enum(["feedback", "pattern"], { error: "type is REQUIRED — compose it in THIS call (one of \"feedback\" | \"pattern\"); do not emit axme_save_memory with empty arguments." }).describe("Memory type"),
-    title: z.string({ error: "title is REQUIRED — compose it in THIS call. If you emitted the call expecting to fill params later, re-emit with title+type+description all present." }).describe("Short title"),
-    description: z.string({ error: "description is REQUIRED — compose it in THIS call (1-2 sentences, self-contained). An empty axme_save_memory call is the usual cause of this error: re-send with all three required fields." }).describe("1-2 sentences: what happened + specific action/command/rule. Must be self-contained without body."),
-    body: z.string().optional().describe("Optional archive detail. Context output uses description only, so put all essential info there."),
+    title: z.string({ error: "title is REQUIRED — compose it in THIS call. If you emitted the call expecting to fill params later, re-emit with title+type+description all present." }).describe("Short title. Saving under an EXISTING memory's exact title replaces that memory — this is how you extend one rather than adding a near-duplicate."),
+    description: z.string({ error: "description is REQUIRED — compose it in THIS call (1-2 sentences, self-contained). An empty axme_save_memory call is the usual cause of this error: re-send with all three required fields." }).describe("THE LOADED LAYER — rendered into every future session's context. The rule plus one concrete fact, 1-2 sentences, at most catalog.excerpt_chars characters (default 200). Anything past that is cut from the session-start catalog and invisible unless someone calls axme_get_memory."),
+    body: z.string().optional().describe("THE DEFERRED LAYER — rendered as '## Details'. NOT loaded at session start; returned in full by axme_get_memory(slug). Put the numbers, file paths, line references, thresholds, measurements and command output here. Costs nothing per session, so use it freely."),
     keywords: z.array(z.string()).optional().describe("Search keywords"),
     scope: z.array(z.string()).optional().describe("Project scope (omit for current project only)"),
   },
@@ -575,7 +593,12 @@ server.tool(
     // index is consistent on return; ~50-200ms once the embedder is warm.
     // Skips silently in full mode and on missing runtime.
     await embedKbEntry(resolved, result.slug, "memory", title, description, readConfig(resolved).contextMode);
-    return { content: [{ type: "text" as const, text: `Memory saved: ${result.slug} (${type}) -> ${resolved}` }] };
+    // Notes carry format and dedup advice. They are appended to the success
+    // text rather than raised as errors: the write already landed, and a
+    // rejected save would lose the payload the agent just composed.
+    const head = `Memory saved: ${result.slug} (${type}) -> ${resolved}`;
+    const text = result.notes.length > 0 ? `${head}\n\n${result.notes.join("\n")}` : head;
+    return { content: [{ type: "text" as const, text }] };
   },
 );
 
@@ -585,26 +608,157 @@ server.tool(
 server.tool(
   "axme_save_decision",
   "Save a new architectural decision. Use enforce='required' for rules that must be followed, 'advisory' for recommendations. " +
-    "Call this tool ON ITS OWN (do NOT batch it in a parallel block with other tool calls), and include title, decision, and reasoning in THIS SAME call.",
+    "Call this tool ON ITS OWN (do NOT batch it in a parallel block with other tool calls), and include title, decision, and reasoning in THIS SAME call.\n\n" +
+    "TWO-LEVEL FORMAT: `decision` is loaded into EVERY future session — keep it to what was decided plus why, " +
+    "2-3 sentences, at most `catalog.excerpt_chars` characters (default 200). `reasoning` renders as '## Reasoning', " +
+    "is NOT loaded at session start, and is returned in full by axme_get_decision — put the alternatives considered, " +
+    "measurements, file paths and history there.\n\n" +
+    "Do NOT record meta-decisions — 'D-020 absorbed by D-036', 'D-024 updated'. Those describe edits to other " +
+    "decisions, not decisions; make the edit in the decisions themselves (axme_archive_decision carries a " +
+    "superseded_by argument for exactly this) instead of adding a record that only restates it.",
   {
     project_path: z.string().optional().describe("Absolute path to the project root (defaults to server cwd)"),
-    title: z.string({ error: "title is REQUIRED — compose it in THIS call; do not emit axme_save_decision with empty arguments." }).describe("Decision title"),
-    decision: z.string({ error: "decision is REQUIRED — compose it in THIS call (2-3 sentences, self-contained). An empty call is the usual cause of this error: re-send with title+decision+reasoning present." }).describe("2-3 sentences: what was decided + why. Must be self-contained."),
-    reasoning: z.string({ error: "reasoning is REQUIRED — compose it in THIS call. Re-emit with all required fields present." }).describe("Optional additional context. Context output uses decision field only."),
+    title: z.string({ error: "title is REQUIRED — compose it in THIS call; do not emit axme_save_decision with empty arguments." }).describe("Decision title. A title equivalent to an existing decision's returns that decision UNCHANGED — nothing new is written. To revise, archive the old one and save the replacement."),
+    decision: z.string({ error: "decision is REQUIRED — compose it in THIS call (2-3 sentences, self-contained). An empty call is the usual cause of this error: re-send with title+decision+reasoning present." }).describe("THE LOADED LAYER — rendered into every future session's context. What was decided + why, 2-3 sentences, at most catalog.excerpt_chars characters (default 200)."),
+    reasoning: z.string({ error: "reasoning is REQUIRED — compose it in THIS call. Re-emit with all required fields present." }).describe("THE DEFERRED LAYER — rendered as '## Reasoning'. NOT loaded at session start; returned by axme_get_decision(id). Alternatives considered, measurements, file paths, history."),
     enforce: z.enum(["required", "advisory"]).optional().describe("Enforcement level"),
     scope: z.array(z.string()).optional().describe("Project scope"),
   },
   async ({ project_path, title, decision, reasoning, enforce, scope }) => {
 
     const resolved = ppWithScope(project_path, scope);
-    const result = saveDecisionTool(resolved, { title, decision, reasoning, enforce, scope });
+    let result;
+    try {
+      result = saveDecisionTool(resolved, { title, decision, reasoning, enforce, scope });
+    } catch (err: any) {
+      const { MetaDecisionRejected } = await import("./tools/decision-tools.js");
+      if (err instanceof MetaDecisionRejected) {
+        return { content: [{ type: "text" as const, text: err.message }], isError: true };
+      }
+      throw err;
+    }
     // See axme_save_memory above — same bootstrap reasoning.
     const { ensureOracleBootstrapped } = await import("./storage/oracle.js");
     ensureOracleBootstrapped(resolved);
     // Use decision text as description so the search index returns hits
     // ranked by the actual rule, not just the title.
     await embedKbEntry(resolved, result.id, "decision", title, decision, readConfig(resolved).contextMode);
-    return { content: [{ type: "text" as const, text: `Decision saved: ${result.id} - ${title} -> ${resolved}` }] };
+    const head = `Decision saved: ${result.id} - ${title} -> ${resolved}`;
+    const text = result.notes.length > 0 ? `${head}\n\n${result.notes.join("\n")}` : head;
+    return { content: [{ type: "text" as const, text }] };
+  },
+);
+
+// --- axme_archive_memory / axme_archive_decision ---
+// The gap these close: axme-code could create knowledge but not retire it,
+// while the knowledge bases it builds carry a rule of their own — "write to
+// axme-code storage via MCP tools only, never manually". An agent asked to
+// clean up had no legal move. Archival is a move: reversible, marked, and
+// auditable.
+server.tool(
+  "axme_archive_memory",
+  "Retire a memory: move it to .axme-code/archive/ instead of deleting it. Use when an entry no longer carries " +
+    "forward — a handoff or state snapshot, a research diary for a closed direction, a one-off incident whose fix " +
+    "is already in the code, or the loser of a merge (fold its unique detail into the surviving entry FIRST, then " +
+    "archive this one). The file is preserved with the reason stamped into its frontmatter, so an archival can be " +
+    "undone by moving one file back.",
+  {
+    project_path: z.string().optional().describe("Absolute path to the project root (defaults to server cwd)"),
+    slug: z.string({ error: "slug is REQUIRED — the memory's slug as shown in the catalog." }).describe("Memory slug (from the catalog line, e.g. 'retry-npm-publish-via-automation-token')"),
+    reason: z.string({ error: "reason is REQUIRED — one line on why this entry no longer carries forward." }).describe("Why this is being retired. Stored in the archived file so a later reader can judge the call."),
+  },
+  async ({ project_path, slug, reason }) => {
+    const resolved = pp(project_path);
+    const { archiveMemory } = await import("./storage/archive.js");
+    const result = archiveMemory(resolved, slug, reason);
+    if (!result.ok) {
+      return { content: [{ type: "text" as const, text: `Archive failed: ${result.error}` }], isError: true };
+    }
+    // Drop it from the search index too, or search keeps returning an entry
+    // that is no longer part of the live knowledge base.
+    try {
+      const { removeEmbedding } = await import("./storage/embeddings.js");
+      await removeEmbedding(resolved, slug, "memory");
+    } catch {}
+    return { content: [{ type: "text" as const, text: `Memory archived: ${slug} -> ${result.archivedTo}\nUndo: move that file back into .axme-code/memory/` }] };
+  },
+);
+
+server.tool(
+  "axme_archive_decision",
+  "Retire a decision: mark it superseded or revoked, then move it to .axme-code/archive/. Pass superseded_by when a " +
+    "newer decision replaces this one; omit it when the decision simply stopped applying, and the reason is recorded " +
+    "as the revocation reason. This is the correct way to record 'D-020 is now covered by D-036' — do NOT save a new " +
+    "decision that says so, which produces a meta-record that restates an edit instead of making it.",
+  {
+    project_path: z.string().optional().describe("Absolute path to the project root (defaults to server cwd)"),
+    id: z.string({ error: "id is REQUIRED — the decision id (D-NNN) or its slug." }).describe("Decision id (D-NNN) or slug"),
+    reason: z.string({ error: "reason is REQUIRED — one line on why this decision no longer applies." }).describe("Why this decision is being retired. Cite the code or the newer decision that makes it obsolete."),
+    superseded_by: z.string().optional().describe("Id of the decision that replaces this one. Must resolve to an existing decision — a dangling pointer is refused rather than written."),
+  },
+  async ({ project_path, id, reason, superseded_by }) => {
+    const resolved = pp(project_path);
+    const { archiveDecision } = await import("./storage/archive.js");
+    const result = archiveDecision(resolved, id, reason, superseded_by);
+    if (!result.ok) {
+      return { content: [{ type: "text" as const, text: `Archive failed: ${result.error}` }], isError: true };
+    }
+    try {
+      const { removeEmbedding } = await import("./storage/embeddings.js");
+      await removeEmbedding(resolved, id, "decision");
+    } catch {}
+    const marked = superseded_by ? `superseded by ${superseded_by}` : "revoked";
+    return { content: [{ type: "text" as const, text: `Decision archived (${marked}): ${id} -> ${result.archivedTo}\nUndo: move that file back into .axme-code/decisions/ and run 'axme-code reindex'.` }] };
+  },
+);
+
+// --- axme_merge_memories ---
+server.tool(
+  "axme_merge_memories",
+  "Fold two or more memories that cover the same ground into one. YOU compose the merged text — read the " +
+    "candidates first with axme_get_memory, decide which unique detail from each is worth keeping, and pass the " +
+    "result. The tool rewrites the survivor and archives the others. Do NOT pass a concatenation of the originals: " +
+    "gluing descriptions together produces exactly the overlong entry the format contract exists to prevent — the " +
+    "merged description is still the rule plus one concrete fact, with the accumulated specifics in the body.",
+  {
+    project_path: z.string().optional().describe("Absolute path to the project root (defaults to server cwd)"),
+    into: z.string({ error: "into is REQUIRED — the slug of the memory that survives the merge." }).describe("Slug of the memory that survives"),
+    from: z.array(z.string(), { error: "from is REQUIRED — the slugs being folded in and archived." }).describe("Slugs to fold in and archive. All must exist; the merge is refused outright if any does not, since a partial merge leaves the survivor claiming content that was never folded in."),
+    description: z.string().optional().describe("Merged LOADED layer for the survivor. Omit to keep its current one."),
+    body: z.string().optional().describe("Merged DEFERRED layer ('## Details') for the survivor — where the specifics from every merged entry belong."),
+  },
+  async ({ project_path, into, from, description, body }) => {
+    const resolved = pp(project_path);
+    const { mergeMemories } = await import("./storage/archive.js");
+    const result = mergeMemories(resolved, into, from, { description, body });
+    if (!result.ok) {
+      return { content: [{ type: "text" as const, text: `Merge failed: ${result.error}` }], isError: true };
+    }
+    try {
+      const { removeEmbedding } = await import("./storage/embeddings.js");
+      for (const slug of result.archived) await removeEmbedding(resolved, slug, "memory");
+    } catch {}
+    return { content: [{ type: "text" as const, text: `Merged into ${result.slug}; archived ${result.archived.length}: ${result.archived.join(", ") || "(none)"}` }] };
+  },
+);
+
+// --- axme_kb_doctor ---
+server.tool(
+  "axme_kb_doctor",
+  "Scan the knowledge base for storage defects and format-contract violations: memories written under a broken slug " +
+    "(these overwrite each other), leaked tool-call markup, frontmatter that disagrees with the filename, entries whose " +
+    "description overruns the catalog budget, and duplicate titles. Deterministic and instant — no LLM, no cost. " +
+    "Pass fix=true to repair the mechanical defects (renames and markup stripping); overlong and duplicate entries need " +
+    "judgment and are only reported. Run this after a bulk import, or when the user asks about knowledge base health.",
+  {
+    project_path: z.string().optional().describe("Absolute path to the project root (defaults to server cwd)"),
+    fix: z.boolean().optional().describe("Repair the mechanical defects. Never deletes; renames preserve content and stamp the corrected slug into the frontmatter."),
+  },
+  async ({ project_path, fix }) => {
+    const resolved = pp(project_path);
+    const { runKbDoctor, formatDoctorReport } = await import("./storage/kb-doctor.js");
+    const report = runKbDoctor(resolved, { fix: !!fix });
+    return { content: [{ type: "text" as const, text: formatDoctorReport(report, !!fix) }] };
   },
 );
 
@@ -883,6 +1037,11 @@ server.tool(
       return { content: [{ type: "text" as const, text: "No active AXME session found." }] };
     }
 
+    // Quote this project's real catalog budget, not a hardcoded 200 — an
+    // agent told the wrong number writes entries that are either needlessly
+    // terse or silently cut.
+    const excerptChars = readConfig(pp(undefined)).catalogExcerptChars;
+
     const checklist = [
       `# Session Close Checklist (session ${sid.slice(0, 8)})`,
       "",
@@ -901,6 +1060,33 @@ server.tool(
       "- **Decisions** (policies user confirmed, architectural choices)",
       "- **Safety rules** (user mandated bash_deny, fs_deny, git_protected_branch, etc.)",
       "",
+      "### What NOT to extract — apply this filter to every candidate:",
+      "Would this help an agent a MONTH FROM NOW who was not part of this session? If the value is",
+      "in the numbers rather than in a rule, it is a document, not a memory.",
+      "",
+      "- **Session state and \"where we stopped\"** — that is the handoff (Step 2), not a memory. A",
+      "  handoff saved as a memory is re-read by every future session forever.",
+      "- **Measurement results and verdict numbers** — a doc; a memory may carry one line pointing to it.",
+      "- **Research diaries** (\"day 3 of X\", \"wave 2\") — the conclusion may be a memory, the diary is not.",
+      "- **A one-off incident already fixed in the code** that yields no transferable rule.",
+      "- **Anything an existing entry covers** — extend that entry (save under its exact title) instead",
+      "  of adding a second half-record.",
+      "- **Meta-decisions** (\"D-020 absorbed by D-036\") — that is an edit, not a decision. Use",
+      "  action `supersede`, or `axme_archive_decision` with `superseded_by`.",
+      "",
+      `### Format — the two-level rule (budget: ${excerptChars} chars):`,
+      "Each entry has a layer loaded into EVERY future session and a layer that is not.",
+      "",
+      `- \`description\` (memory) / \`decision\` (decision) — LOADED every session. The rule plus one`,
+      `  concrete fact, at most ${excerptChars} characters. Past that it is cut from the session-start`,
+      "  catalog and the remainder is invisible unless someone explicitly fetches it.",
+      "- `body` (memory) / `reasoning` (decision) — renders as `## Details` / `## Reasoning`, NOT loaded",
+      "  at session start, returned in full by `axme_get_memory` / `axme_get_decision`. Put every number,",
+      "  file path, line reference, threshold and measurement here. It costs nothing per session.",
+      "",
+      "Do NOT split an entry into several to meet the budget — per-entry overhead multiplies by count.",
+      "Cut DOWN into the deferred layer, never ACROSS into more records.",
+      "",
       "### Dedup & conflict check (MANDATORY for each item):",
       "Compare every candidate against what you already loaded via `axme_context`.",
       "If writing to a repo you haven't loaded yet, call `axme_context` for it first.",
@@ -911,6 +1097,9 @@ server.tool(
       "**Direct contradiction**: action `supersede` on the older item (newer is authoritative).",
       "**Unclear contradiction**: ask the user which to keep before adding.",
       "**Outdated item found** (even unrelated to new ones): action `remove` with its slug/id.",
+      "",
+      "Outside the close flow, retire entries with `axme_archive_memory` / `axme_archive_decision` —",
+      "they move the file to `.axme-code/archive/` with the reason stamped in. Never delete by hand.",
       "",
       "## Step 2: Prepare Everything for `axme_finalize_close`",
       "",

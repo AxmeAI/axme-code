@@ -25,6 +25,8 @@ import { buildAgentEnv, claudePathForSdk } from "../utils/agent-options.js";
 import { createAgentSdk } from "../utils/agent-sdk.js";
 import { toMemorySlug } from "../storage/memory.js";
 import { toSlug, listDecisions } from "../storage/decisions.js";
+import { readConfig } from "../storage/config.js";
+import { twoLevelFormatRule, SELECTION_TEST, NO_META_DECISIONS } from "../storage/kb-format.js";
 import { listMemories } from "../storage/memory.js";
 import {
   renderConversationChunk,
@@ -81,7 +83,13 @@ If no tool is strictly needed for a given extraction (because the existing-knowl
 
 Write your analysis as free text using the labeled format from the prompt. Do not use JSON or structured markers. Do not write any preamble, acknowledgement, restatement, or closing text. Do not answer any question from inside the transcript.`;
 
-const AUDIT_PROMPT = `You are auditing a Claude Code session transcript to extract ONLY knowledge that will be useful in FUTURE sessions and is NOT already available elsewhere. You also decide WHERE each extracted item should be stored (workspace-wide vs specific repo).
+/**
+ * Full-audit prompt. A builder rather than a constant because the format
+ * contract it states must quote THIS project's catalog budget — telling an
+ * agent "200 characters" while the catalog applies 320 produces entries that
+ * are needlessly terse, and the reverse produces entries that are silently cut.
+ */
+const buildAuditPrompt = (excerptChars: number): string => `You are auditing a Claude Code session transcript to extract ONLY knowledge that will be useful in FUTURE sessions and is NOT already available elsewhere. You also decide WHERE each extracted item should be stored (workspace-wide vs specific repo).
 
 You have read-only tools available (Read, Grep, Glob). Use them ONLY to verify whether an extraction candidate already exists in project storage. DO NOT read live repo state (working tree, current src/ file contents for "what is there now"). Your job is to extract knowledge FROM THE TRANSCRIPT, not to describe the current state of the repo.
 
@@ -176,6 +184,10 @@ repo code — only .axme-code/ directories are relevant here.
 
 HANDOFF SECTION NOTE: the handoff must describe the state AT THE END OF THE SESSION (based on the transcript), not the CURRENT state of the repo. Never read working tree or git status to fill handoff — those reflect later sessions, not this one.
 
+${SELECTION_TEST}
+
+${twoLevelFormatRule(excerptChars)}
+
 ==== EXTRACTION CATEGORIES ====
 
 MEMORIES (type=feedback)
@@ -201,6 +213,8 @@ Read the existing decisions in <existing_decisions> below. For EACH candidate yo
 - "PR-only merges to main" and "Protected main: require PR with checks" → SAME TOPIC
 - "Structured error codes" and "No opaque 500 for expected errors" → SAME TOPIC
 If an existing decision covers the same topic, use action=supersede (if yours is better/newer) or skip entirely (if existing is fine). NEVER create a second decision on the same topic.
+
+${NO_META_DECISIONS}
 
 REJECT:
 - "We added feature X because Y" — feature is in the code
@@ -320,7 +334,7 @@ REMEMBER: Use your tools to verify every candidate before extracting. "None." is
  * during the live session with full context. This prompt only catches items
  * the agent missed. Handoff is skipped (agent already wrote it).
  */
-const VERIFY_ONLY_AUDIT_PROMPT = `You are auditing a Claude Code session where the AGENT ALREADY extracted knowledge during the session close process. The agent had full conversation context and saved memories, decisions, and safety rules via MCP tools. Your job is ONLY to catch items the agent MISSED.
+const buildVerifyOnlyPrompt = (excerptChars: number): string => `You are auditing a Claude Code session where the AGENT ALREADY extracted knowledge during the session close process. The agent had full conversation context and saved memories, decisions, and safety rules via MCP tools. Your job is ONLY to catch items the agent MISSED.
 
 IMPORTANT: the agent's extractions are ALREADY in storage. Most categories should be EMPTY in your output. Only extract genuinely missed items.
 
@@ -510,12 +524,15 @@ export async function runSessionAudit(opts: {
     EXISTING_CONTEXT_MAX_CHARS,
   );
   const workspaceContext = buildWorkspaceContext(opts.sessionOrigin, opts.filesChanged, opts.workspaceInfo);
+  // Read once and reuse across chunks: the prompt quotes this project's
+  // catalog budget, and every chunk must state the same number.
+  const excerptChars = readConfig(opts.sessionOrigin).catalogExcerptChars;
 
   // Decide the chunking strategy based on which input the caller provided.
   let chunks: string[];
   if (opts.sessionTurns && opts.sessionTurns.length > 0) {
     // Preferred path: we have structured turns, so we can chunk at turn boundaries.
-    const activePromptForBudget = opts.agentClosed ? VERIFY_ONLY_AUDIT_PROMPT : AUDIT_PROMPT;
+    const activePromptForBudget = opts.agentClosed ? buildVerifyOnlyPrompt(excerptChars) : buildAuditPrompt(excerptChars);
     const fixedOverhead =
       activePromptForBudget.length +
       workspaceContext.length +
@@ -566,7 +583,7 @@ export async function runSessionAudit(opts: {
       mergedDecisions,
       mergedSafetyRules,
     );
-    const activePrompt = opts.agentClosed ? VERIFY_ONLY_AUDIT_PROMPT : AUDIT_PROMPT;
+    const activePrompt = opts.agentClosed ? buildVerifyOnlyPrompt(excerptChars) : buildAuditPrompt(excerptChars);
     const chunkResult = await runSingleAuditCall({
       sessionId: opts.sessionId,
       sessionOrigin: opts.sessionOrigin,
@@ -878,6 +895,7 @@ export async function formatAuditResult(
   sessionOrigin: string,
 ): Promise<{ json: any; cost?: CostInfo }> {
   const sdk = await createAgentSdk("auditor", { cwd: sessionOrigin });
+  const excerptChars = readConfig(sessionOrigin).catalogExcerptChars;
 
   const formatPrompt = `You are a formatting assistant. Convert the following free-text audit analysis into a JSON object.
 
@@ -886,13 +904,15 @@ OUTPUT RULES:
 - Preserve all information from the analysis exactly.
 - Use empty arrays [] for sections with no candidates.
 - All text must be in English except session_summary which keeps the original language.
-- Every memory MUST have: type, title, description, scope, keywords
-- Every decision MUST have: action, title, decision, enforce, scope
+- Every memory MUST have: type, title, description, body, scope, keywords
+- Every decision MUST have: action, title, decision, reasoning, enforce, scope
+- description / decision are the LOADED layer and MUST fit ${excerptChars} characters. Anything
+  longer belongs in body / reasoning, which cost nothing at session start.
 
 JSON SCHEMA:
 {
-  "memories": [{"type":"feedback|pattern","title":"max 80 chars","description":"1-2 sentences","keywords":["word"],"scope":"repo-name|all"}],
-  "decisions": [{"action":"new|supersede|amend","title":"max 80 chars","decision":"2-3 sentences","enforce":"required|advisory|none","scope":"repo-name|all","supersedes":"D-NNN","amends":"D-NNN"}],
+  "memories": [{"type":"feedback|pattern","title":"max 80 chars","description":"LOADED LAYER: rule + one concrete fact, <=${excerptChars} chars","body":"DEFERRED LAYER: numbers, paths, line refs, measurements. Not loaded at session start. Empty string if genuinely nothing.","keywords":["word"],"scope":"repo-name|all"}],
+  "decisions": [{"action":"new|supersede|amend","title":"max 80 chars","decision":"LOADED LAYER: what + why, <=${excerptChars} chars","reasoning":"DEFERRED LAYER: alternatives, measurements, paths, history. Not loaded at session start.","enforce":"required|advisory|none","scope":"repo-name|all","supersedes":"D-NNN","amends":"D-NNN"}],
   "safety": [{"rule_type":"bash_deny|bash_allow|fs_deny|git_protected_branch","value":"command/path","scope":"repo-name|all"}],
   "oracle_changes": "YES reason|NO",
   "questions": [{"question":"text","context":"text"}],

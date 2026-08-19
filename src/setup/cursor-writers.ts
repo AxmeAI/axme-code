@@ -166,9 +166,35 @@ Palette. **Do not invoke \`axme-code setup\` via Bash autonomously**, even if
 user and wait.
 
 ### During Work
-- Error pattern or successful approach discovered → call \`axme_save_memory\` immediately.
+- Error pattern or transferable rule discovered → call \`axme_save_memory\` immediately.
 - Architectural decision made or discovered → call \`axme_save_decision\` immediately.
 - New safety constraint found → call \`axme_update_safety\` immediately.
+
+### What to save (and what NOT to)
+Before EVERY \`axme_save_memory\`: **would this help an agent a month from now who was not
+part of this investigation?** If the value is in numbers rather than a rule, it is a document.
+
+**Save**: an owner's rule or ruling · vendor/feed/API semantics (sign convention, error codes,
+limits, cadence) · a tool or language trap that will recur · a closed direction so nobody
+reopens it · a live production contract.
+
+**Do NOT save**: measurement results and verdict numbers · session state and handoffs
+(\`axme_finalize_close\` handles those) · a one-off incident already fixed in code with no
+transferable rule · anything an existing entry covers — extend that entry instead.
+
+### The two-level format
+\`description\` (memory) and \`decision\` (decision) are loaded into EVERY future session:
+keep them to the rule plus one concrete fact, **at most 200 characters** (the catalog excerpt
+width, \`catalog.excerpt_chars\` in \`.axme-code/config.yaml\`). Numbers, paths, line references
+and measurements go into \`body\` / \`reasoning\` — those render as \`## Details\` / \`## Reasoning\`,
+are NOT loaded at session start, and come back in full from \`axme_get_memory\` /
+\`axme_get_decision\`. Cut DOWN into the deferred layer, never ACROSS into more records.
+
+### Housekeeping
+- \`axme-code kb-doctor .\` — fast defect scan (broken slugs, leaked markup, overlong entries);
+  \`--fix\` repairs the mechanical ones.
+- \`axme-code audit-kb . --dry-run\` — preview a compaction pass; drop the flag to apply.
+- Retire entries with \`axme_archive_memory\` / \`axme_archive_decision\`, never a manual delete.
 
 ### Git commit/push gate
 Every \`git commit\` and \`git push\` command MUST end with the marker:
