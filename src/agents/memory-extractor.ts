@@ -12,6 +12,8 @@
 import type { Memory } from "../types.js";
 import { extractCostFromResult, zeroCost, type CostInfo } from "../utils/cost-extractor.js";
 import { toMemorySlug } from "../storage/memory.js";
+import { readConfig } from "../storage/config.js";
+import { twoLevelFormatRule, SELECTION_TEST } from "../storage/kb-format.js";
 import { buildAgentEnv, claudePathForSdk } from "../utils/agent-options.js";
 import { createAgentSdk } from "../utils/agent-sdk.js";
 
@@ -21,7 +23,14 @@ export interface MemoryExtractionResult {
   durationMs: number;
 }
 
-const EXTRACTION_PROMPT = `You are a learning system that extracts memories from coding sessions.
+/**
+ * Builder rather than a constant so the format contract quotes THIS
+ * project's catalog budget. The previous constant told the extractor
+ * "body: keep short or omit — description must carry all meaning", which is
+ * the exact inversion of the contract and a direct contributor to 91% of one
+ * base's memories sitting entirely in the layer paid for by every session.
+ */
+const buildExtractionPrompt = (excerptChars: number): string => `You are a learning system that extracts memories from coding sessions.
 
 Analyze the session transcript below and extract two types of memories:
 
@@ -35,16 +44,20 @@ Analyze the session transcript below and extract two types of memories:
    - Efficient workflows that saved time
    - Non-obvious solutions that worked
 
+${twoLevelFormatRule(excerptChars)}
+
+${SELECTION_TEST}
+
 For each memory, output in this exact format (one block per memory):
 
 ###MEMORY###
-slug: <kebab-case, max 60 chars>
+slug: <kebab-case, max 60 chars. Transliterate non-Latin titles; never leave this empty.>
 type: <feedback or pattern>
 title: <one-line summary, max 80 chars>
-description: <1-2 sentences: what happened + specific action/command/rule. Must be self-contained - this is the ONLY field shown in agent context.>
+description: <LOADED LAYER — the rule plus one concrete fact, 1-2 sentences, at most ${excerptChars} characters. Loaded into every future session.>
 keywords: <3-7 keywords, comma-separated>
 scope: <comma-separated project names this applies to, or "all" for universal>
-body: <Optional archive detail. Keep short or omit - description must carry all meaning.>
+body: <DEFERRED LAYER — every number, file path, line reference, threshold, measurement and command output. NOT loaded at session start; returned by axme_get_memory. Use it freely; leave empty only when there is genuinely no detail.>
 ###END###
 
 Rules:
@@ -82,7 +95,7 @@ export async function runMemoryExtraction(opts: {
     env: buildAgentEnv(),
   };
 
-  const prompt = `${EXTRACTION_PROMPT}\n\nSession ID: ${opts.sessionId}\n\nSession transcript:\n${opts.sessionEvents}`;
+  const prompt = `${buildExtractionPrompt(readConfig(opts.projectPath).catalogExcerptChars)}\n\nSession ID: ${opts.sessionId}\n\nSession transcript:\n${opts.sessionEvents}`;
   const q = sdk.query({ prompt, options: queryOpts });
 
   let result = "";

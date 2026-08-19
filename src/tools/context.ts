@@ -10,6 +10,7 @@ import { decisionsContext, showDecisions, enforceableDecisionsContext, listDecis
 import { pathExists, readSafe } from "../storage/engine.js";
 import { configExists, readConfig } from "../storage/config.js";
 import { runKbDoctor, countOverlong } from "../storage/kb-doctor.js";
+import { readKbAuditCounter } from "../storage/kb-audit.js";
 import { isRuntimeInstalled } from "../storage/embeddings.js";
 import { join } from "node:path";
 import { existsSync } from "node:fs";
@@ -324,13 +325,30 @@ function buildHygieneLine(
     overlong = { memories: 0, decisions: 0, total: 0, excerptChars: config.catalogExcerptChars };
   }
 
+  // The audit counter is bumped after every session audit, but its
+  // recommendation was only ever written to the stderr of a DETACHED
+  // background worker — a stream nobody reads. Surfacing it here is the
+  // difference between the counter existing and the counter working.
+  let sessionsSinceAudit = 0;
+  try {
+    const counter = readKbAuditCounter(projectPath);
+    if (counter && counter.count >= 20) sessionsSinceAudit = counter.count;
+  } catch {}
+
   const sizeProblem = total >= config.kbSizeWarnThreshold;
   // A tenth of the base overrunning is where the catalog stops being a
   // faithful summary; below that it is a rounding error not worth a warning.
   const formatProblem = overlong.total > 0 && overlong.total >= Math.max(5, Math.round(total * 0.1));
-  if (!sizeProblem && !formatProblem) return null;
+  if (!sizeProblem && !formatProblem && !sessionsSinceAudit) return null;
 
   const lines = ["## Knowledge base hygiene", ""];
+
+  if (sessionsSinceAudit) {
+    lines.push(
+      `**${sessionsSinceAudit} sessions** have been audited since the last knowledge-base compaction.`,
+      "",
+    );
+  }
 
   if (sizeProblem) {
     lines.push(

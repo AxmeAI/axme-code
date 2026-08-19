@@ -8,12 +8,13 @@ import { makeSlug, transliterate, isDegenerateSlug } from "../src/utils/slug.js"
 import { stripLeakedMarkup, stripLeakedMarkupFromRecord, hasLeakedMarkup, sanitizeFields } from "../src/utils/sanitize.js";
 import { paginateSections } from "../src/utils/pagination.js";
 import { runKbDoctor, loadedLayer, setFrontmatterValue, frontmatterValue } from "../src/storage/kb-doctor.js";
-import { archiveMemory, archiveDecision } from "../src/storage/archive.js";
+import { archiveMemory, archiveDecision, mergeMemories } from "../src/storage/archive.js";
+import { saveDecisionTool, MetaDecisionRejected } from "../src/tools/decision-tools.js";
 import { formatKbAuditReport } from "../src/agents/kb-auditor.js";
 import { checkOverrun, findDuplicateCandidates } from "../src/storage/save-feedback.js";
 import { readConfig, writeConfig } from "../src/storage/config.js";
 import { initMemoryStore, saveMemory, toMemorySlug, getMemory } from "../src/storage/memory.js";
-import { initDecisionStore, addDecision, getDecision, toSlug } from "../src/storage/decisions.js";
+import { initDecisionStore, addDecision, getDecision, toSlug, listDecisions } from "../src/storage/decisions.js";
 import { DEFAULT_PROJECT_CONFIG } from "../src/types.js";
 
 let ROOT: string;
@@ -485,5 +486,92 @@ describe("audit-kb report", () => {
     assert.ok(out.includes("nothing was written"));
     assert.ok(!out.includes("FAILED pass"));
     assert.ok(!out.includes("Undo:"));
+  });
+});
+
+// --- Meta-decision guard ---
+
+describe("meta-decision guard", () => {
+  const input = (title: string) => ({
+    title, decision: "d", reasoning: "r", enforce: "required" as const,
+  });
+
+  it("refuses a title that is only a pointer between two decision ids", () => {
+    initDecisionStore(ROOT);
+    for (const t of [
+      "D-020 absorbed by D-036",
+      "D-092: superseded by D-100",
+      "D-7 is covered by D-12",
+      "D-024 merged into D-030",
+    ]) {
+      assert.throws(() => saveDecisionTool(ROOT, input(t)), MetaDecisionRejected, t);
+    }
+    assert.equal(listDecisions(ROOT).length, 0);
+  });
+
+  it("points the agent at the tool that makes the edit instead", () => {
+    initDecisionStore(ROOT);
+    try {
+      saveDecisionTool(ROOT, input("D-020 absorbed by D-036"));
+      assert.fail("should have thrown");
+    } catch (err: any) {
+      assert.ok(err.message.includes("axme_archive_decision"));
+      assert.ok(err.message.includes("superseded_by"));
+    }
+  });
+
+  it("does not block a real decision that merely cites another", () => {
+    initDecisionStore(ROOT);
+    const r = saveDecisionTool(ROOT, {
+      title: "Backlog storage is per-repo, not centralized",
+      decision: "Each repo keeps its own backlog. Supersedes D-012, which assumed a single repo.",
+      reasoning: "r", enforce: "required",
+    });
+    assert.equal(r.saved, true);
+    assert.equal(listDecisions(ROOT).length, 1);
+  });
+});
+
+// --- Merge ---
+
+describe("merging memories", () => {
+  function mem(slug: string, title: string, description: string) {
+    return {
+      slug, type: "pattern" as const, title, description, body: "",
+      keywords: [], source: "manual" as const, sessionId: null, date: "2026-01-01",
+    };
+  }
+
+  it("rewrites the survivor and archives the rest", () => {
+    initMemoryStore(ROOT);
+    saveMemory(ROOT, mem("keep", "Keep this", "original"));
+    saveMemory(ROOT, mem("dup-a", "Dup A", "a"));
+    saveMemory(ROOT, mem("dup-b", "Dup B", "b"));
+
+    const r = mergeMemories(ROOT, "keep", ["dup-a", "dup-b"], {
+      description: "merged rule", body: "specifics from all three",
+    });
+    assert.equal(r.ok, true);
+    assert.deepEqual(r.archived.sort(), ["dup-a", "dup-b"]);
+
+    const survivor = getMemory(ROOT, "keep");
+    assert.ok(survivor);
+    assert.equal(survivor.description, "merged rule");
+    assert.equal(survivor.body, "specifics from all three");
+    assert.equal(getMemory(ROOT, "dup-a"), null);
+    assert.equal(getMemory(ROOT, "dup-b"), null);
+  });
+
+  it("refuses the whole merge if any source is missing", () => {
+    // A partial merge leaves the survivor claiming content never folded in.
+    initMemoryStore(ROOT);
+    saveMemory(ROOT, mem("keep", "Keep this", "original"));
+    saveMemory(ROOT, mem("dup-a", "Dup A", "a"));
+
+    const r = mergeMemories(ROOT, "keep", ["dup-a", "nope"], { description: "merged" });
+    assert.equal(r.ok, false);
+    assert.ok(r.error!.includes("nope"));
+    assert.equal(getMemory(ROOT, "keep")!.description, "original");
+    assert.ok(getMemory(ROOT, "dup-a"));
   });
 });

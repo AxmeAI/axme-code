@@ -25,9 +25,10 @@ import { readFileSync, readdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { atomicWrite, ensureDir, pathExists } from "./engine.js";
 import { setFrontmatterValue } from "./kb-doctor.js";
-import { getMemory } from "./memory.js";
+import { getMemory, saveMemory } from "./memory.js";
 import { getDecision, rebuildDecisionIndex } from "./decisions.js";
 import { AXME_CODE_DIR } from "../types.js";
+import type { Memory } from "../types.js";
 
 const ARCHIVE_DIR = "archive";
 
@@ -182,4 +183,48 @@ function findDecisionFile(dir: string, id: string): string | null {
 /** Frontmatter is line-based — a reason with newlines would corrupt the file. */
 function oneLine(text: string): string {
   return (text || "").replace(/\s+/g, " ").trim().slice(0, 300);
+}
+
+/**
+ * Fold several memories into one.
+ *
+ * Split of responsibility: the AGENT composes the merged text, because
+ * deciding which unique detail from each loser is worth keeping is judgment
+ * that no heuristic does well. This function does only the file work —
+ * rewrite the survivor, archive the rest, keep everything reversible.
+ *
+ * `into` must survive with the caller's text rather than a concatenation:
+ * gluing four descriptions together produces exactly the overlong entry the
+ * format contract exists to prevent.
+ */
+export function mergeMemories(
+  projectPath: string,
+  into: string,
+  from: string[],
+  merged: { description?: string; body?: string },
+): { ok: boolean; error?: string; archived: string[]; slug?: string } {
+  const survivor = getMemory(projectPath, into);
+  if (!survivor) return { ok: false, error: `Memory "${into}" not found`, archived: [] };
+
+  const losers = from.filter(s => s !== into);
+  const missing = losers.filter(s => !getMemory(projectPath, s));
+  if (missing.length > 0) {
+    // Refuse the whole operation rather than half-merge: a partial merge
+    // leaves the survivor claiming content that was never folded in.
+    return { ok: false, error: `Not found: ${missing.join(", ")}`, archived: [] };
+  }
+
+  const updated: Memory = {
+    ...survivor,
+    ...(merged.description !== undefined ? { description: merged.description } : {}),
+    ...(merged.body !== undefined ? { body: merged.body } : {}),
+  };
+  const outcome = saveMemory(projectPath, updated);
+
+  const archived: string[] = [];
+  for (const slug of losers) {
+    const r = archiveMemory(projectPath, slug, `merged into ${into}`);
+    if (r.ok) archived.push(slug);
+  }
+  return { ok: true, archived, slug: outcome.slug };
 }

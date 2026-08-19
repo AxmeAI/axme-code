@@ -627,7 +627,16 @@ server.tool(
   async ({ project_path, title, decision, reasoning, enforce, scope }) => {
 
     const resolved = ppWithScope(project_path, scope);
-    const result = saveDecisionTool(resolved, { title, decision, reasoning, enforce, scope });
+    let result;
+    try {
+      result = saveDecisionTool(resolved, { title, decision, reasoning, enforce, scope });
+    } catch (err: any) {
+      const { MetaDecisionRejected } = await import("./tools/decision-tools.js");
+      if (err instanceof MetaDecisionRejected) {
+        return { content: [{ type: "text" as const, text: err.message }], isError: true };
+      }
+      throw err;
+    }
     // See axme_save_memory above — same bootstrap reasoning.
     const { ensureOracleBootstrapped } = await import("./storage/oracle.js");
     ensureOracleBootstrapped(resolved);
@@ -700,6 +709,36 @@ server.tool(
     } catch {}
     const marked = superseded_by ? `superseded by ${superseded_by}` : "revoked";
     return { content: [{ type: "text" as const, text: `Decision archived (${marked}): ${id} -> ${result.archivedTo}\nUndo: move that file back into .axme-code/decisions/ and run 'axme-code reindex'.` }] };
+  },
+);
+
+// --- axme_merge_memories ---
+server.tool(
+  "axme_merge_memories",
+  "Fold two or more memories that cover the same ground into one. YOU compose the merged text — read the " +
+    "candidates first with axme_get_memory, decide which unique detail from each is worth keeping, and pass the " +
+    "result. The tool rewrites the survivor and archives the others. Do NOT pass a concatenation of the originals: " +
+    "gluing descriptions together produces exactly the overlong entry the format contract exists to prevent — the " +
+    "merged description is still the rule plus one concrete fact, with the accumulated specifics in the body.",
+  {
+    project_path: z.string().optional().describe("Absolute path to the project root (defaults to server cwd)"),
+    into: z.string({ error: "into is REQUIRED — the slug of the memory that survives the merge." }).describe("Slug of the memory that survives"),
+    from: z.array(z.string(), { error: "from is REQUIRED — the slugs being folded in and archived." }).describe("Slugs to fold in and archive. All must exist; the merge is refused outright if any does not, since a partial merge leaves the survivor claiming content that was never folded in."),
+    description: z.string().optional().describe("Merged LOADED layer for the survivor. Omit to keep its current one."),
+    body: z.string().optional().describe("Merged DEFERRED layer ('## Details') for the survivor — where the specifics from every merged entry belong."),
+  },
+  async ({ project_path, into, from, description, body }) => {
+    const resolved = pp(project_path);
+    const { mergeMemories } = await import("./storage/archive.js");
+    const result = mergeMemories(resolved, into, from, { description, body });
+    if (!result.ok) {
+      return { content: [{ type: "text" as const, text: `Merge failed: ${result.error}` }], isError: true };
+    }
+    try {
+      const { removeEmbedding } = await import("./storage/embeddings.js");
+      for (const slug of result.archived) await removeEmbedding(resolved, slug, "memory");
+    } catch {}
+    return { content: [{ type: "text" as const, text: `Merged into ${result.slug}; archived ${result.archived.length}: ${result.archived.join(", ") || "(none)"}` }] };
   },
 );
 
@@ -998,6 +1037,11 @@ server.tool(
       return { content: [{ type: "text" as const, text: "No active AXME session found." }] };
     }
 
+    // Quote this project's real catalog budget, not a hardcoded 200 — an
+    // agent told the wrong number writes entries that are either needlessly
+    // terse or silently cut.
+    const excerptChars = readConfig(pp(undefined)).catalogExcerptChars;
+
     const checklist = [
       `# Session Close Checklist (session ${sid.slice(0, 8)})`,
       "",
@@ -1016,6 +1060,33 @@ server.tool(
       "- **Decisions** (policies user confirmed, architectural choices)",
       "- **Safety rules** (user mandated bash_deny, fs_deny, git_protected_branch, etc.)",
       "",
+      "### What NOT to extract — apply this filter to every candidate:",
+      "Would this help an agent a MONTH FROM NOW who was not part of this session? If the value is",
+      "in the numbers rather than in a rule, it is a document, not a memory.",
+      "",
+      "- **Session state and \"where we stopped\"** — that is the handoff (Step 2), not a memory. A",
+      "  handoff saved as a memory is re-read by every future session forever.",
+      "- **Measurement results and verdict numbers** — a doc; a memory may carry one line pointing to it.",
+      "- **Research diaries** (\"day 3 of X\", \"wave 2\") — the conclusion may be a memory, the diary is not.",
+      "- **A one-off incident already fixed in the code** that yields no transferable rule.",
+      "- **Anything an existing entry covers** — extend that entry (save under its exact title) instead",
+      "  of adding a second half-record.",
+      "- **Meta-decisions** (\"D-020 absorbed by D-036\") — that is an edit, not a decision. Use",
+      "  action `supersede`, or `axme_archive_decision` with `superseded_by`.",
+      "",
+      `### Format — the two-level rule (budget: ${excerptChars} chars):`,
+      "Each entry has a layer loaded into EVERY future session and a layer that is not.",
+      "",
+      `- \`description\` (memory) / \`decision\` (decision) — LOADED every session. The rule plus one`,
+      `  concrete fact, at most ${excerptChars} characters. Past that it is cut from the session-start`,
+      "  catalog and the remainder is invisible unless someone explicitly fetches it.",
+      "- `body` (memory) / `reasoning` (decision) — renders as `## Details` / `## Reasoning`, NOT loaded",
+      "  at session start, returned in full by `axme_get_memory` / `axme_get_decision`. Put every number,",
+      "  file path, line reference, threshold and measurement here. It costs nothing per session.",
+      "",
+      "Do NOT split an entry into several to meet the budget — per-entry overhead multiplies by count.",
+      "Cut DOWN into the deferred layer, never ACROSS into more records.",
+      "",
       "### Dedup & conflict check (MANDATORY for each item):",
       "Compare every candidate against what you already loaded via `axme_context`.",
       "If writing to a repo you haven't loaded yet, call `axme_context` for it first.",
@@ -1026,6 +1097,9 @@ server.tool(
       "**Direct contradiction**: action `supersede` on the older item (newer is authoritative).",
       "**Unclear contradiction**: ask the user which to keep before adding.",
       "**Outdated item found** (even unrelated to new ones): action `remove` with its slug/id.",
+      "",
+      "Outside the close flow, retire entries with `axme_archive_memory` / `axme_archive_decision` —",
+      "they move the file to `.axme-code/archive/` with the reason stamped in. Never delete by hand.",
       "",
       "## Step 2: Prepare Everything for `axme_finalize_close`",
       "",
