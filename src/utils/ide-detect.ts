@@ -12,13 +12,18 @@
  * The setup writers always emit `--ide cursor` explicitly in
  * `.cursor/hooks.json` commands, so the heuristic path is only a defence-
  * in-depth fallback for older configs.
+ *
+ * Codex is never inferred from stdin: its hook payload is deliberately
+ * Claude-Code-shaped (session_id, transcript_path, tool_name, ...), so
+ * there is no reliable discriminating key. `.codex/hooks.json` commands
+ * always carry `--ide codex` explicitly.
  */
 
 import type { IdeKind } from "../types.js";
 
 export type { IdeKind };
 
-const IDE_VALUES: ReadonlyArray<IdeKind> = ["claude-code", "cursor"];
+const IDE_VALUES: ReadonlyArray<IdeKind> = ["claude-code", "cursor", "codex"];
 
 /**
  * Parse `--ide <kind>` or `--ide=<kind>` out of an argv array.

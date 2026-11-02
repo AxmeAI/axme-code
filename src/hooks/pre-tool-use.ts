@@ -22,10 +22,12 @@ import type { IdeKind, SafetyRules } from "../types.js";
 import type { SafetyVerdict } from "../storage/safety.js";
 import { claudeCodeInputAdapter, claudeCodeOutputAdapter } from "./adapters/claude-code.js";
 import { cursorInputAdapter, cursorOutputAdapter } from "./adapters/cursor.js";
+import { codexInputAdapter, codexOutputAdapter } from "./adapters/codex.js";
 import type { HookInputAdapter, HookOutputAdapter, NormalizedHookEvent } from "./adapters/types.js";
 
 function adaptersFor(ide: IdeKind): { input: HookInputAdapter; output: HookOutputAdapter } {
   if (ide === "cursor") return { input: cursorInputAdapter, output: cursorOutputAdapter };
+  if (ide === "codex") return { input: codexInputAdapter, output: codexOutputAdapter };
   return { input: claudeCodeInputAdapter, output: claudeCodeOutputAdapter };
 }
 
@@ -175,10 +177,15 @@ function handlePreToolUse(
     case "Edit":
     case "Write":
     case "NotebookEdit": {
-      const filePath = (tool_input.file_path || tool_input.path) as string;
-      if (filePath) {
+      // Codex reports every file of an apply_patch call in event.filePaths;
+      // Claude Code and Cursor name exactly one file in tool_input. Check
+      // each path — the first denial wins.
+      const single = (tool_input.file_path || tool_input.path) as string | undefined;
+      const paths = event.filePaths ?? (single ? [single] : []);
+      for (const filePath of paths) {
         const rules = loadRulesForFile(filePath);
         verdict = checkFilePath(rules, filePath, "write");
+        if (!verdict.allowed) break;
       }
       break;
     }
@@ -191,7 +198,8 @@ function handlePreToolUse(
       const axmeSessionId = mapping ?? "unknown";
       const target = tool_name === "Bash"
         ? (tool_input.command as string ?? "").slice(0, 120)
-        : (tool_input.file_path || tool_input.path || "") as string;
+        : ((tool_input.file_path || tool_input.path) as string | undefined)
+          ?? (event.filePaths ?? []).join(",");
       logSafetyBlock(sessionOrigin, axmeSessionId, tool_name, target, "safety_rule", verdict.reason);
     } catch {}
     return deny(verdict.reason, output);

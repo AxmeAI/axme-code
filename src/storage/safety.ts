@@ -313,7 +313,80 @@ export function checkBash(rules: SafetyRules, command: string): SafetyVerdict {
       }
     }
   }
+
+  // Denied filesystem paths reach the shell too: `cat ~/.ssh/id_rsa` must
+  // be blocked exactly like a Read tool call on that path. This is the only
+  // guard for IDEs without a dedicated file-read tool (Codex routes every
+  // read through the shell) and belt-and-suspenders for the others.
+  const pathVerdict = checkShellPaths(rules, command);
+  if (pathVerdict) return pathVerdict;
+
   return { allowed: true };
+}
+
+/**
+ * Split a command into words the way a shell would for our purposes:
+ * whitespace separates tokens, single/double quotes group, backslash
+ * escapes. Quotes are stripped from the result so `cat "~/.ssh/id_rsa"`
+ * yields the bare path. (stripQuoted() cannot be used here — it DROPS
+ * quoted content, which is exactly where a path may hide.)
+ */
+function shellTokens(command: string): string[] {
+  const tokens: string[] = [];
+  let cur = "";
+  let has = false;
+  let inSingle = false;
+  let inDouble = false;
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i];
+    if (ch === "\\" && !inSingle && i + 1 < command.length) { cur += command[++i]; has = true; continue; }
+    if (ch === "'" && !inDouble) { inSingle = !inSingle; has = true; continue; }
+    if (ch === '"' && !inSingle) { inDouble = !inDouble; has = true; continue; }
+    if (!inSingle && !inDouble && /\s/.test(ch)) {
+      if (has) tokens.push(cur);
+      cur = ""; has = false;
+      continue;
+    }
+    cur += ch; has = true;
+  }
+  if (has) tokens.push(cur);
+  return tokens;
+}
+
+/**
+ * Shell-side enforcement of denied filesystem paths (read semantics).
+ *
+ * Only anchored deny patterns participate — those starting with "/" or
+ * "~". Bare basename patterns (".env", "*.pem", "*.key") are skipped on
+ * purpose: matched against free text they would block commit messages and
+ * heredoc bodies that merely MENTION such a file far more often than they
+ * would catch a real read. Likewise only path-like tokens (containing a
+ * separator or starting with "~") are examined.
+ *
+ * Both sides are "~"-expanded and run through normalizePathForSafety():
+ * homedir() uses backslashes on Windows while deny patterns are written
+ * with "/", so a raw comparison never matches there.
+ */
+function checkShellPaths(rules: SafetyRules, command: string): SafetyVerdict | null {
+  const anchored = rules.filesystem.deniedPaths.filter(p => p.startsWith("/") || p.startsWith("~"));
+  if (anchored.length === 0) return null;
+  const patterns = anchored.map(p => ({ original: p, normalized: normalizePathForSafety(expandHome(p)) }));
+  for (const token of shellTokens(command)) {
+    const pathLike = token.includes("/") || token.startsWith("~") || /^[A-Za-z]:[\\/]/.test(token);
+    if (!pathLike) continue;
+    const normalized = normalizePathForSafety(expandHome(token));
+    for (const pattern of patterns) {
+      if (matchesPattern(normalized, pattern.normalized)) {
+        return { allowed: false, reason: `Path denied: ${pattern.original}` };
+      }
+    }
+  }
+  return null;
+}
+
+/** "~" and "~/x" → the user's home; everything else unchanged. */
+function expandHome(p: string): string {
+  return p === "~" || p.startsWith("~/") ? homedir() + p.slice(1) : p;
 }
 
 /**

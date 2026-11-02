@@ -201,7 +201,7 @@ export interface ClaudeSessionRef {
  * Which IDE the current session/hook event came from. Used to dispatch the
  * right hook stdin parser, deny-output emitter, and (later) LLM SDK adapter.
  */
-export type IdeKind = "claude-code" | "cursor";
+export type IdeKind = "claude-code" | "cursor" | "codex";
 
 /**
  * Status of the LLM audit lifecycle on this session. Used to prevent parallel

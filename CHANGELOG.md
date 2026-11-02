@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Codex (OpenAI) support — `axme-code setup --ide=codex`.** Writes `.codex/config.toml` (`[mcp_servers.axme]` with an absolute, PATH-independent command), `.codex/hooks.json` (SessionStart + PreToolUse + PostToolUse + SessionEnd, Codex's Claude-Code-compatible hook protocol) and the `## AXME Code` section in `AGENTS.md` (Codex's CLAUDE.md analogue, including the `#!axme` git gate). New `codex` hook adapter normalizes Codex's `apply_patch` edits (one call, several files) into the IDE-agnostic file tracking and safety cores; new `hook session-start` subcommand prints the "call axme_context" nudge as Codex developer context. The background auditor keeps running on the Claude Agent SDK; Codex's own transcript is not yet parsed.
+- **Shell-side denied-path enforcement.** `checkBash` now blocks shell reads of denied filesystem paths (`cat ~/.ssh/id_rsa`, `/etc/shadow`), quoted or chained. Codex routes every file read through the shell, so without this the filesystem deny rules did not apply there at all; on Claude Code and Cursor it closes the same gap for `Bash`. Only absolute and `~`-relative deny patterns participate — bare basename patterns (`.env`, `*.pem`) are deliberately excluded so commit messages and heredocs that mention such a file are not blocked.
+
 ## [0.6.3] - 2026-06-25
 
 Reliability release for the `axme_save_memory` / `axme_save_decision` write tools, driven by two independent agent sessions that hit the same failure mode in production.
