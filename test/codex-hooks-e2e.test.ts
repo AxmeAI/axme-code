@@ -127,6 +127,8 @@ describe("codex hooks end-to-end", () => {
     assert.equal(r.status, 0, `stderr: ${r.stderr}`);
     // ROOT has .axme-code/ but no config.yaml → "not initialized" branch; the
     // real repo (REPO_ROOT) is initialized → ready branch. Check both texts.
-    assert.match(r.stdout, /\[AXME Code\] Project not initialized/);
+    const parsed = JSON.parse(r.stdout) as { hookSpecificOutput: { hookEventName: string; additionalContext: string } };
+    assert.equal(parsed.hookSpecificOutput.hookEventName, "SessionStart");
+    assert.match(parsed.hookSpecificOutput.additionalContext, /\[AXME Code\] Project not initialized/);
   });
 });

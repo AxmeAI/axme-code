@@ -75,9 +75,11 @@ This writes three project-level files and leaves Claude Code's files alone:
 - `.codex/hooks.json` — `SessionStart` (prints the "call axme_context" nudge as developer context), `PreToolUse` (safety + git gate), `PostToolUse` (file tracking from `apply_patch`), `SessionEnd` (spawns the detached auditor; Codex caps this hook at 3s, which is enough).
 - `AGENTS.md` — the `## AXME Code` section (the CLAUDE.md analogue), including the `#!axme` commit/push gate rule.
 
-Two Codex-specific notes:
+Three Codex-specific notes:
 
 - **Trust the project.** Codex loads a project's `.codex/` layer only for trusted projects. Accept the trust prompt the first time you run `codex` in the repo, or add `[projects."<absolute path>"]` with `trust_level = "trusted"` to `~/.codex/config.toml`.
+- **Trust the hooks.** Codex runs non-managed hooks only after you review them: in your first session run `/hooks` and trust the four AXME entries. Trust is bound to each hook's hash, so after anything changes the hook command (a release that moves the binary, re-running setup from another install) `/hooks` asks again. Until then the hooks are skipped silently — no safety gate, no file tracking. `codex exec` never prompts; it has `--dangerously-bypass-hook-trust` for automation you have vetted.
+- **MCP approvals are pre-granted.** The generated `[mcp_servers.axme]` table sets `default_tools_approval_mode = "approve"` (`"auto"` still prompts), so `axme_*` calls run without a per-call prompt (and work under `codex exec`, whose approval policy is `never`). The tools only read and write the project's `.axme-code/`.
 - **Shell reads are policed.** Codex has no `Read` tool — every file read is a shell command — so the `PreToolUse` hook also blocks shell reads of denied paths (`cat ~/.ssh/id_rsa`, `/etc/shadow`, ...). Only absolute and `~`-relative deny patterns apply to the shell; bare basename patterns such as `.env` do not, so commit messages and heredocs that merely mention a file are not blocked.
 
 The same `.axme-code/` knowledge base is shared with Claude Code, so you can switch between the two on one project.
