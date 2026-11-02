@@ -728,7 +728,8 @@ async function main() {
         console.log("\nDone! Run 'codex' in this project — AXME tools are now available.");
         console.log("  Codex loads the project's .codex/ config and hooks only for TRUSTED projects:");
         console.log("  accept the trust prompt on first launch (or set projects.\"<path>\".trust_level = \"trusted\"");
-        console.log("  in ~/.codex/config.toml), then start a new session.");
+        console.log("  in ~/.codex/config.toml). Then, in that first session, run /hooks and trust the");
+        console.log("  four AXME hooks — Codex skips project hooks silently until they are reviewed.");
       } else {
         console.log("\nDone! Run 'claude' to start using AXME tools.");
       }

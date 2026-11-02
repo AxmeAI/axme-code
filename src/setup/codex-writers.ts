@@ -11,6 +11,19 @@
  * ~/.codex/config.toml). Codex offers to set that the first time it opens
  * the repo; setup prints a reminder.
  *
+ * Two more Codex gates, both verified live on codex-cli 0.166 (2026-11-02):
+ *   - Hook trust. Non-managed hooks run only after the user reviews and
+ *     trusts them via `/hooks` in an interactive session. Trust is recorded
+ *     against the hook definition's hash, so any change to the command
+ *     (e.g. the binary path after a release) needs a re-trust. Untrusted
+ *     hooks are skipped silently — `codex exec` has
+ *     `--dangerously-bypass-hook-trust` for automation.
+ *   - MCP tool approval. Without `default_tools_approval_mode = "approve"`
+ *     on the server table, every axme_* call prompts in the TUI and fails
+ *     outright under `codex exec` ("requires approval, but approval policy
+ *     is never"). "auto" is NOT enough — verified live, it still prompted.
+ *     The writer sets "approve": AXME tools only touch .axme-code/.
+ *
  * Codex's hooks.json is the Claude Code settings.json `hooks` shape
  * verbatim (PascalCase events, `{ matcher?, hooks: [{ type, command,
  * timeout }] }` groups), so the writer mirrors configureHooks() in cli.ts
@@ -140,6 +153,9 @@ function mcpServerTable(serve: ServeCommand): string {
     "[mcp_servers.axme]",
     `command = ${tomlString(serve.command)}`,
     `args = [${serve.args.map(tomlString).join(", ")}]`,
+    "# AXME tools only read/write this project's .axme-code/ knowledge base:",
+    "# run them without a per-call approval prompt (required under `codex exec`).",
+    'default_tools_approval_mode = "approve"',
     "",
   ].join("\n");
 }

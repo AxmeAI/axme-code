@@ -91,7 +91,9 @@ describe("writeCodexConfigToml", () => {
   it("creates .codex/config.toml with the axme table (absolute command + args)", () => {
     writeCodexConfigToml(ROOT, SERVE);
     const text = readFileSync(join(ROOT, ".codex", "config.toml"), "utf-8");
-    assert.equal(text, '[mcp_servers.axme]\ncommand = "/bin/node"\nargs = ["/usr/local/bin/axme-code", "serve"]\n');
+    assert.ok(text.startsWith('[mcp_servers.axme]\ncommand = "/bin/node"\nargs = ["/usr/local/bin/axme-code", "serve"]\n'), text);
+    // Without this every axme_* call prompts in the TUI and fails under codex exec.
+    assert.match(text, /^default_tools_approval_mode = "approve"$/m);
   });
 
   it("appends to an existing config without touching other tables or comments", () => {
