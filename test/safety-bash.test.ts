@@ -143,3 +143,43 @@ describe("checkBash - destructive commands blocked", () => {
     assert.equal(v.allowed, true);
   });
 });
+
+describe("checkBash - denied filesystem paths reach the shell", () => {
+  const rulesWithPaths: SafetyRules = {
+    ...defaultRules,
+    filesystem: {
+      deniedPaths: ["/etc/passwd", "/etc/shadow", "~/.ssh/id_*", "~/.aws/credentials", ".env", "*.pem"],
+    },
+  };
+
+  it("blocks cat ~/.ssh/id_rsa", () => {
+    const v = checkBash(rulesWithPaths, "cat ~/.ssh/id_rsa");
+    assert.equal(v.allowed, false);
+    assert.match(v.reason ?? "", /Path denied/);
+  });
+
+  it("blocks a quoted denied path (quotes do not hide it)", () => {
+    assert.equal(checkBash(rulesWithPaths, 'cat "~/.ssh/id_ed25519"').allowed, false);
+    assert.equal(checkBash(rulesWithPaths, "head -c 100 '/etc/shadow'").allowed, false);
+  });
+
+  it("blocks a denied path hidden behind a chain or a redirect", () => {
+    assert.equal(checkBash(rulesWithPaths, "cd /tmp && cat ~/.aws/credentials").allowed, false);
+    assert.equal(checkBash(rulesWithPaths, "base64 < /etc/passwd").allowed, false);
+  });
+
+  it("allows commands that only MENTION a basename pattern in prose", () => {
+    assert.equal(checkBash(rulesWithPaths, 'git commit -m "fix .env loading"').allowed, true);
+    assert.equal(checkBash(rulesWithPaths, "cat > notes.md <<'EOF'\ncopy .env.example to .env\nEOF").allowed, true);
+  });
+
+  it("allows sibling paths that do not match the pattern", () => {
+    assert.equal(checkBash(rulesWithPaths, "ls -la ~/.ssh").allowed, true);
+    assert.equal(checkBash(rulesWithPaths, "cat ~/.ssh/config").allowed, true);
+    assert.equal(checkBash(rulesWithPaths, "cat /etc/hostname").allowed, true);
+  });
+
+  it("is a no-op when no anchored deny patterns exist", () => {
+    assert.equal(checkBash(defaultRules, "cat ~/.ssh/id_rsa").allowed, true);
+  });
+});

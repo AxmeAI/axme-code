@@ -5,7 +5,7 @@
  *   axme-code setup [path]   - Full init (LLM if API key available) + .mcp.json + CLAUDE.md
  *   axme-code serve           - Start MCP server (stdio, used by .mcp.json)
  *   axme-code status [path]   - Show project status
- *   axme-code hook <name> <json> - Run hook (pre-tool-use, post-tool-use, session-end)
+ *   axme-code hook <name> <json> - Run hook (session-start, pre-tool-use, post-tool-use, session-end)
  */
 
 import { resolve, join, basename } from "node:path";
@@ -251,6 +251,17 @@ function buildHookCommand(hookName: string, projectPath: string): string {
   return `${q(nodeExec)} ${q(self)} hook ${hookName} --workspace ${q(projectPath)}`;
 }
 
+/**
+ * MCP server launch spec for config writers that need an absolute,
+ * PATH-independent command (Codex's config.toml — Codex launched from the
+ * IDE extension or the desktop app does not necessarily see the login
+ * shell's PATH). Same ingredients as buildHookCommand(): the running node
+ * binary plus the running axme-code entry file.
+ */
+function buildServeCommand(): { command: string; args: string[] } {
+  return { command: process.execPath, args: [resolve(process.argv[1] ?? "axme-code"), "serve"] };
+}
+
 function configureHooks(projectPath: string): void {
   const claudeDir = join(projectPath, ".claude");
   const settingsPath = join(claudeDir, "settings.json");
@@ -355,10 +366,11 @@ function usage(): void {
   console.log(`AXME Code - Persistent memory, decisions, and safety guardrails for Claude Code
 
 Usage:
-  axme-code setup [path] [--force] [--ide=<claude-code|cursor>]
+  axme-code setup [path] [--force] [--ide=<claude-code|cursor|codex>]
                                                 Initialize project (LLM scan + .mcp.json + CLAUDE.md
-                                                for Claude Code, or .cursor/{mcp,hooks}.json + rules
-                                                /axme-code.mdc for Cursor). Defaults to claude-code.
+                                                for Claude Code; .cursor/{mcp,hooks}.json + rules
+                                                /axme-code.mdc for Cursor; .codex/{config.toml,
+                                                hooks.json} + AGENTS.md for Codex). Defaults to claude-code.
   axme-code serve                               Start MCP server (stdio transport)
   axme-code self-test                           Run local healthcheck (storage write,
                                                 hook parse, MCP boot). Exits 0 on
@@ -413,9 +425,9 @@ async function main() {
       const pluginMode = args.includes("--plugin") || !!process.env.CLAUDE_PLUGIN_ROOT;
       const { parseIdeFlag } = await import("./utils/ide-detect.js");
       const ide = parseIdeFlag(args) ?? "claude-code";
-      if (ide === "cursor" && pluginMode) {
-        console.error("Error: --ide=cursor is not supported with --plugin in this release.");
-        console.error("Run setup without --plugin (Cursor plugin packaging is a Phase 2 follow-up).");
+      if (ide !== "claude-code" && pluginMode) {
+        console.error(`Error: --ide=${ide} is not supported with --plugin in this release.`);
+        console.error("Run setup without --plugin (per-IDE plugin packaging is a later follow-up).");
         process.exit(1);
       }
       // Strip --force, --plugin, --ide and its value from positional args.
@@ -431,7 +443,7 @@ async function main() {
         if (a === "--help" || a === "-h") { usage(); process.exit(0); }
         if (a.startsWith("-")) {
           console.error(`Error: unknown flag for setup: ${a}`);
-          console.error("Usage: axme-code setup [path] [--force] [--plugin] [--ide=<claude-code|cursor>]");
+          console.error("Usage: axme-code setup [path] [--force] [--plugin] [--ide=<claude-code|cursor|codex>]");
           process.exit(2);
         }
         setupArgs.push(a);
@@ -630,6 +642,21 @@ async function main() {
         console.log("  .cursor/hooks.json: hooks configured (preToolUse + postToolUse + sessionEnd)");
         writeCursorRulesMdc(projectPath, isWorkspace);
         console.log("  .cursor/rules/axme-code.mdc: created");
+      } else if (ide === "codex") {
+        // Codex branch: .codex/config.toml + .codex/hooks.json + AGENTS.md.
+        // Skip CLAUDE.md and .claude/settings.json (Codex reads neither).
+        const { writeCodexConfigToml, writeCodexHooksJson, writeAgentsMdSection, buildAgentsMdSection } =
+          await import("./setup/codex-writers.js");
+        const codexPaths = [projectPath];
+        if (isWorkspace) {
+          for (const p of ws.projects) codexPaths.push(join(projectPath, p.path));
+        }
+        for (const dir of codexPaths) writeCodexConfigToml(dir, buildServeCommand());
+        console.log(`  .codex/config.toml: mcp_servers.axme updated (${codexPaths.length} locations)`);
+        writeCodexHooksJson(projectPath, buildHookCommand);
+        console.log("  .codex/hooks.json: hooks configured (SessionStart + PreToolUse + PostToolUse + SessionEnd)");
+        const section = buildAgentsMdSection(isWorkspace ? WORKSPACE_CLAUDE_MD : SINGLE_REPO_CLAUDE_MD);
+        console.log(`  AGENTS.md: ${writeAgentsMdSection(projectPath, section)} AXME Code section`);
       } else {
         // Claude Code branch (unchanged): CLAUDE.md + .claude/settings.json
         generateClaudeMd(projectPath, isWorkspace);
@@ -697,6 +724,11 @@ async function main() {
       // Tell each user what their next step actually is.
       if (ide === "cursor") {
         console.log("\nDone! Open a new chat in Cursor — AXME tools are now available.");
+      } else if (ide === "codex") {
+        console.log("\nDone! Run 'codex' in this project — AXME tools are now available.");
+        console.log("  Codex loads the project's .codex/ config and hooks only for TRUSTED projects:");
+        console.log("  accept the trust prompt on first launch (or set projects.\"<path>\".trust_level = \"trusted\"");
+        console.log("  in ~/.codex/config.toml), then start a new session.");
       } else {
         console.log("\nDone! Run 'claude' to start using AXME tools.");
       }
@@ -741,6 +773,10 @@ async function main() {
       } else if (hookName === "session-end") {
         const { runSessionEndHook } = await import("./hooks/session-end.js");
         await runSessionEndHook(workspacePath, ide);
+      } else if (hookName === "session-start") {
+        // Codex only: stdout becomes developer context for the session.
+        const { runSessionStartHook } = await import("./hooks/session-start.js");
+        await runSessionStartHook(workspacePath);
       }
       break;
     }

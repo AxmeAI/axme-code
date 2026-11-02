@@ -204,6 +204,7 @@ AXME Code is a [stdio MCP server](https://modelcontextprotocol.io/) — every MC
 | Client | MCP Tools | Safety Hooks | Auto Auditor |
 |---|---|---|---|
 | **Claude Code** (CLI / VS Code) | ✅ Full | ✅ Full | ✅ Yes |
+| **Codex** (CLI / IDE extension) — `axme-code setup --ide=codex` | ✅ Full | ✅ Full | ✅ Yes |
 | **Cursor** | ✅ Full | ❌ | ❌ |
 | **Windsurf** | ✅ Full | ❌ | ❌ |
 | **Cline** (VS Code) | ✅ Full | ❌ | ❌ |
@@ -229,7 +230,7 @@ Just place it in your client's MCP config file:
 - **Cline:** VS Code Settings → Cline MCP → `cline_mcp_settings.json`
 - **Claude Desktop:** `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or equivalent
 
-Pre-execution safety hooks, the post-tool-use file tracker, and the background session auditor are Claude Code-specific (they require Claude Code's hook system). In other clients, the agent must call AXME tools explicitly — same knowledge base, same `.axme-code/` storage, just no automatic enforcement layer.
+Pre-execution safety hooks, the post-tool-use file tracker, and the background session auditor need a hook system: Claude Code has one, and so does Codex (`axme-code setup --ide=codex` writes `.codex/config.toml`, `.codex/hooks.json` and the `AGENTS.md` section — see [docs/MULTI_CLIENT.md](docs/MULTI_CLIENT.md#codex-openai)). In other clients, the agent must call AXME tools explicitly — same knowledge base, same `.axme-code/` storage, just no automatic enforcement layer.
 
 See [docs/MULTI_CLIENT.md](docs/MULTI_CLIENT.md) for full per-client setup, hook workarounds, and concurrent-client semantics.
 

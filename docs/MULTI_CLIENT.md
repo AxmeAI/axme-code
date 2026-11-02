@@ -7,6 +7,7 @@ AXME Code is built as a [stdio MCP server](https://modelcontextprotocol.io/) —
 | Client | MCP Tools | Safety Hooks | Session-end Auditor | File-change Tracking |
 |--------|-----------|--------------|---------------------|----------------------|
 | **Claude Code** (CLI / VS Code) | ✅ Full | ✅ Full | ✅ Automatic | ✅ Automatic |
+| **Codex** (CLI / IDE extension) | ✅ Full | ✅ Full (`--ide=codex`) | ✅ Automatic¹ | ✅ Automatic |
 | **Cursor** | ✅ Full | ❌ | ❌ | ❌ |
 | **Windsurf** | ✅ Full | ❌ | ❌ | ❌ |
 | **Cline** (VS Code) | ✅ Full | ❌ | ❌ | ❌ |
@@ -15,7 +16,9 @@ AXME Code is built as a [stdio MCP server](https://modelcontextprotocol.io/) —
 
 **MCP tools available everywhere** — the full set of 19 tools (`axme_context`, `axme_save_memory`, `axme_save_decision`, `axme_safety`, `axme_status`, etc.) works in any MCP client. Your agent can read and write the knowledge base.
 
-**Hooks are Claude Code-only** — pre-execution safety hooks, post-tool-use file tracking, and the session-end background auditor depend on Claude Code's hook system. In other clients, the agent must explicitly call AXME tools (e.g., to save memories at session close).
+**Hooks need a hook system** — pre-execution safety hooks, post-tool-use file tracking, and the session-end background auditor run on Claude Code and on Codex (whose hook protocol is Claude-Code-compatible). In other clients, the agent must explicitly call AXME tools (e.g., to save memories at session close).
+
+¹ The background auditor still runs on the Claude Agent SDK, so it needs a `claude` login or `ANTHROPIC_API_KEY` even when the session itself ran in Codex. Codex's own transcript is not yet fed to the auditor; the audit sees the files changed, the worklog, and whatever the agent saved during the session.
 
 ## Quick Start (any client)
 
@@ -56,6 +59,28 @@ Just place it in the right config file for your client.
 ### Claude Code
 
 Already done by `axme-code setup` — `.mcp.json` is created in your project root. Just run `claude` and start using it.
+
+### Codex (OpenAI)
+
+Full support — MCP tools, safety hooks, file tracking and the session-end auditor:
+
+```bash
+cd your-project
+axme-code setup --ide=codex
+```
+
+This writes three project-level files and leaves Claude Code's files alone:
+
+- `.codex/config.toml` — `[mcp_servers.axme]` pointing at the installed binary (absolute path, so it also works when Codex is launched from the IDE extension or the desktop app).
+- `.codex/hooks.json` — `SessionStart` (prints the "call axme_context" nudge as developer context), `PreToolUse` (safety + git gate), `PostToolUse` (file tracking from `apply_patch`), `SessionEnd` (spawns the detached auditor; Codex caps this hook at 3s, which is enough).
+- `AGENTS.md` — the `## AXME Code` section (the CLAUDE.md analogue), including the `#!axme` commit/push gate rule.
+
+Two Codex-specific notes:
+
+- **Trust the project.** Codex loads a project's `.codex/` layer only for trusted projects. Accept the trust prompt the first time you run `codex` in the repo, or add `[projects."<absolute path>"]` with `trust_level = "trusted"` to `~/.codex/config.toml`.
+- **Shell reads are policed.** Codex has no `Read` tool — every file read is a shell command — so the `PreToolUse` hook also blocks shell reads of denied paths (`cat ~/.ssh/id_rsa`, `/etc/shadow`, ...). Only absolute and `~`-relative deny patterns apply to the shell; bare basename patterns such as `.env` do not, so commit messages and heredocs that merely mention a file are not blocked.
+
+The same `.axme-code/` knowledge base is shared with Claude Code, so you can switch between the two on one project.
 
 ### Cursor
 
@@ -165,8 +190,8 @@ The knowledge base is the single source of truth regardless of which client crea
 
 ## Limitations
 
-- **Hooks are not portable** — Claude Code's hook system is unique. Other clients will not get automatic safety blocking, file tracking, or session-end audits.
-- **CLAUDE.md auto-injection** — only Claude Code reads `CLAUDE.md`. Other clients ignore it; you may need to provide instructions to your agent another way (e.g., a system prompt).
+- **Hooks are not portable** — only Claude Code and Codex have a hook system AXME can plug into. Other clients will not get automatic safety blocking, file tracking, or session-end audits.
+- **CLAUDE.md auto-injection** — only Claude Code reads `CLAUDE.md`; Codex reads `AGENTS.md` (written by `--ide=codex`). Other clients ignore both; you may need to provide instructions to your agent another way (e.g., a system prompt).
 - **`.mcp.json` is Claude Code-specific** — `axme-code setup` writes this file, but other clients use different config locations (see above).
 - **Session-to-session linking** — AXME tracks Claude Code's session IDs to link conversations across VS Code windows. Other clients don't expose session IDs the same way, so cross-window session linking may not work; sessions will still be tracked individually.
 

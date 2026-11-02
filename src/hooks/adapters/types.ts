@@ -23,6 +23,15 @@ export interface NormalizedHookEvent {
   toolName?: string;
   /** PreToolUse / PostToolUse only — the arguments the agent passed. */
   toolInput?: Record<string, unknown>;
+  /**
+   * Every file path this tool call touches, for IDEs that report edits in
+   * a shape other than Claude Code's single `tool_input.file_path`. Codex
+   * delivers one `apply_patch` call that may add, update or delete several
+   * files at once; its adapter extracts the paths here so the safety and
+   * file-tracking cores stay IDE-agnostic. Undefined on Claude Code and
+   * Cursor — handlers then fall back to `tool_input.file_path`.
+   */
+  filePaths?: string[];
   /** IDE's own session id (Claude Code session_id, Cursor session_id, etc.). */
   sessionId?: string;
   /** Path to the IDE's transcript file, if any. May be null on Cursor. */

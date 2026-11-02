@@ -27,10 +27,13 @@ import { AXME_CODE_DIR } from "../types.js";
 import type { IdeKind } from "../types.js";
 import { claudeCodeInputAdapter } from "./adapters/claude-code.js";
 import { cursorInputAdapter } from "./adapters/cursor.js";
+import { codexInputAdapter } from "./adapters/codex.js";
 import type { HookInputAdapter, NormalizedHookEvent } from "./adapters/types.js";
 
 function inputAdapterFor(ide: IdeKind): HookInputAdapter {
-  return ide === "cursor" ? cursorInputAdapter : claudeCodeInputAdapter;
+  if (ide === "cursor") return cursorInputAdapter;
+  if (ide === "codex") return codexInputAdapter;
+  return claudeCodeInputAdapter;
 }
 
 function handleSessionEnd(workspacePath: string, event: NormalizedHookEvent): void {

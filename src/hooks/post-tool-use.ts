@@ -21,10 +21,13 @@ import { AXME_CODE_DIR } from "../types.js";
 import type { IdeKind } from "../types.js";
 import { claudeCodeInputAdapter } from "./adapters/claude-code.js";
 import { cursorInputAdapter } from "./adapters/cursor.js";
+import { codexInputAdapter } from "./adapters/codex.js";
 import type { HookInputAdapter, NormalizedHookEvent } from "./adapters/types.js";
 
 function inputAdapterFor(ide: IdeKind): HookInputAdapter {
-  return ide === "cursor" ? cursorInputAdapter : claudeCodeInputAdapter;
+  if (ide === "cursor") return cursorInputAdapter;
+  if (ide === "codex") return codexInputAdapter;
+  return claudeCodeInputAdapter;
 }
 
 function handlePostToolUse(workspacePath: string, event: NormalizedHookEvent): void {
@@ -48,11 +51,14 @@ function handlePostToolUse(workspacePath: string, event: NormalizedHookEvent): v
   // filesChanged tracking only for mutation tools
   if (!["Edit", "Write", "NotebookEdit"].includes(tool_name)) return;
 
-  const filePath = tool_input.file_path || tool_input.path;
-  if (!filePath || typeof filePath !== "string") return;
-  if (filePath.includes(AXME_CODE_DIR)) return;
-
-  trackFileChanged(workspacePath, axmeSessionId, filePath);
+  // Codex's apply_patch may touch several files in one call — the adapter
+  // lists them in event.filePaths. Claude Code / Cursor name one file.
+  const single = tool_input.file_path || tool_input.path;
+  const paths = event.filePaths ?? (typeof single === "string" && single ? [single] : []);
+  for (const filePath of paths) {
+    if (filePath.includes(AXME_CODE_DIR)) continue;
+    trackFileChanged(workspacePath, axmeSessionId, filePath);
+  }
 }
 
 /**

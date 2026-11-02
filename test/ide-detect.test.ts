@@ -20,6 +20,11 @@ describe("parseIdeFlag", () => {
     assert.equal(parseIdeFlag(["--ide", "claude-code"]), "claude-code");
   });
 
+  it("returns 'codex' for --ide codex and --ide=codex", () => {
+    assert.equal(parseIdeFlag(["--ide", "codex"]), "codex");
+    assert.equal(parseIdeFlag(["hook", "pre-tool-use", "--workspace", "/w", "--ide=codex"]), "codex");
+  });
+
   it("returns undefined when --ide is absent", () => {
     assert.equal(parseIdeFlag([]), undefined);
     assert.equal(parseIdeFlag(["--workspace", "/tmp/foo"]), undefined);
@@ -42,6 +47,10 @@ describe("detectIdeFromEnv", () => {
 
   it("returns 'claude-code' when AXME_IDE=claude-code", () => {
     assert.equal(detectIdeFromEnv({ AXME_IDE: "claude-code" }), "claude-code");
+  });
+
+  it("returns 'codex' when AXME_IDE=codex", () => {
+    assert.equal(detectIdeFromEnv({ AXME_IDE: "codex" }), "codex");
   });
 
   it("returns undefined when AXME_IDE is absent or unknown", () => {
