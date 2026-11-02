@@ -115,7 +115,9 @@ describe("codex hooks end-to-end", () => {
     assert.equal(r.status, 0, `stderr: ${r.stderr}`);
     const metas = findMetaFiles(join(ROOT, ".axme-code"));
     assert.ok(metas.length >= 1, "an AXME session should have been created for the Codex session");
-    const changed = metas.flatMap((m) => (JSON.parse(readFileSync(m, "utf-8")) as { filesChanged?: string[] }).filesChanged ?? []);
+    const changed = metas
+      .flatMap((m) => (JSON.parse(readFileSync(m, "utf-8")) as { filesChanged?: string[] }).filesChanged ?? [])
+      .map((p) => p.replace(/\\/g, "/")); // Windows stores backslashes
     assert.ok(changed.some((p) => p.endsWith("src/a.ts")), `filesChanged=${JSON.stringify(changed)}`);
     assert.ok(changed.some((p) => p.endsWith("docs/b.md")), `filesChanged=${JSON.stringify(changed)}`);
   });

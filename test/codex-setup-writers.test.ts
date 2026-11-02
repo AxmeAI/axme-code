@@ -69,7 +69,8 @@ describe("writeCodexHooksJson", () => {
     const pre = cfg.hooks.PreToolUse;
     assert.equal(pre.length, 2);
     assert.equal(pre[0].hooks[0].command, "echo user-hook");
-    assert.match(pre[1].hooks[0].command, new RegExp(`--workspace "${ROOT}" --ide codex`));
+    // Plain includes: ROOT has backslashes on Windows, which a RegExp would eat.
+    assert.ok(pre[1].hooks[0].command.includes(`--workspace "${ROOT}" --ide codex`), pre[1].hooks[0].command);
     assert.equal(cfg.hooks.SessionEnd.length, 1);
   });
 

@@ -1,5 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { resolve } from "node:path";
 import { codexInputAdapter, codexOutputAdapter, extractPatchPaths } from "../src/hooks/adapters/codex.js";
 import { claudeCodeOutputAdapter } from "../src/hooks/adapters/claude-code.js";
 
@@ -54,10 +55,12 @@ describe("codexInputAdapter.parse — apply_patch", () => {
       "postToolUse",
     );
     assert.equal(ev.toolName, "Edit");
+    // Relative paths resolve against cwd with the host's separators (Windows
+    // CI yields backslashes); absolute ones are passed through untouched.
     assert.deepEqual(ev.filePaths, [
-      "/tmp/codex-smoke/src/a.ts",
-      "/tmp/codex-smoke/docs/new.md",
-      "/tmp/codex-smoke/old/junk.txt",
+      resolve(BASE.cwd, "src/a.ts"),
+      resolve(BASE.cwd, "docs/new.md"),
+      resolve(BASE.cwd, "old/junk.txt"),
       "/abs/elsewhere.ts",
     ]);
     // Raw input is preserved for anyone who needs the patch text.
@@ -70,7 +73,7 @@ describe("codexInputAdapter.parse — apply_patch", () => {
       "preToolUse",
     );
     assert.equal(ev.toolName, "Edit");
-    assert.deepEqual(ev.filePaths, ["/tmp/codex-smoke/x.txt"]);
+    assert.deepEqual(ev.filePaths, [resolve(BASE.cwd, "x.txt")]);
   });
 
   it("yields an empty path list (not a crash) when the patch text is missing", () => {
@@ -83,7 +86,7 @@ describe("codexInputAdapter.parse — apply_patch", () => {
 describe("extractPatchPaths", () => {
   it("handles Move to headers and CRLF line endings", () => {
     const patch = "*** Begin Patch\r\n*** Update File: a.txt\r\n*** Move to: b.txt\r\n*** End Patch\r\n";
-    assert.deepEqual(extractPatchPaths(patch, "/w"), ["/w/a.txt", "/w/b.txt"]);
+    assert.deepEqual(extractPatchPaths(patch, "/w"), [resolve("/w", "a.txt"), resolve("/w", "b.txt")]);
   });
 
   it("returns relative paths as written when cwd is unknown", () => {
@@ -92,7 +95,7 @@ describe("extractPatchPaths", () => {
 
   it("ignores body lines that merely look like headers", () => {
     const patch = "*** Begin Patch\n*** Update File: a.txt\n+*** Update File: not-a-header.txt\n*** End Patch";
-    assert.deepEqual(extractPatchPaths(patch, "/w"), ["/w/a.txt"]);
+    assert.deepEqual(extractPatchPaths(patch, "/w"), [resolve("/w", "a.txt")]);
   });
 });
 

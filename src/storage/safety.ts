@@ -362,19 +362,31 @@ function shellTokens(command: string): string[] {
  * heredoc bodies that merely MENTION such a file far more often than they
  * would catch a real read. Likewise only path-like tokens (containing a
  * separator or starting with "~") are examined.
+ *
+ * Both sides are "~"-expanded and run through normalizePathForSafety():
+ * homedir() uses backslashes on Windows while deny patterns are written
+ * with "/", so a raw comparison never matches there.
  */
 function checkShellPaths(rules: SafetyRules, command: string): SafetyVerdict | null {
   const anchored = rules.filesystem.deniedPaths.filter(p => p.startsWith("/") || p.startsWith("~"));
   if (anchored.length === 0) return null;
-  const scoped: SafetyRules = { ...rules, filesystem: { ...rules.filesystem, deniedPaths: anchored } };
+  const patterns = anchored.map(p => ({ original: p, normalized: normalizePathForSafety(expandHome(p)) }));
   for (const token of shellTokens(command)) {
     const pathLike = token.includes("/") || token.startsWith("~") || /^[A-Za-z]:[\\/]/.test(token);
     if (!pathLike) continue;
-    const expanded = token === "~" || token.startsWith("~/") ? join(homedir(), token.slice(1)) : token;
-    const v = checkFilePath(scoped, expanded, "read");
-    if (!v.allowed) return v;
+    const normalized = normalizePathForSafety(expandHome(token));
+    for (const pattern of patterns) {
+      if (matchesPattern(normalized, pattern.normalized)) {
+        return { allowed: false, reason: `Path denied: ${pattern.original}` };
+      }
+    }
   }
   return null;
+}
+
+/** "~" and "~/x" → the user's home; everything else unchanged. */
+function expandHome(p: string): string {
+  return p === "~" || p.startsWith("~/") ? homedir() + p.slice(1) : p;
 }
 
 /**
